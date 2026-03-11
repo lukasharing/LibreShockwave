@@ -207,7 +207,7 @@ public final class SoftwareFrameRenderer {
         return ink == InkMode.ADD_PIN || ink == InkMode.ADD
             || ink == InkMode.SUBTRACT_PIN || ink == InkMode.SUBTRACT
             || ink == InkMode.LIGHTEST || ink == InkMode.DARKEST
-            || ink == InkMode.LIGHTEN || ink == InkMode.DARKEN
+            || ink == InkMode.LIGHTEN
             || ink == InkMode.REVERSE || ink == InkMode.GHOST
             || ink == InkMode.NOT_COPY || ink == InkMode.NOT_TRANSPARENT
             || ink == InkMode.NOT_REVERSE || ink == InkMode.NOT_GHOST;
@@ -241,7 +241,7 @@ public final class SoftwareFrameRenderer {
                 outG = Math.max(0, dstG - srcG);
                 outB = Math.max(0, dstB - srcB);
             }
-            case DARKEN, DARKEST -> {
+            case DARKEST -> {
                 outR = Math.min(dstR, srcR);
                 outG = Math.min(dstG, srcG);
                 outB = Math.min(dstB, srcB);

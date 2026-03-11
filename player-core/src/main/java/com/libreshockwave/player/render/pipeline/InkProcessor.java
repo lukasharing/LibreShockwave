@@ -94,29 +94,30 @@ public final class InkProcessor {
             }
             return applyBackgroundTransparent(src, bgColor);
         } else if (ink == InkMode.DARKEN || ink == InkMode.LIGHTEN) {
-            // DARKEN/LIGHTEN compositing naturally handles background transparency:
-            //   DARKEN: min(white, dst) = dst → white is invisible
-            //   LIGHTEN: max(black, dst) = dst → black is invisible
-            // Matte flood-fill is NOT needed and is actively harmful for script-composed
-            // images (e.g., Habbo figure sprites). Those bitmaps are stage-sized with the
-            // figure in the center; if any body part boundary has a 1px white gap, the
-            // flood-fill leaks through and creates transparent holes (horizontal lines).
-            // For paletted bitmaps, apply matte to handle non-white/black palette backgrounds.
+            // DARKEN (41): matte background, multiply remaining pixels by bgColor, standard alpha composite.
+            // LIGHTEN (40): matte background, MAX compositing (handled in renderer).
+            // >=16-bit: color-key instead of matte (matte leaks through 1px gaps in composite images).
+            Bitmap masked;
             if (src.getBitDepth() >= 16) {
-                // Use color-key transparency (exact white match) instead of matte flood-fill.
-                // Matte flood-fill leaks through 1px gaps in composite images (e.g., Habbo figure
-                // body parts), creating transparent holes that appear as horizontal black lines.
-                // Color-key makes white pixels transparent (alpha=0, skipped in DARKEN compositing)
-                // while keeping figure content pixels opaque (alpha=0xFF, correctly composited).
-                int bgColor = resolveMatteColor(src, ink, backColor, useAlpha, palette);
-                if (bgColor < 0) return src;
-                return applyBackgroundTransparent(src, bgColor);
+                int matteColor = resolveMatteColor(src, ink, backColor, useAlpha, palette);
+                if (matteColor < 0) return src;
+                masked = applyBackgroundTransparent(src, matteColor);
+            } else {
+                int matteColor = resolveMatteColor(src, ink, backColor, useAlpha, palette);
+                if (matteColor < 0) return src;
+                masked = applyMatte(src, matteColor);
             }
-            int matteColor = resolveMatteColor(src, ink, backColor, useAlpha, palette);
-            if (matteColor < 0) {
-                return src;
+
+            // DARKEN: multiply opaque pixels by resolved bgColor (tint/colorize).
+            // Director's Darken ink tints the sprite via multiplication with bgColor,
+            // then composites with standard alpha blend — NOT per-channel MIN like Darkest (39).
+            if (ink == InkMode.DARKEN) {
+                int tintRgb = resolveBackColor(src, ink, backColor, useAlpha, palette);
+                if (tintRgb >= 0 && tintRgb != 0xFFFFFF) {
+                    masked = multiplyColor(masked, tintRgb);
+                }
             }
-            return applyMatte(src, matteColor);
+            return masked;
         } else if (ink == InkMode.NOT_GHOST || ink == InkMode.ADD_PIN
                 || ink == InkMode.ADD || ink == InkMode.SUBTRACT_PIN || ink == InkMode.SUBTRACT
                 || ink == InkMode.BACKGROUND_TRANSPARENT) {
@@ -277,6 +278,38 @@ public final class InkProcessor {
             transparent[idx] = true;
             queue.add(idx);
         }
+    }
+
+    /**
+     * Multiply each opaque pixel's RGB by a tint color (normalized multiply blend).
+     * Used by DARKEN ink (41) to colorize the sprite with bgColor before compositing.
+     */
+    static Bitmap multiplyColor(Bitmap src, int tintRgb) {
+        int tintR = (tintRgb >> 16) & 0xFF;
+        int tintG = (tintRgb >> 8) & 0xFF;
+        int tintB = tintRgb & 0xFF;
+
+        int w = src.getWidth();
+        int h = src.getHeight();
+        int[] srcPixels = src.getPixels();
+        int[] result = new int[w * h];
+
+        for (int i = 0; i < srcPixels.length; i++) {
+            int alpha = (srcPixels[i] >>> 24);
+            if (alpha == 0) {
+                result[i] = 0;
+                continue;
+            }
+            int r = (srcPixels[i] >> 16) & 0xFF;
+            int g = (srcPixels[i] >> 8) & 0xFF;
+            int b = srcPixels[i] & 0xFF;
+            r = (r * tintR) / 255;
+            g = (g * tintG) / 255;
+            b = (b * tintB) / 255;
+            result[i] = (alpha << 24) | (r << 16) | (g << 8) | b;
+        }
+
+        return new Bitmap(w, h, src.getBitDepth(), result);
     }
 
     /**
