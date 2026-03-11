@@ -81,9 +81,9 @@ public class BitmapCache {
             // palette used for InkProcessor backColor resolution.
             Optional<Bitmap> bitmap;
             if (palette != null) {
-                bitmap = player.decodeBitmap(member, palette);
+                bitmap = player.getBitmapResolver().decodeBitmap(member, palette);
             } else {
-                bitmap = player.decodeBitmap(member);
+                bitmap = player.getBitmapResolver().decodeBitmap(member);
             }
             if (bitmap.isEmpty()) {
                 decodeFailed.add(id);

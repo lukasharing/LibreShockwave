@@ -77,7 +77,7 @@ public class ClickTraceTest {
 
         // Use the proper Player API path (like the browser does)
         System.err.println("\n========== MOUSE DOWN via Player.onMouseDown at (" + cx + "," + cy + ") ==========");
-        player.onMouseDown(cx, cy, false);
+        player.getInputHandler().onMouseDown(cx, cy, false);
         System.err.println("clickOnSprite = " + player.getInputState().getClickOnSprite());
 
         // Tick to process mouseDown
@@ -87,7 +87,7 @@ public class ClickTraceTest {
 
         // Mouse up
         System.err.println("\n========== MOUSE UP via Player.onMouseUp at (" + cx + "," + cy + ") ==========");
-        player.onMouseUp(cx, cy, false);
+        player.getInputHandler().onMouseUp(cx, cy, false);
 
         // Tick to process mouseUp
         System.err.println("========== TICK (process mouseUp) ==========");

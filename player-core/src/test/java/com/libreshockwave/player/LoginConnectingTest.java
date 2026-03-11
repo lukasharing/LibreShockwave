@@ -294,9 +294,9 @@ public class LoginConnectingTest {
     private static void clickSprite(Player player, SpriteState sprite) {
         int cx = sprite.getLocH() + sprite.getWidth() / 2;
         int cy = sprite.getLocV() + sprite.getHeight() / 2;
-        player.onMouseDown(cx, cy, false);
+        player.getInputHandler().onMouseDown(cx, cy, false);
         player.tick();
-        player.onMouseUp(cx, cy, false);
+        player.getInputHandler().onMouseUp(cx, cy, false);
         player.tick();
     }
 
@@ -313,8 +313,8 @@ public class LoginConnectingTest {
                 javaVK = (int) c;
             }
             int directorCode = DirectorKeyCodes.fromJavaKeyCode(javaVK);
-            player.onKeyDown(directorCode, String.valueOf(c), false, false, false);
-            player.onKeyUp(directorCode, String.valueOf(c), false, false, false);
+            player.getInputHandler().onKeyDown(directorCode, String.valueOf(c), false, false, false);
+            player.getInputHandler().onKeyUp(directorCode, String.valueOf(c), false, false, false);
             player.tick();
         }
     }

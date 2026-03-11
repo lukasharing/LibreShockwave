@@ -354,7 +354,7 @@ public class HotelViewDiagnosticTest {
                 }
                 // Also dump raw bitmap (before ink processing)
                 if (bs.getCastMember() != null) {
-                    var rawOpt = player.decodeBitmap(bs.getCastMember());
+                    var rawOpt = player.getBitmapResolver().decodeBitmap(bs.getCastMember());
                     if (rawOpt.isPresent()) {
                         Bitmap raw = rawOpt.get();
                         int[] rpx = raw.getPixels();
@@ -436,7 +436,7 @@ public class HotelViewDiagnosticTest {
                 }
                 // Dump raw bitmap
                 if (bs.getCastMember() != null) {
-                    var rawOpt = player.decodeBitmap(bs.getCastMember());
+                    var rawOpt = player.getBitmapResolver().decodeBitmap(bs.getCastMember());
                     if (rawOpt.isPresent()) {
                         Bitmap raw = rawOpt.get();
                         int[] rpx = raw.getPixels();
@@ -573,10 +573,10 @@ public class HotelViewDiagnosticTest {
             }
         }
         // Simulate the click
-        player.onMouseDown(nameFieldX, nameFieldY, false);
+        player.getInputHandler().onMouseDown(nameFieldX, nameFieldY, false);
         player.tick();
         Thread.sleep(50);
-        player.onMouseUp(nameFieldX, nameFieldY, false);
+        player.getInputHandler().onMouseUp(nameFieldX, nameFieldY, false);
         player.tick();
         Thread.sleep(50);
         System.out.println("  Click simulated, checking keyboardFocusSprite...");

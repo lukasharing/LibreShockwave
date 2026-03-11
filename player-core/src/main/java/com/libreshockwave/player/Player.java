@@ -2,28 +2,18 @@ package com.libreshockwave.player;
 
 import com.libreshockwave.DirectorFile;
 import com.libreshockwave.bitmap.Bitmap;
-import com.libreshockwave.bitmap.Palette;
-import com.libreshockwave.chunks.CastMemberChunk;
 import com.libreshockwave.chunks.ScriptChunk;
 import com.libreshockwave.chunks.ScriptNamesChunk;
 import com.libreshockwave.player.behavior.BehaviorManager;
-import com.libreshockwave.player.cast.CastLib;
 import com.libreshockwave.player.cast.CastLibManager;
-import com.libreshockwave.player.cast.CastMember;
-import com.libreshockwave.cast.BitmapInfo;
-import com.libreshockwave.cast.MemberType;
-import com.libreshockwave.player.sprite.SpriteState;
 import com.libreshockwave.player.event.EventDispatcher;
 import com.libreshockwave.player.frame.FrameContext;
-import com.libreshockwave.player.input.HitTester;
-import com.libreshockwave.player.input.InputEvent;
 import com.libreshockwave.player.input.InputState;
 import com.libreshockwave.player.net.NetManager;
 import com.libreshockwave.player.render.pipeline.BitmapCache;
 import com.libreshockwave.player.render.pipeline.FrameSnapshot;
 import com.libreshockwave.player.render.pipeline.RenderSprite;
 import com.libreshockwave.player.render.pipeline.SpriteBaker;
-import com.libreshockwave.player.render.output.TextRenderer;
 import com.libreshockwave.player.render.pipeline.StageRenderer;
 import com.libreshockwave.player.score.ScoreNavigator;
 import com.libreshockwave.vm.datum.Datum;
@@ -35,7 +25,6 @@ import com.libreshockwave.vm.builtin.net.ExternalParamProvider;
 import com.libreshockwave.vm.builtin.movie.MoviePropertyProvider;
 import com.libreshockwave.vm.builtin.net.NetBuiltins;
 import com.libreshockwave.vm.builtin.sprite.SpritePropertyProvider;
-import java.util.Optional;
 import com.libreshockwave.vm.builtin.media.SoundProvider;
 import com.libreshockwave.vm.builtin.timeout.TimeoutProvider;
 import com.libreshockwave.vm.builtin.xtra.XtraBuiltins;
@@ -47,8 +36,6 @@ import com.libreshockwave.vm.xtra.MultiuserXtra;
 import com.libreshockwave.player.xtra.SocketMultiuserBridge;
 import com.libreshockwave.vm.xtra.XtraManager;
 import com.libreshockwave.player.debug.DebugControllerApi;
-
-import com.libreshockwave.bitmap.Bitmap;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
@@ -83,12 +70,10 @@ public class Player {
     private final SpriteBaker spriteBaker;
     private final InputState inputState;
 
-    // Rollover tracking for mouseEnter/mouseLeave/mouseWithin events
-    private int previousRolloverSprite = 0;
-
-    // Movie-level palette (from score's palette channel) — used for all 8-bit bitmap decoding
-    private Palette moviePalette;
-    private int moviePaletteFrame = -1; // frame at which moviePalette was last resolved
+    // Extracted components
+    private final BitmapResolver bitmapResolver;
+    private final CursorManager cursorManager;
+    private final InputHandler inputHandler;
 
     private final PlayerTraceListener playerTraceListener;
 
@@ -191,6 +176,11 @@ public class Player {
         this.bitmapCache = new BitmapCache();
         this.spriteBaker = new SpriteBaker(bitmapCache, castLibManager, this);
         this.inputState = new InputState();
+        this.bitmapResolver = new BitmapResolver(file, castLibManager, frameContext);
+        this.cursorManager = new CursorManager(stageRenderer, inputState, castLibManager,
+                bitmapResolver, this::getCurrentFrame);
+        this.inputHandler = new InputHandler(inputState, stageRenderer, castLibManager,
+                this::getCurrentFrame, () -> frameContext.getEventDispatcher());
         this.movieProperties.setInputState(inputState);
         this.frameContext.setTimeoutManager(timeoutManager);
         this.frameContext.getEventDispatcher().setCastLibManager(castLibManager);
@@ -288,6 +278,11 @@ public class Player {
         this.bitmapCache = new BitmapCache();
         this.spriteBaker = new SpriteBaker(bitmapCache, castLibManager, this);
         this.inputState = new InputState();
+        this.bitmapResolver = new BitmapResolver(file, castLibManager, frameContext);
+        this.cursorManager = new CursorManager(stageRenderer, inputState, castLibManager,
+                bitmapResolver, this::getCurrentFrame);
+        this.inputHandler = new InputHandler(inputState, stageRenderer, castLibManager,
+                this::getCurrentFrame, () -> frameContext.getEventDispatcher());
         this.movieProperties.setInputState(inputState);
         // Set simple text renderer for TeaVM/WASM (no AWT)
         com.libreshockwave.player.cast.CastMember.setTextRenderer(new com.libreshockwave.player.render.output.SimpleTextRenderer());
@@ -464,145 +459,16 @@ public class Player {
         return Collections.unmodifiableMap(externalParams);
     }
 
-    /**
-     * Decode a bitmap from any loaded source — main file or external casts.
-     * Uses the member's own file reference to avoid chunk ID collisions.
-     */
-    public Optional<Bitmap> decodeBitmap(CastMemberChunk member) {
-        // Each CastMemberChunk stores a reference to the DirectorFile it was loaded from.
-        // Use that file first to avoid cross-file chunk ID collisions.
-        DirectorFile memberFile = member.file();
-
-        // For external cast bitmaps, resolve palette cross-file.
-        // External casts often don't contain palette cast members, so the bitmap's
-        // palette reference (clutId) may point to a palette in the main movie file.
-        if (memberFile != null && memberFile != file && member.isBitmap()) {
-            Palette crossFilePalette = resolvePaletteCrossFile(member, memberFile);
-            if (crossFilePalette != null) {
-                Optional<Bitmap> result = memberFile.decodeBitmap(member, crossFilePalette);
-                if (result.isPresent()) {
-                    return result;
-                }
-            }
-        }
-
-        if (memberFile != null) {
-            Optional<Bitmap> result = memberFile.decodeBitmap(member);
-            if (result.isPresent()) {
-                return result;
-            }
-        }
-
-        // Fallback: try main file
-        if (file != null && file != memberFile) {
-            Optional<Bitmap> result = file.decodeBitmap(member);
-            if (result.isPresent()) {
-                return result;
-            }
-        }
-
-        // Last resort: try all external casts
-        if (castLibManager != null) {
-            for (CastLib castLib : castLibManager.getCastLibs().values()) {
-                if (!castLib.isLoaded()) continue;
-                DirectorFile src = castLib.getSourceFile();
-                if (src != null && src != memberFile && src != file) {
-                    Optional<Bitmap> result = src.decodeBitmap(member);
-                    if (result.isPresent()) {
-                        return result;
-                    }
-                }
-            }
-        }
-
-        return Optional.empty();
+    public BitmapResolver getBitmapResolver() {
+        return bitmapResolver;
     }
 
-    /**
-     * Resolve palette cross-file for an external cast bitmap.
-     * If the bitmap's palette can't be found in its own file, tries the main movie
-     * file and other loaded cast libraries.
-     * @return The resolved palette, or null if no cross-file resolution is needed
-     */
-    private Palette resolvePaletteCrossFile(CastMemberChunk member, DirectorFile memberFile) {
-        if (member.specificData() == null || member.specificData().length < 10) {
-            return null;
-        }
-
-        int dirVer = 1200;
-        if (memberFile.getConfig() != null) {
-            dirVer = memberFile.getConfig().directorVersion();
-        }
-        BitmapInfo info = BitmapInfo.parse(member.specificData(), dirVer);
-        int paletteId = info.paletteId();
-
-        // Built-in palettes (negative IDs) don't need cross-file resolution
-        if (paletteId < 0) {
-            return null;
-        }
-
-        // Check if the palette exists in the member's own file
-        Palette pal = memberFile.resolvePaletteExact(paletteId);
-        if (pal != null) {
-            return null; // Found in own file — no override needed
-        }
-
-        // Not found in own file — try main movie file
-        if (file != null) {
-            pal = file.resolvePaletteExact(paletteId);
-            if (pal != null) {
-                return pal;
-            }
-        }
-
-        // Try other loaded cast libraries
-        if (castLibManager != null) {
-            for (CastLib castLib : castLibManager.getCastLibs().values()) {
-                if (!castLib.isLoaded()) continue;
-                DirectorFile src = castLib.getSourceFile();
-                if (src != null && src != memberFile && src != file) {
-                    pal = src.resolvePaletteExact(paletteId);
-                    if (pal != null) {
-                        return pal;
-                    }
-                }
-            }
-        }
-
-        return null;
+    public CursorManager getCursorManager() {
+        return cursorManager;
     }
 
-    /**
-     * Decode a bitmap with a palette override.
-     * Used for palette swap animation where the runtime palette differs from the embedded one.
-     */
-    public Optional<Bitmap> decodeBitmap(CastMemberChunk member, Palette paletteOverride) {
-        DirectorFile memberFile = member.file();
-        if (memberFile != null) {
-            Optional<Bitmap> result = memberFile.decodeBitmap(member, paletteOverride);
-            if (result.isPresent()) {
-                return result;
-            }
-        }
-        if (file != null && file != memberFile) {
-            Optional<Bitmap> result = file.decodeBitmap(member, paletteOverride);
-            if (result.isPresent()) {
-                return result;
-            }
-        }
-        if (castLibManager != null) {
-            for (CastLib castLib : castLibManager.getCastLibs().values()) {
-                if (!castLib.isLoaded()) continue;
-                DirectorFile src = castLib.getSourceFile();
-                if (src != null && src != memberFile && src != file) {
-                    Optional<Bitmap> result = src.decodeBitmap(member, paletteOverride);
-                    if (result.isPresent()) {
-                        return result;
-                    }
-                }
-            }
-        }
-        return Optional.empty();
+    public InputHandler getInputHandler() {
+        return inputHandler;
     }
 
     public TimeoutManager getTimeoutManager() {
@@ -700,64 +566,6 @@ public class Player {
             debug,
             stageRenderer.hasStageImage() ? stageRenderer.getStageImage() : null
         );
-    }
-
-    /**
-     * Get the movie's current palette (from score's palette channel).
-     * In Director's 8-bit color model, all bitmaps on stage share this palette.
-     * Returns null if no palette channel is set (use bitmap's own palette).
-     */
-    public Palette getMoviePalette() {
-        int currentFrame = frameContext.getCurrentFrame() - 1; // 0-indexed
-        if (currentFrame != moviePaletteFrame) {
-            moviePaletteFrame = currentFrame;
-            moviePalette = resolveMoviePalette(currentFrame);
-        }
-        return moviePalette;
-    }
-
-    private Palette resolveMoviePalette(int frame) {
-        if (file == null) return null;
-
-        // Priority 1: Score palette channel (per-frame)
-        var paletteData = file.getScorePalette(frame);
-        if (paletteData != null) {
-            // ScummVM: negative member values are built-in palette IDs
-            if (paletteData.castMember() < 0) {
-                return Palette.getBuiltIn(paletteData.castMember());
-            }
-            Palette pal = resolvePaletteByMember(paletteData.castLib(), paletteData.castMember());
-            if (pal != null) return pal;
-        }
-
-        // Priority 2: Config default palette (movie-level)
-        var config = file.getConfig();
-        if (config != null && config.defaultPaletteMember() != 0) {
-            int castLib = config.defaultPaletteCastLib();
-            int member = config.defaultPaletteMember();
-            // ScummVM: negative member values are built-in palette IDs
-            if (member < 0) {
-                return Palette.getBuiltIn(member);
-            }
-            Palette pal = resolvePaletteByMember(castLib, member);
-            if (pal != null) return pal;
-        }
-
-        return null;
-    }
-
-    private Palette resolvePaletteByMember(int castLib, int memberNum) {
-        if (castLibManager != null) {
-            CastMemberChunk palChunk = castLibManager.getCastMember(
-                castLib > 0 ? castLib : 1, memberNum);
-            if (palChunk != null && palChunk.file() != null) {
-                return palChunk.file().resolvePalette(memberNum - 1);
-            }
-        }
-        if (file != null) {
-            return file.resolvePalette(memberNum - 1);
-        }
-        return null;
     }
 
     /**
@@ -1075,7 +883,7 @@ public class Player {
                 do {
                     setupProviders();
                     try {
-                        processInputEvents();
+                        inputHandler.processInputEvents();
                         xtraManager.tickAll();
                         frameContext.executeFrame();
                         timeoutManager.processTimeouts(vm, System.currentTimeMillis());
@@ -1119,7 +927,7 @@ public class Player {
         }
         try {
             // Process queued mouse/keyboard input events before frame execution
-            processInputEvents();
+            inputHandler.processInputEvents();
             // Process pending Xtra callbacks (e.g., Multiuser Xtra auto-fires
             // setNetMessageHandler callbacks when messages arrive)
             xtraManager.tickAll();
@@ -1158,7 +966,7 @@ public class Player {
                 do {
                     setupProviders();
                     try {
-                        processInputEvents();
+                        inputHandler.processInputEvents();
                         xtraManager.tickAll();
                         frameContext.executeFrame();
                         timeoutManager.processTimeouts(vm, System.currentTimeMillis());
@@ -1293,797 +1101,6 @@ public class Player {
         return inputState;
     }
 
-    /**
-     * Update the mouse position (stage coordinates).
-     * Called by the UI layer on mouse move.
-     */
-    public void onMouseMove(int stageX, int stageY) {
-        inputState.setMousePosition(stageX, stageY);
-        // Update rollover sprite
-        int hit = HitTester.hitTest(stageRenderer, getCurrentFrame(), stageX, stageY);
-        inputState.setRolloverSprite(hit);
-
-        // Drag-selection: extend selection while mouse is down over focused editable field
-        if (inputState.isMouseDown()) {
-            int focusChannel = inputState.getKeyboardFocusSprite();
-            if (focusChannel > 0) {
-                SpriteState sprite = stageRenderer.getSpriteRegistry().get(focusChannel);
-                if (sprite != null) {
-                    int memberNum = sprite.getEffectiveCastMember();
-                    if (memberNum > 0) {
-                        CastMember member = castLibManager.getDynamicMember(
-                                sprite.getEffectiveCastLib(), memberNum);
-                        if (member != null && member.isEditable()) {
-                            int spriteX = sprite.getLocH() - member.getRegPointX();
-                            int spriteY = sprite.getLocV() - member.getRegPointY();
-                            int charPos = member.locToCharPos(stageX - spriteX, stageY - spriteY, sprite.getWidth());
-                            inputState.setSelEnd(charPos);
-                            inputState.resetCaretBlink();
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /**
-     * Get the cursor type for the current mouse position.
-     * Returns Director cursor codes: -1=arrow, 0=default, 1=ibeam, 2=crosshair, 3=crossbar, 4=wait
-     * Returns 5 for custom bitmap cursor (call getCursorBitmap() to get the image).
-     */
-    public int getCursorAtMouse() {
-        int mouseH = inputState.getMouseH();
-        int mouseV = inputState.getMouseV();
-        int hitChannel = HitTester.hitTest(stageRenderer, getCurrentFrame(), mouseH, mouseV);
-        if (hitChannel > 0) {
-            SpriteState sprite = stageRenderer.getSpriteRegistry().get(hitChannel);
-            if (sprite != null) {
-                // Check for bitmap cursor first
-                if (sprite.hasBitmapCursor()) {
-                    return 5; // custom bitmap cursor
-                }
-                // Auto-detect editable text fields and buttons — Director shows ibeam
-                // for editable text/field members and pointer for buttons, regardless
-                // of sprite cursor. The Event Broker Behavior sets cursor=-1 (arrow) on
-                // all window sprites, but Director still overrides for these types.
-                int castLibNum = sprite.getEffectiveCastLib();
-                int memberNum = sprite.getEffectiveCastMember();
-                if (memberNum > 0) {
-                    CastMember member = castLibManager.getDynamicMember(castLibNum, memberNum);
-                    if (member != null) {
-                        if (member.isEditable() && member.getMemberType() == MemberType.TEXT) {
-                            return 1; // ibeam for editable text
-                        }
-                        if (member.getMemberType() == MemberType.BUTTON) {
-                            return 6; // pointer/hand for buttons
-                        }
-                    }
-                }
-                int spriteCursor = sprite.getCursor();
-                if (spriteCursor != 0) {
-                    return spriteCursor;
-                }
-            }
-        }
-        return -1; // default arrow when not over any sprite
-    }
-
-    /**
-     * Get the current custom cursor bitmap for rendering.
-     * Returns null if no bitmap cursor is active.
-     * The bitmap's regPoint defines the hotspot offset.
-     */
-    public Bitmap getCursorBitmap() {
-        int mouseH = inputState.getMouseH();
-        int mouseV = inputState.getMouseV();
-        int hitChannel = HitTester.hitTest(stageRenderer, getCurrentFrame(), mouseH, mouseV);
-        if (hitChannel <= 0) return null;
-
-        SpriteState sprite = stageRenderer.getSpriteRegistry().get(hitChannel);
-        if (sprite == null || !sprite.hasBitmapCursor()) return null;
-
-        int encodedMember = sprite.getCursorMemberNum();
-        int castLibNum = (encodedMember >> 16) & 0xFFFF;
-        int memberNum = encodedMember & 0xFFFF;
-        if (castLibNum == 0) castLibNum = 1; // default cast lib
-
-        // Try to find and decode the cursor member bitmap
-        CastMemberChunk chunk = castLibManager.getCastMember(castLibNum, memberNum);
-        if (chunk == null) return null;
-
-        Bitmap cursorBmp = decodeBitmap(chunk).orElse(null);
-        if (cursorBmp == null) return null;
-
-        // Decode the mask bitmap if present.
-        // Director cursors use a separate mask bitmap to define transparency:
-        //   mask white/background (palette index 0) = transparent
-        //   mask non-white = opaque (show cursor pixel)
-        // Without a mask, the cursor bitmap is fully opaque.
-        int encodedMask = sprite.getCursorMaskNum();
-        if (encodedMask != 0) {
-            int maskCastLib = (encodedMask >> 16) & 0xFFFF;
-            int maskMemberNum = encodedMask & 0xFFFF;
-            if (maskCastLib == 0) maskCastLib = 1;
-
-            CastMemberChunk maskChunk = castLibManager.getCastMember(maskCastLib, maskMemberNum);
-            if (maskChunk != null) {
-                Bitmap maskBmp = decodeBitmap(maskChunk).orElse(null);
-                if (maskBmp != null) {
-                    cursorBmp = applyCursorMask(cursorBmp, maskBmp);
-                }
-            }
-        }
-
-        return cursorBmp;
-    }
-
-    /**
-     * Apply a mask bitmap to a cursor bitmap, producing a 32-bit ARGB result.
-     * Mask pixels that are white (0xFFFFFF) become transparent in the output.
-     * Mask pixels that are non-white make the corresponding cursor pixel opaque.
-     */
-    private Bitmap applyCursorMask(Bitmap cursor, Bitmap mask) {
-        int w = cursor.getWidth();
-        int h = cursor.getHeight();
-        int[] cursorPixels = cursor.getPixels();
-        int[] maskPixels = mask.getPixels();
-        int[] result = new int[w * h];
-
-        int mw = mask.getWidth();
-        int mh = mask.getHeight();
-
-        for (int y = 0; y < h; y++) {
-            for (int x = 0; x < w; x++) {
-                int ci = y * w + x;
-                int cursorRgb = cursorPixels[ci] & 0xFFFFFF;
-
-                // Check mask bounds — out-of-bounds = transparent
-                if (x < mw && y < mh) {
-                    int mi = y * mw + x;
-                    int maskRgb = maskPixels[mi] & 0xFFFFFF;
-                    // Mask white (0xFFFFFF) = transparent, non-white = opaque
-                    if (maskRgb == 0xFFFFFF) {
-                        result[ci] = 0x00000000;
-                    } else {
-                        result[ci] = 0xFF000000 | cursorRgb;
-                    }
-                } else {
-                    result[ci] = 0x00000000;
-                }
-            }
-        }
-
-        return new Bitmap(w, h, 32, result);
-    }
-
-    /**
-     * Get the cursor bitmap's registration point (hotspot).
-     * Returns [regX, regY] or null if no bitmap cursor is active.
-     */
-    public int[] getCursorRegPoint() {
-        int mouseH = inputState.getMouseH();
-        int mouseV = inputState.getMouseV();
-        int hitChannel = HitTester.hitTest(stageRenderer, getCurrentFrame(), mouseH, mouseV);
-        if (hitChannel <= 0) return null;
-
-        SpriteState sprite = stageRenderer.getSpriteRegistry().get(hitChannel);
-        if (sprite == null || !sprite.hasBitmapCursor()) return null;
-
-        int encodedMember = sprite.getCursorMemberNum();
-        int castLibNum = (encodedMember >> 16) & 0xFFFF;
-        int memberNum = encodedMember & 0xFFFF;
-        if (castLibNum == 0) castLibNum = 1;
-
-        CastMemberChunk chunk = castLibManager.getCastMember(castLibNum, memberNum);
-        if (chunk == null) return new int[]{0, 0};
-
-        return new int[]{chunk.regPointX(), chunk.regPointY()};
-    }
-
-    /**
-     * Handle a mouse button press. Queues a MOUSE_DOWN event for dispatch during tick.
-     * Called by the UI layer.
-     */
-    public void onMouseDown(int stageX, int stageY, boolean rightButton) {
-        inputState.setMousePosition(stageX, stageY);
-        if (rightButton) {
-            inputState.setRightMouseDown(true);
-            inputState.queueEvent(InputEvent.rightMouseDown(stageX, stageY));
-        } else {
-            inputState.setMouseDown(true);
-            int hit = HitTester.hitTest(stageRenderer, getCurrentFrame(), stageX, stageY);
-            inputState.setClickOnSprite(hit);
-            inputState.setClickLoc(stageX, stageY);
-            inputState.queueEvent(InputEvent.mouseDown(stageX, stageY));
-        }
-    }
-
-    /**
-     * Handle a mouse button release. Queues a MOUSE_UP event for dispatch during tick.
-     * Called by the UI layer.
-     */
-    public void onMouseUp(int stageX, int stageY, boolean rightButton) {
-        inputState.setMousePosition(stageX, stageY);
-        if (rightButton) {
-            inputState.setRightMouseDown(false);
-            inputState.queueEvent(InputEvent.rightMouseUp(stageX, stageY));
-        } else {
-            inputState.setMouseDown(false);
-            inputState.queueEvent(InputEvent.mouseUp(stageX, stageY));
-        }
-    }
-
-    /**
-     * Handle a key press. Queues a KEY_DOWN event for dispatch during tick.
-     * @param directorKeyCode Director Mac virtual keycode (use DirectorKeyCodes to convert)
-     * @param keyChar the character string (e.g. "a", "A", "\r")
-     * @param shift shift modifier state
-     * @param ctrl control/command modifier state
-     * @param alt alt/option modifier state
-     */
-    public void onKeyDown(int directorKeyCode, String keyChar, boolean shift, boolean ctrl, boolean alt) {
-        inputState.setLastKey(keyChar);
-        inputState.setLastKeyCode(directorKeyCode);
-        inputState.setShiftDown(shift);
-        inputState.setControlDown(ctrl);
-        inputState.setAltDown(alt);
-        inputState.queueEvent(InputEvent.keyDown(directorKeyCode, keyChar));
-    }
-
-    /**
-     * Handle a key release. Queues a KEY_UP event for dispatch during tick.
-     */
-    public void onKeyUp(int directorKeyCode, String keyChar, boolean shift, boolean ctrl, boolean alt) {
-        inputState.setShiftDown(shift);
-        inputState.setControlDown(ctrl);
-        inputState.setAltDown(alt);
-        inputState.queueEvent(InputEvent.keyUp(directorKeyCode, keyChar));
-    }
-
-    /**
-     * Process queued input events. Called at the beginning of each tick
-     * before frame execution, so Lingo scripts see the events.
-     * Also dispatches mouseEnter/mouseLeave/mouseWithin based on rollover state.
-     */
-    private void processInputEvents() {
-        InputEvent event;
-        boolean hadEvents = false;
-        while ((event = inputState.pollEvent()) != null) {
-            dispatchInputEvent(event);
-            hadEvents = true;
-        }
-
-        // Dispatch mouseEnter/mouseLeave/mouseWithin based on current rollover sprite
-        dispatchRolloverEvents();
-
-        // Bump sprite revision so WASM SoftwareRenderer re-renders after input
-        // (input handlers may change member.text or other visual properties)
-        if (hadEvents) {
-            stageRenderer.getSpriteRegistry().bumpRevision();
-        }
-
-        // Drive caret blink counter when a field is focused
-        if (inputState.getKeyboardFocusSprite() > 0) {
-            inputState.incrementCaretBlink();
-        }
-    }
-
-    /**
-     * Dispatch mouseEnter, mouseLeave, and mouseWithin events based on rollover tracking.
-     * In Director, these fire every frame:
-     * - mouseLeave: when the mouse leaves a sprite's rect
-     * - mouseEnter: when the mouse enters a new sprite's rect
-     * - mouseWithin: every frame while the mouse is within a sprite's rect
-     */
-    private void dispatchRolloverEvents() {
-        EventDispatcher dispatcher = frameContext.getEventDispatcher();
-        int currentRollover = inputState.getRolloverSprite();
-
-        if (currentRollover != previousRolloverSprite) {
-            // Mouse moved to a different sprite (or off all sprites)
-            if (previousRolloverSprite > 0) {
-                dispatcher.dispatchSpriteEvent(previousRolloverSprite, PlayerEvent.MOUSE_LEAVE, List.of());
-            }
-            if (currentRollover > 0) {
-                dispatcher.dispatchSpriteEvent(currentRollover, PlayerEvent.MOUSE_ENTER, List.of());
-            }
-            previousRolloverSprite = currentRollover;
-        }
-
-        // mouseWithin fires every frame while mouse is over a sprite
-        if (currentRollover > 0) {
-            dispatcher.dispatchSpriteEvent(currentRollover, PlayerEvent.MOUSE_WITHIN, List.of());
-        }
-    }
-
-    /**
-     * Dispatch a single input event to the appropriate Lingo handlers.
-     */
-    private void dispatchInputEvent(InputEvent event) {
-        EventDispatcher dispatcher = frameContext.getEventDispatcher();
-        switch (event.type()) {
-            case MOUSE_DOWN -> {
-                int hitSprite = HitTester.hitTest(stageRenderer, getCurrentFrame(),
-                        event.stageX(), event.stageY());
-                // Director D6+: if the previously clicked sprite is different from
-                // the current one, send mouseUpOutSide to the old sprite (ScummVM behavior).
-                int lastClicked = inputState.getClickOnSprite();
-                if (lastClicked > 0 && lastClicked != hitSprite) {
-                    dispatcher.dispatchSpriteEvent(lastClicked, "mouseUpOutSide", List.of());
-                }
-                // Track which sprite was clicked so mouseUp can target it
-                inputState.setClickOnSprite(hitSprite);
-                // Built-in Director behavior: clicking on an editable text/field sprite
-                // automatically sets keyboardFocusSprite to that sprite's channel.
-                // Clicking elsewhere clears the keyboard focus.
-                autoFocusEditableField(hitSprite, event.stageX(), event.stageY());
-                if (hitSprite > 0) {
-                    dispatcher.dispatchSpriteEvent(hitSprite, PlayerEvent.MOUSE_DOWN, List.of());
-                }
-                dispatcher.dispatchGlobalEvent(PlayerEvent.MOUSE_DOWN, List.of());
-            }
-            case MOUSE_UP -> {
-                // Director dispatches mouseUp to the sprite currently under the mouse,
-                // NOT the sprite that received mouseDown (confirmed via ScummVM).
-                // mouseUpOutSide is dispatched on the NEXT mouseDown if the clicked
-                // sprite has changed (see MOUSE_DOWN case above).
-                int hitSprite = HitTester.hitTest(stageRenderer, getCurrentFrame(),
-                        event.stageX(), event.stageY());
-                if (hitSprite > 0) {
-                    dispatcher.dispatchSpriteEvent(hitSprite, PlayerEvent.MOUSE_UP, List.of());
-                }
-                dispatcher.dispatchGlobalEvent(PlayerEvent.MOUSE_UP, List.of());
-            }
-            case RIGHT_MOUSE_DOWN -> {
-                dispatcher.dispatchGlobalEvent(PlayerEvent.RIGHT_MOUSE_DOWN, List.of());
-            }
-            case RIGHT_MOUSE_UP -> {
-                dispatcher.dispatchGlobalEvent(PlayerEvent.RIGHT_MOUSE_UP, List.of());
-            }
-            case KEY_DOWN -> {
-                // Restore per-event key state so Lingo's "the key" / "the keyCode" read correctly
-                inputState.setLastKey(event.keyChar());
-                inputState.setLastKeyCode(event.keyCode());
-                int focusSprite = inputState.getKeyboardFocusSprite();
-                // Built-in editable field keyboard handling (Director inserts typed chars into member.text)
-                if (focusSprite > 0) {
-                    handleEditableFieldInput(focusSprite, event.keyChar());
-                    dispatcher.dispatchSpriteEvent(focusSprite, PlayerEvent.KEY_DOWN, List.of());
-                }
-                // Director dispatches keyDown to focused sprite → frame → movie scripts
-                // (NOT to all sprite behaviors — unlike mouseDown)
-                dispatcher.dispatchFrameAndMovieEvent(PlayerEvent.KEY_DOWN, List.of());
-            }
-            case KEY_UP -> {
-                inputState.setLastKey(event.keyChar());
-                inputState.setLastKeyCode(event.keyCode());
-                int focusSprite = inputState.getKeyboardFocusSprite();
-                if (focusSprite > 0) {
-                    dispatcher.dispatchSpriteEvent(focusSprite, PlayerEvent.KEY_UP, List.of());
-                }
-                dispatcher.dispatchFrameAndMovieEvent(PlayerEvent.KEY_UP, List.of());
-            }
-        }
-    }
-
-    /**
-     * Built-in Director behavior: clicking on an editable text/field sprite
-     * automatically sets keyboardFocusSprite to that sprite's channel.
-     * Clicking on a non-editable sprite or empty stage clears focus.
-     */
-    private void autoFocusEditableField(int hitChannel, int stageX, int stageY) {
-        if (hitChannel > 0) {
-            SpriteState sprite = stageRenderer.getSpriteRegistry().get(hitChannel);
-            if (sprite != null) {
-                int castLibNum = sprite.getEffectiveCastLib();
-                int memberNum = sprite.getEffectiveCastMember();
-                if (memberNum > 0) {
-                    CastMember member = castLibManager.getDynamicMember(castLibNum, memberNum);
-                    if (member != null && member.isEditable()
-                            && (member.getMemberType() == MemberType.TEXT)) {
-                        inputState.setKeyboardFocusSprite(hitChannel);
-                        // Convert stage coords to local member coords and find char position
-                        // Sprite top-left = locH - regPointX (matching renderer's coordinate system)
-                        int spriteX = sprite.getLocH() - member.getRegPointX();
-                        int spriteY = sprite.getLocV() - member.getRegPointY();
-                        int localX = stageX - spriteX;
-                        int localY = stageY - spriteY;
-                        int charPos = member.locToCharPos(localX, localY, sprite.getWidth());
-                        inputState.setSelStart(charPos);
-                        inputState.setSelEnd(charPos);
-                        inputState.resetCaretBlink();
-                        return;
-                    }
-                }
-            }
-        }
-        // Clicked on non-editable sprite or empty stage — clear focus
-        inputState.setKeyboardFocusSprite(0);
-    }
-
-    /**
-     * Built-in Director behavior: Tab cycles keyboard focus to the next (or previous
-     * with Shift+Tab) editable text sprite, ordered by channel number.
-     */
-    private void tabToNextField(int currentChannel, boolean reverse) {
-        // Collect all editable text sprite channels, sorted
-        java.util.List<Integer> editableChannels = new java.util.ArrayList<>();
-        for (var entry : stageRenderer.getSpriteRegistry().getAll().entrySet()) {
-            int ch = entry.getKey();
-            SpriteState s = entry.getValue();
-            if (s == null) continue;
-            int memberNum = s.getEffectiveCastMember();
-            if (memberNum <= 0) continue;
-            CastMember m = castLibManager.getDynamicMember(s.getEffectiveCastLib(), memberNum);
-            if (m != null && m.isEditable() && m.getMemberType() == MemberType.TEXT) {
-                editableChannels.add(ch);
-            }
-        }
-        if (editableChannels.isEmpty()) return;
-        java.util.Collections.sort(editableChannels);
-
-        int idx = editableChannels.indexOf(currentChannel);
-        int next;
-        if (reverse) {
-            next = idx <= 0 ? editableChannels.size() - 1 : idx - 1;
-        } else {
-            next = idx < 0 || idx >= editableChannels.size() - 1 ? 0 : idx + 1;
-        }
-        int nextChannel = editableChannels.get(next);
-        inputState.setKeyboardFocusSprite(nextChannel);
-        // Select all text in the newly focused field (Director convention)
-        CastMember nextMember = castLibManager.getDynamicMember(
-                stageRenderer.getSpriteRegistry().get(nextChannel).getEffectiveCastLib(),
-                stageRenderer.getSpriteRegistry().get(nextChannel).getEffectiveCastMember());
-        if (nextMember != null) {
-            String t = nextMember.getTextContent();
-            inputState.setSelStart(0);
-            inputState.setSelEnd(t != null ? t.length() : 0);
-        }
-        inputState.resetCaretBlink();
-    }
-
-    /**
-     * Built-in Director behavior: when keyboardFocusSprite is set and the sprite's
-     * member is an editable field/text, the engine inserts typed characters into member.text.
-     * Supports caret-aware editing with selStart/selEnd tracking.
-     */
-    private void handleEditableFieldInput(int channel, String keyChar) {
-        SpriteState sprite = stageRenderer.getSpriteRegistry().get(channel);
-        if (sprite == null) return;
-
-        int castLibNum = sprite.getEffectiveCastLib();
-        int memberNum = sprite.getEffectiveCastMember();
-        if (memberNum <= 0) return;
-
-        CastMember member = castLibManager.getDynamicMember(castLibNum, memberNum);
-        if (member == null) return;
-
-        MemberType type = member.getMemberType();
-        if (type != MemberType.TEXT && type != MemberType.BUTTON) return;
-        if (!member.isEditable()) return;
-
-        String text = member.getTextContent();
-        if (text == null) text = "";
-
-        int selStart = Math.max(0, Math.min(inputState.getSelStart(), text.length()));
-        int selEnd = Math.max(0, Math.min(inputState.getSelEnd(), text.length()));
-        int selMin = Math.min(selStart, selEnd);
-        int selMax = Math.max(selStart, selEnd);
-        int keyCode = inputState.getLastKeyCode();
-
-        if (keyCode == 51) {
-            // Backspace
-            if (selMin != selMax) {
-                text = text.substring(0, selMin) + text.substring(selMax);
-                selStart = selEnd = selMin;
-            } else if (selStart > 0) {
-                text = text.substring(0, selStart - 1) + text.substring(selStart);
-                selStart = selEnd = selStart - 1;
-            }
-            member.setDynamicText(text);
-        } else if (keyCode == 123) {
-            // Left arrow
-            selStart = selEnd = Math.max(0, selMin - (selMin == selMax ? 1 : 0));
-        } else if (keyCode == 124) {
-            // Right arrow
-            selStart = selEnd = Math.min(text.length(), selMax + (selMin == selMax ? 1 : 0));
-        } else if (keyCode == 48) {
-            // Tab — built-in Director behavior: cycle focus to next editable text field
-            tabToNextField(channel, inputState.isShiftDown());
-            return;
-        } else if (keyCode == 36) {
-            // Return — don't insert into text; let Lingo handle it
-            return;
-        } else if (keyChar != null && keyChar.length() == 1 && keyChar.charAt(0) >= ' ') {
-            // Printable character (exclude control chars like \t, \r)
-            text = text.substring(0, selMin) + keyChar + text.substring(selMax);
-            selStart = selEnd = selMin + 1;
-            member.setDynamicText(text);
-        } else {
-            // Non-printable, non-handled key — no caret reset needed
-            return;
-        }
-
-        inputState.setSelStart(selStart);
-        inputState.setSelEnd(selEnd);
-        inputState.resetCaretBlink();
-    }
-
-    /**
-     * Helper: get the focused editable field's sprite, member, and top-left coordinates.
-     * Returns null if no focused editable field.
-     */
-    private Object[] getFocusedFieldInfo() {
-        int focusChannel = inputState.getKeyboardFocusSprite();
-        if (focusChannel <= 0) return null;
-
-        SpriteState sprite = stageRenderer.getSpriteRegistry().get(focusChannel);
-        if (sprite == null) return null;
-
-        int castLibNum = sprite.getEffectiveCastLib();
-        int memberNum = sprite.getEffectiveCastMember();
-        if (memberNum <= 0) return null;
-
-        CastMember member = castLibManager.getDynamicMember(castLibNum, memberNum);
-        if (member == null || !member.isEditable()) return null;
-
-        return new Object[]{sprite, member};
-    }
-
-    /**
-     * Get caret rendering info for the currently focused editable field.
-     * Returns {x, y, height} in stage coordinates, or null if no caret should be shown.
-     */
-    public int[] getCaretInfo() {
-        if (!inputState.isCaretVisible()) return null;
-
-        Object[] info = getFocusedFieldInfo();
-        if (info == null) return null;
-        SpriteState sprite = (SpriteState) info[0];
-        CastMember member = (CastMember) info[1];
-
-        String text = member.getTextContent();
-        if (text == null) text = "";
-
-        int selStart = Math.max(0, Math.min(inputState.getSelStart(), text.length()));
-        int selEnd = Math.max(0, Math.min(inputState.getSelEnd(), text.length()));
-        // Don't show caret when there's a selection (the highlight is enough)
-        if (selStart != selEnd) return null;
-
-        TextRenderer renderer = member.getTextRenderer();
-        if (renderer == null) return null;
-
-        // charPosToLoc returns {x, y} where y = lineNum * lineHeight (line top)
-        int[] pos = renderer.charPosToLoc(text, selStart,
-                member.getTextFont(), member.getTextFontSize(),
-                member.getTextFontStyle(), member.getTextFixedLineSpace(),
-                member.getTextAlignment(), sprite.getWidth());
-        if (pos == null) return null;
-
-        int lineHeight = renderer.getLineHeight(member.getTextFont(),
-                member.getTextFontSize(), member.getTextFontStyle(),
-                member.getTextFixedLineSpace());
-
-        // Sprite top-left = locH - regPointX (matching renderer's coordinate system)
-        int spriteX = sprite.getLocH() - member.getRegPointX();
-        int spriteY = sprite.getLocV() - member.getRegPointY();
-        // pos[1] is line-top y (lineNum * lineHeight)
-        int caretX = spriteX + pos[0];
-        int caretY = spriteY + pos[1];
-
-        return new int[]{caretX, caretY, lineHeight};
-    }
-
-    /**
-     * Get selection highlight rectangles for the focused editable field.
-     * Returns array of {x, y, w, h} quads in stage coordinates, or null if no selection.
-     * Supports multi-line selections (one rect per line).
-     */
-    public int[] getSelectionInfo() {
-        Object[] info = getFocusedFieldInfo();
-        if (info == null) return null;
-        SpriteState sprite = (SpriteState) info[0];
-        CastMember member = (CastMember) info[1];
-
-        String text = member.getTextContent();
-        if (text == null) text = "";
-
-        int selStart = Math.max(0, Math.min(inputState.getSelStart(), text.length()));
-        int selEnd = Math.max(0, Math.min(inputState.getSelEnd(), text.length()));
-        if (selStart == selEnd) return null;
-
-        int selMin = Math.min(selStart, selEnd);
-        int selMax = Math.max(selStart, selEnd);
-
-        TextRenderer renderer = member.getTextRenderer();
-        if (renderer == null) return null;
-
-        String font = member.getTextFont();
-        int fontSize = member.getTextFontSize();
-        String fontStyle = member.getTextFontStyle();
-        int fls = member.getTextFixedLineSpace();
-
-        int lineHeight = renderer.getLineHeight(font, fontSize, fontStyle, fls);
-        // Sprite top-left = locH - regPointX (matching renderer's coordinate system)
-        int spriteX = sprite.getLocH() - member.getRegPointX();
-        int spriteY = sprite.getLocV() - member.getRegPointY();
-
-        // Get positions of selection start and end
-        String alignment = member.getTextAlignment();
-        int fieldWidth = sprite.getWidth();
-        int[] startPos = renderer.charPosToLoc(text, selMin, font, fontSize, fontStyle, fls, alignment, fieldWidth);
-        int[] endPos = renderer.charPosToLoc(text, selMax, font, fontSize, fontStyle, fls, alignment, fieldWidth);
-        if (startPos == null || endPos == null) return null;
-
-        int startLineY = startPos[1];
-        int endLineY = endPos[1];
-
-        if (startLineY == endLineY) {
-            // Single line selection
-            return new int[]{
-                spriteX + startPos[0], spriteY + startLineY,
-                endPos[0] - startPos[0], lineHeight
-            };
-        }
-
-        // Multi-line: first line from startX to sprite right edge,
-        // middle lines full width, last line from left edge to endX
-        java.util.List<int[]> rects = new java.util.ArrayList<>();
-        int spriteWidth = sprite.getWidth();
-
-        // First line
-        rects.add(new int[]{
-            spriteX + startPos[0], spriteY + startLineY,
-            spriteWidth - startPos[0], lineHeight
-        });
-        // Middle lines
-        for (int midY = startLineY + lineHeight; midY < endLineY; midY += lineHeight) {
-            rects.add(new int[]{spriteX, spriteY + midY, spriteWidth, lineHeight});
-        }
-        // Last line
-        rects.add(new int[]{spriteX, spriteY + endLineY, endPos[0], lineHeight});
-
-        int[] result = new int[rects.size() * 4];
-        for (int i = 0; i < rects.size(); i++) {
-            System.arraycopy(rects.get(i), 0, result, i * 4, 4);
-        }
-        return result;
-    }
-
-    /**
-     * Handle pasted text from clipboard. Inserts at caret position in focused editable field.
-     */
-    public void onPasteText(String pasteText) {
-        int focusChannel = inputState.getKeyboardFocusSprite();
-        if (focusChannel <= 0) return;
-
-        SpriteState sprite = stageRenderer.getSpriteRegistry().get(focusChannel);
-        if (sprite == null) return;
-
-        int castLibNum = sprite.getEffectiveCastLib();
-        int memberNum = sprite.getEffectiveCastMember();
-        if (memberNum <= 0) return;
-
-        CastMember member = castLibManager.getDynamicMember(castLibNum, memberNum);
-        if (member == null || !member.isEditable()) return;
-
-        String text = member.getTextContent();
-        if (text == null) text = "";
-
-        int selStart = Math.max(0, Math.min(inputState.getSelStart(), text.length()));
-        int selEnd = Math.max(0, Math.min(inputState.getSelEnd(), text.length()));
-        int selMin = Math.min(selStart, selEnd);
-        int selMax = Math.max(selStart, selEnd);
-
-        text = text.substring(0, selMin) + pasteText + text.substring(selMax);
-        int newPos = selMin + pasteText.length();
-        inputState.setSelStart(newPos);
-        inputState.setSelEnd(newPos);
-        inputState.resetCaretBlink();
-        member.setDynamicText(text);
-        stageRenderer.getSpriteRegistry().bumpRevision();
-    }
-
-    /**
-     * Get selected text from the focused editable field.
-     * If no selection (selStart == selEnd), returns the full text (Director convention).
-     */
-    public String getSelectedText() {
-        int focusChannel = inputState.getKeyboardFocusSprite();
-        if (focusChannel <= 0) return null;
-
-        SpriteState sprite = stageRenderer.getSpriteRegistry().get(focusChannel);
-        if (sprite == null) return null;
-
-        int castLibNum = sprite.getEffectiveCastLib();
-        int memberNum = sprite.getEffectiveCastMember();
-        if (memberNum <= 0) return null;
-
-        CastMember member = castLibManager.getDynamicMember(castLibNum, memberNum);
-        if (member == null) return null;
-
-        String text = member.getTextContent();
-        if (text == null || text.isEmpty()) return "";
-
-        int selStart = Math.max(0, Math.min(inputState.getSelStart(), text.length()));
-        int selEnd = Math.max(0, Math.min(inputState.getSelEnd(), text.length()));
-        if (selStart != selEnd) {
-            int selMin = Math.min(selStart, selEnd);
-            int selMax = Math.max(selStart, selEnd);
-            return text.substring(selMin, selMax);
-        }
-        return text; // No selection → copy all
-    }
-
-    /**
-     * Cut selected text: returns the selected text and deletes it from the field.
-     * If no selection, cuts all text.
-     */
-    public String cutSelectedText() {
-        int focusChannel = inputState.getKeyboardFocusSprite();
-        if (focusChannel <= 0) return null;
-
-        SpriteState sprite = stageRenderer.getSpriteRegistry().get(focusChannel);
-        if (sprite == null) return null;
-
-        int castLibNum = sprite.getEffectiveCastLib();
-        int memberNum = sprite.getEffectiveCastMember();
-        if (memberNum <= 0) return null;
-
-        CastMember member = castLibManager.getDynamicMember(castLibNum, memberNum);
-        if (member == null || !member.isEditable()) return null;
-
-        String text = member.getTextContent();
-        if (text == null || text.isEmpty()) return "";
-
-        int selStart = Math.max(0, Math.min(inputState.getSelStart(), text.length()));
-        int selEnd = Math.max(0, Math.min(inputState.getSelEnd(), text.length()));
-        int selMin = Math.min(selStart, selEnd);
-        int selMax = Math.max(selStart, selEnd);
-
-        String cutText;
-        if (selMin != selMax) {
-            cutText = text.substring(selMin, selMax);
-            text = text.substring(0, selMin) + text.substring(selMax);
-            inputState.setSelStart(selMin);
-            inputState.setSelEnd(selMin);
-        } else {
-            // No selection → cut all
-            cutText = text;
-            text = "";
-            inputState.setSelStart(0);
-            inputState.setSelEnd(0);
-        }
-        inputState.resetCaretBlink();
-        member.setDynamicText(text);
-        stageRenderer.getSpriteRegistry().bumpRevision();
-        return cutText;
-    }
-
-    /**
-     * Select all text in the focused editable field.
-     */
-    public void selectAll() {
-        int focusChannel = inputState.getKeyboardFocusSprite();
-        if (focusChannel <= 0) return;
-
-        SpriteState sprite = stageRenderer.getSpriteRegistry().get(focusChannel);
-        if (sprite == null) return;
-
-        int castLibNum = sprite.getEffectiveCastLib();
-        int memberNum = sprite.getEffectiveCastMember();
-        if (memberNum <= 0) return;
-
-        CastMember member = castLibManager.getDynamicMember(castLibNum, memberNum);
-        if (member == null) return;
-
-        String text = member.getTextContent();
-        int len = text != null ? text.length() : 0;
-        inputState.setSelStart(0);
-        inputState.setSelEnd(len);
-        inputState.resetCaretBlink();
-    }
 
     /**
      * Shutdown the player and release resources.

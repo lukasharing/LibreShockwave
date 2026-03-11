@@ -215,9 +215,9 @@ public class MultiuserXtraTest {
     private static void clickSprite(Player player, com.libreshockwave.player.sprite.SpriteState sprite) {
         int cx = sprite.getLocH() + sprite.getWidth() / 2;
         int cy = sprite.getLocV() + sprite.getHeight() / 2;
-        player.onMouseDown(cx, cy, false);
+        player.getInputHandler().onMouseDown(cx, cy, false);
         player.tick();
-        player.onMouseUp(cx, cy, false);
+        player.getInputHandler().onMouseUp(cx, cy, false);
         player.tick();
     }
 
@@ -229,8 +229,8 @@ public class MultiuserXtraTest {
             else if (c >= '0' && c <= '9') javaVK = 48 + (c - '0');
             else javaVK = (int) c;
             int directorCode = com.libreshockwave.player.input.DirectorKeyCodes.fromJavaKeyCode(javaVK);
-            player.onKeyDown(directorCode, String.valueOf(c), false, false, false);
-            player.onKeyUp(directorCode, String.valueOf(c), false, false, false);
+            player.getInputHandler().onKeyDown(directorCode, String.valueOf(c), false, false, false);
+            player.getInputHandler().onKeyUp(directorCode, String.valueOf(c), false, false, false);
             player.tick();
         }
     }

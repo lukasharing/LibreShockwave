@@ -98,7 +98,7 @@ public class StagePanel extends JPanel {
                 int sx = toStageX(e.getX());
                 int sy = toStageY(e.getY());
                 boolean right = SwingUtilities.isRightMouseButton(e);
-                player.onMouseDown(sx, sy, right);
+                player.getInputHandler().onMouseDown(sx, sy, right);
             }
 
             @Override
@@ -107,7 +107,7 @@ public class StagePanel extends JPanel {
                 int sx = toStageX(e.getX());
                 int sy = toStageY(e.getY());
                 boolean right = SwingUtilities.isRightMouseButton(e);
-                player.onMouseUp(sx, sy, right);
+                player.getInputHandler().onMouseUp(sx, sy, right);
             }
         });
 
@@ -115,14 +115,14 @@ public class StagePanel extends JPanel {
             @Override
             public void mouseMoved(MouseEvent e) {
                 if (player == null) return;
-                player.onMouseMove(toStageX(e.getX()), toStageY(e.getY()));
+                player.getInputHandler().onMouseMove(toStageX(e.getX()), toStageY(e.getY()));
             }
 
             @Override
             public void mouseDragged(MouseEvent e) {
                 if (player == null) return;
                 // During drag, update mouse position (Director tracks mouse continuously)
-                player.onMouseMove(toStageX(e.getX()), toStageY(e.getY()));
+                player.getInputHandler().onMouseMove(toStageX(e.getX()), toStageY(e.getY()));
             }
         });
 
@@ -135,7 +135,7 @@ public class StagePanel extends JPanel {
 
                 int directorCode = DirectorKeyCodes.fromJavaKeyCode(e.getKeyCode());
                 String ch = keyEventToString(e);
-                player.onKeyDown(directorCode, ch,
+                player.getInputHandler().onKeyDown(directorCode, ch,
                         e.isShiftDown(), e.isControlDown(), e.isAltDown());
             }
 
@@ -146,7 +146,7 @@ public class StagePanel extends JPanel {
 
                 int directorCode = DirectorKeyCodes.fromJavaKeyCode(e.getKeyCode());
                 String ch = keyEventToString(e);
-                player.onKeyUp(directorCode, ch,
+                player.getInputHandler().onKeyUp(directorCode, ch,
                         e.isShiftDown(), e.isControlDown(), e.isAltDown());
             }
         });

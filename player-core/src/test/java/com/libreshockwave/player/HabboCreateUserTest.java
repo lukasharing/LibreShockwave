@@ -145,9 +145,9 @@ public class HabboCreateUserTest {
         int cy = hitY >= 0 ? hitY : sy + sh / 2;
         System.out.printf("\n=== Clicking Create User at (%d, %d) ===%n", cx, cy);
         handlerTrace.clear();
-        player.onMouseDown(cx, cy, false);
+        player.getInputHandler().onMouseDown(cx, cy, false);
         player.tick();
-        player.onMouseUp(cx, cy, false);
+        player.getInputHandler().onMouseUp(cx, cy, false);
         player.tick();
 
         // Tick and watch for registration-related handlers
@@ -200,9 +200,9 @@ public class HabboCreateUserTest {
     private static void clickSprite(Player player, SpriteState sprite) {
         int cx = sprite.getLocH() + sprite.getWidth() / 2;
         int cy = sprite.getLocV() + sprite.getHeight() / 2;
-        player.onMouseDown(cx, cy, false);
+        player.getInputHandler().onMouseDown(cx, cy, false);
         player.tick();
-        player.onMouseUp(cx, cy, false);
+        player.getInputHandler().onMouseUp(cx, cy, false);
         player.tick();
     }
 

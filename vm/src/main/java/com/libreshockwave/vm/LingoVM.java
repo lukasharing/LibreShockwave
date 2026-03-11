@@ -54,17 +54,11 @@ public class LingoVM {
     // DURING long-running handlers like the dump, not just after they complete.
     private static Runnable gcCallback;
 
-    // Track if we're currently inside an error handler to prevent recursive error handling
-    private int errorHandlerDepth = 0;
-    private static final Set<String> ERROR_HANDLER_NAMES = Set.of(
-        "alerthook"
-    );
-
-    // Debug callback for error handler depth tracing and handler call tracing
-    private java.util.function.Consumer<String> errorHandlerSkipCallback;
+    // AlertHook handling (error suppression via Lingo's alertHook mechanism)
+    private final AlertHookHandler alertHookHandler = new AlertHookHandler();
 
     public void setErrorHandlerSkipCallback(java.util.function.Consumer<String> callback) {
-        this.errorHandlerSkipCallback = callback;
+        alertHookHandler.setErrorHandlerSkipCallback(callback);
     }
 
     // Function trace hooks: when a handler name (lowercase) is in this set,
@@ -317,21 +311,11 @@ public class LingoVM {
         // Prevent recursive error handling - if we're already in an error handler
         // and trying to call another error handler, return VOID
         String handlerName = script.getHandlerName(handler);
-        String hn = handlerName.toLowerCase();
-        boolean isErrorHandler = ERROR_HANDLER_NAMES.contains(hn);
-        if (isErrorHandler && errorHandlerDepth > 0) {
-            // Already in an error handler, skip recursive call
-            if (errorHandlerSkipCallback != null) {
-                errorHandlerSkipCallback.accept("SKIP:" + handlerName + " depth=" + errorHandlerDepth);
-            }
+        boolean isErrorHandler = alertHookHandler.isErrorHandler(handlerName);
+        if (isErrorHandler && alertHookHandler.shouldSkipErrorHandler(handlerName, args)) {
             return Datum.VOID;
         }
-        if (isErrorHandler) {
-            if (errorHandlerSkipCallback != null) {
-                String argStr = args.size() > 1 ? " msg=" + args.get(1) : "";
-                errorHandlerSkipCallback.accept("ENTER:" + handlerName + " depth=" + errorHandlerDepth + argStr);
-            }
-        }
+        String hn = handlerName.toLowerCase();
 
         if (callStack.size() >= MAX_CALL_STACK_DEPTH) {
             throw new LingoException("Call stack overflow (max " + MAX_CALL_STACK_DEPTH + " frames)");
@@ -377,7 +361,7 @@ public class LingoVM {
 
         // Track error handler depth
         if (isErrorHandler) {
-            errorHandlerDepth++;
+            alertHookHandler.incrementDepth();
         }
 
         // Notify trace listener of handler entry
@@ -481,7 +465,7 @@ public class LingoVM {
             }
             callStack.pop();
             if (isErrorHandler) {
-                errorHandlerDepth--;
+                alertHookHandler.decrementDepth();
             }
         }
         return result;
@@ -512,65 +496,10 @@ public class LingoVM {
 
     /**
      * Fire the alertHook handler if one is set.
-     * In Director, "the alertHook" is set to a script instance that has an "alertHook" handler.
-     * When a script error occurs, Director calls that handler with the error message.
-     * If the handler returns true, the error is suppressed.
-     *
-     * @param errorMsg The error message to pass to the handler
-     * @return true if the error was handled (suppressed), false otherwise
+     * Delegates to AlertHookHandler.
      */
     public boolean fireAlertHook(String errorMsg) {
-        if (errorHandlerDepth > 0) {
-            return false; // Prevent recursion
-        }
-
-        var provider = com.libreshockwave.vm.builtin.movie.MoviePropertyProvider.getProvider();
-        if (provider == null) {
-            return false;
-        }
-
-        Datum hookValue = provider.getMovieProp("alertHook");
-        if (hookValue == null || hookValue.isVoid()) {
-            return false;
-        }
-
-        if (!(hookValue instanceof Datum.ScriptInstance hookInstance)) {
-            return false;
-        }
-
-        // Find the "alertHook" handler in the instance's script
-        Datum.ScriptRef scriptRef = null;
-        Datum scriptRefDatum = hookInstance.properties().get(Datum.PROP_SCRIPT_REF);
-        if (scriptRefDatum instanceof Datum.ScriptRef sr) {
-            scriptRef = sr;
-        }
-
-        var castProvider = com.libreshockwave.vm.builtin.cast.CastLibProvider.getProvider();
-        if (castProvider == null) {
-            return false;
-        }
-
-        com.libreshockwave.vm.builtin.cast.CastLibProvider.HandlerLocation location;
-        if (scriptRef != null) {
-            location = castProvider.findHandlerInScript(scriptRef.castLibNum(), scriptRef.memberNum(), "alertHook");
-        } else {
-            location = castProvider.findHandlerInScript(hookInstance.scriptId(), "alertHook");
-        }
-
-        if (location == null || !(location.script() instanceof ScriptChunk script)
-                || !(location.handler() instanceof ScriptChunk.Handler handler)) {
-            return false;
-        }
-
-        try {
-            List<Datum> alertArgs = List.of(Datum.of(errorMsg));
-            Datum result = executeHandler(script, handler, alertArgs, hookInstance);
-            return result != null && result.isTruthy();
-        } catch (Exception e) {
-            // alertHook itself failed — don't suppress original error
-            System.err.println("[LingoVM] alertHook handler failed: " + e.getMessage());
-            return false;
-        }
+        return alertHookHandler.fireAlertHook(errorMsg, this::executeHandler);
     }
 
     /**

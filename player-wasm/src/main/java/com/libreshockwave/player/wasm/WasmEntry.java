@@ -315,7 +315,7 @@ public class WasmEntry {
     public static int getCursorType() {
         if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return 0;
         try {
-            return wasmPlayer.getPlayer().getCursorAtMouse();
+            return wasmPlayer.getPlayer().getCursorManager().getCursorAtMouse();
         } catch (Throwable e) {
             return 0;
         }
@@ -392,7 +392,7 @@ public class WasmEntry {
             return 0;
         }
         try {
-            com.libreshockwave.bitmap.Bitmap cursorBmp = wasmPlayer.getPlayer().getCursorBitmap();
+            com.libreshockwave.bitmap.Bitmap cursorBmp = wasmPlayer.getPlayer().getCursorManager().getCursorBitmap();
             if (cursorBmp == null) {
                 cursorBitmapBuffer = null;
                 return 0;
@@ -402,7 +402,7 @@ public class WasmEntry {
             int[] pixels = cursorBmp.getPixels();
             int depth = cursorBmp.getBitDepth();
 
-            int[] regPoint = wasmPlayer.getPlayer().getCursorRegPoint();
+            int[] regPoint = wasmPlayer.getPlayer().getCursorManager().getCursorRegPoint();
             cursorRegX = regPoint != null ? regPoint[0] : 0;
             cursorRegY = regPoint != null ? regPoint[1] : 0;
             cursorBitmapWidth = w;
@@ -478,7 +478,7 @@ public class WasmEntry {
     @Export(name = "isCaretVisible")
     public static int isCaretVisible() {
         if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return 0;
-        caretInfo = wasmPlayer.getPlayer().getCaretInfo();
+        caretInfo = wasmPlayer.getPlayer().getInputHandler().getCaretInfo();
         return caretInfo != null ? 1 : 0;
     }
 
@@ -498,7 +498,7 @@ public class WasmEntry {
     @Export(name = "getSelectionRectCount")
     public static int getSelectionRectCount() {
         if (wasmPlayer == null || wasmPlayer.getPlayer() == null) { selectionInfo = null; return 0; }
-        selectionInfo = wasmPlayer.getPlayer().getSelectionInfo();
+        selectionInfo = wasmPlayer.getPlayer().getInputHandler().getSelectionInfo();
         return selectionInfo != null ? selectionInfo.length / 4 : 0;
     }
 
@@ -520,7 +520,7 @@ public class WasmEntry {
     public static void pasteText(int textLen) {
         if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return;
         String text = textLen > 0 ? new String(stringBuffer, 0, Math.min(textLen, stringBuffer.length)) : "";
-        if (!text.isEmpty()) wasmPlayer.getPlayer().onPasteText(text);
+        if (!text.isEmpty()) wasmPlayer.getPlayer().getInputHandler().onPasteText(text);
     }
 
     // === Copy text (JS reads selected text from WASM) ===
@@ -528,7 +528,7 @@ public class WasmEntry {
     @Export(name = "getSelectedTextLength")
     public static int getSelectedTextLength() {
         if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return 0;
-        String text = wasmPlayer.getPlayer().getSelectedText();
+        String text = wasmPlayer.getPlayer().getInputHandler().getSelectedText();
         if (text == null || text.isEmpty()) return 0;
         byte[] utf8 = text.getBytes();
         int len = Math.min(utf8.length, stringBuffer.length);
@@ -541,7 +541,7 @@ public class WasmEntry {
     @Export(name = "cutSelectedText")
     public static int cutSelectedText() {
         if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return 0;
-        String text = wasmPlayer.getPlayer().cutSelectedText();
+        String text = wasmPlayer.getPlayer().getInputHandler().cutSelectedText();
         if (text == null || text.isEmpty()) return 0;
         byte[] utf8 = text.getBytes();
         int len = Math.min(utf8.length, stringBuffer.length);
@@ -554,7 +554,7 @@ public class WasmEntry {
     @Export(name = "selectAll")
     public static void selectAll() {
         if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return;
-        wasmPlayer.getPlayer().selectAll();
+        wasmPlayer.getPlayer().getInputHandler().selectAll();
     }
 
     // === Network polling (JS reads pending requests from WASM) ===
@@ -849,7 +849,7 @@ public class WasmEntry {
     @Export(name = "mouseMove")
     public static void mouseMove(int stageX, int stageY) {
         if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return;
-        wasmPlayer.getPlayer().onMouseMove(stageX, stageY);
+        wasmPlayer.getPlayer().getInputHandler().onMouseMove(stageX, stageY);
     }
 
     private static String lastDebugHitInfo = "";
@@ -984,7 +984,7 @@ public class WasmEntry {
     @Export(name = "mouseDown")
     public static void mouseDown(int stageX, int stageY, int button) {
         if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return;
-        wasmPlayer.getPlayer().onMouseDown(stageX, stageY, button == 2);
+        wasmPlayer.getPlayer().getInputHandler().onMouseDown(stageX, stageY, button == 2);
     }
 
     /**
@@ -994,7 +994,7 @@ public class WasmEntry {
     @Export(name = "mouseUp")
     public static void mouseUp(int stageX, int stageY, int button) {
         if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return;
-        wasmPlayer.getPlayer().onMouseUp(stageX, stageY, button == 2);
+        wasmPlayer.getPlayer().getInputHandler().onMouseUp(stageX, stageY, button == 2);
     }
 
     /**
@@ -1008,7 +1008,7 @@ public class WasmEntry {
         if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return;
         String keyChar = keyCharLen > 0 ? new String(stringBuffer, 0, keyCharLen) : "";
         int directorCode = com.libreshockwave.player.input.DirectorKeyCodes.fromBrowserKeyCode(browserKeyCode);
-        wasmPlayer.getPlayer().onKeyDown(directorCode, keyChar,
+        wasmPlayer.getPlayer().getInputHandler().onKeyDown(directorCode, keyChar,
                 (modifiers & 1) != 0, (modifiers & 2) != 0, (modifiers & 4) != 0);
     }
 
@@ -1023,7 +1023,7 @@ public class WasmEntry {
         if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return;
         String keyChar = keyCharLen > 0 ? new String(stringBuffer, 0, keyCharLen) : "";
         int directorCode = com.libreshockwave.player.input.DirectorKeyCodes.fromBrowserKeyCode(browserKeyCode);
-        wasmPlayer.getPlayer().onKeyUp(directorCode, keyChar,
+        wasmPlayer.getPlayer().getInputHandler().onKeyUp(directorCode, keyChar,
                 (modifiers & 1) != 0, (modifiers & 2) != 0, (modifiers & 4) != 0);
     }
 
