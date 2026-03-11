@@ -473,6 +473,22 @@ public class NetManager implements NetBuiltins.NetProvider {
             }
         }
 
+        // No extension (e.g. "hosts") — try .cct and .cst as cast fallbacks
+        if (!fileName.contains(".")) {
+            String baseName = path.getFileName().toString();
+            Path parent = path.getParent();
+
+            Path cctPath = parent != null ? parent.resolve(baseName + ".cct") : Path.of(baseName + ".cct");
+            if (Files.exists(cctPath)) {
+                return cctPath;
+            }
+
+            Path cstPath = parent != null ? parent.resolve(baseName + ".cst") : Path.of(baseName + ".cst");
+            if (Files.exists(cstPath)) {
+                return cstPath;
+            }
+        }
+
         // File not found with any extension
         return null;
     }
