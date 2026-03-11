@@ -1,6 +1,7 @@
 package com.libreshockwave.player;
 
 import com.libreshockwave.DirectorFile;
+import com.libreshockwave.util.FileUtil;
 import com.libreshockwave.bitmap.Bitmap;
 import com.libreshockwave.chunks.ScriptChunk;
 import com.libreshockwave.chunks.ScriptNamesChunk;
@@ -488,8 +489,10 @@ public class Player {
         for (var entry : castLibManager.getCastLibs().entrySet()) {
             var castLib = entry.getValue();
             if (castLib.isExternal() && !castLib.isLoaded() && !castLib.isFetching()) {
-                String fileName = castLib.getFileName();
-                if (fileName != null && !fileName.isEmpty()) {
+                String rawPath = castLib.getFileName();
+                if (rawPath != null && !rawPath.isEmpty()) {
+                    // Normalize Mac colon-separated paths (e.g. "Sulake:...:mobiles.cct") to just filename
+                    String fileName = FileUtil.getFileName(rawPath);
                     castLib.markFetching();
                     provider.preloadNetThing(fileName);
                     count++;

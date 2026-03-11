@@ -49,6 +49,12 @@ public class FileUtil {
             String base = url.substring(0, url.length() - 4);
             return new String[] { url, base + ".dcr", base + ".dxr", base + ".dir" };
         }
+        // No recognized extension (e.g. "hosts") — try .cct and .cst as cast fallbacks.
+        // Check the filename portion only (URL may contain dots in hostname).
+        String fileName = getFileName(url);
+        if (fileName != null && !fileName.contains(".")) {
+            return new String[] { url + ".cct", url + ".cst" };
+        }
         return new String[] { url };
     }
 

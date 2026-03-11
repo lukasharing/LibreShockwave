@@ -206,11 +206,8 @@ public class QueuedNetProvider implements NetBuiltins.NetProvider {
         }
 
         // Extract just the filename (strip any path from the author's machine)
-        String fileName = url;
-        int lastSlash = Math.max(url.lastIndexOf('/'), url.lastIndexOf('\\'));
-        if (lastSlash >= 0) {
-            fileName = url.substring(lastSlash + 1);
-        }
+        // Handles /, \, and : (Mac-style Director paths like "Sulake:...:file.cct")
+        String fileName = FileUtil.getFileName(url);
 
         // Resolve against basePath
         if (basePath != null && !basePath.isEmpty()) {
