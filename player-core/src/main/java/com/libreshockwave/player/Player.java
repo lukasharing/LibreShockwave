@@ -667,6 +667,7 @@ public class Player {
      */
     public void setTempo(int tempo) {
         this.tempo = tempo > 0 ? tempo : 15;
+        inputState.setCaretBlinkRate(this.tempo);
     }
 
     /**

@@ -112,10 +112,13 @@ public class InputState {
 
     // --- Caret blink ---
 
+    private volatile int caretBlinkRate = 8; // ticks per half-cycle (~530ms at 15fps)
     public void incrementCaretBlink() { caretBlinkCounter++; }
     public void resetCaretBlink() { caretBlinkCounter = 0; }
-    /** Visible during first half of each blink cycle (15 ticks ~ 500ms at 30fps). */
-    public boolean isCaretVisible() { return keyboardFocusSprite > 0 && (caretBlinkCounter / 15) % 2 == 0; }
+    /** Update blink rate based on movie tempo (fps). Targets ~530ms per half-cycle. */
+    public void setCaretBlinkRate(int tempo) { caretBlinkRate = Math.max(1, (tempo * 530 + 500) / 1000); }
+    /** Visible during first half of each blink cycle. */
+    public boolean isCaretVisible() { return keyboardFocusSprite > 0 && (caretBlinkCounter / caretBlinkRate) % 2 == 0; }
 
     // --- Event queue ---
 
