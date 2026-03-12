@@ -17,6 +17,7 @@ package com.libreshockwave.cast;
 public class XmedTextParser {
 
     public record XmedText(String text, String fontName, int fontSize, int fontStyle,
+                              String alignment,
                               int colorR, int colorG, int colorB) {}
 
     /**
@@ -44,10 +45,15 @@ public class XmedTextParser {
         int[] fontSizeAndStyle = extractFontSizeAndStyle(data, ascii);
         int[] color = extractColor(data, ascii);
 
+        // Extract paragraph alignment from XMED data
+        String alignment = extractAlignment(data, ascii);
+
         return new XmedText(text, fontName != null ? fontName : "Geneva",
                 fontSizeAndStyle[0], fontSizeAndStyle[1],
+                alignment != null ? alignment : "left",
                 color[0], color[1], color[2]);
     }
+
 
     /**
      * Extract text content from XMED data.
@@ -324,6 +330,57 @@ public class XmedTextParser {
             }
         }
         return sb.toString();
+    }
+
+    /**
+     * Extract paragraph alignment from XMED section 0005.
+     * Section 0005 contains paragraph alignment runs: ^offset|value entries.
+     * Values: 1 = center, 0 = left. High bit (0x80) is a flag — 0x81 = left.
+     * Director alignment: 0=left, 1=center, -1=right.
+     */
+    private static String extractAlignment(byte[] data, String ascii) {
+        // Find section 0005 (paragraph alignment) after offset 100 to skip header
+        int searchFrom = 100;
+        int idx = ascii.indexOf("0005", searchFrom);
+        if (idx < 0) idx = ascii.indexOf("0005");
+        if (idx < 0 || idx + 24 >= data.length) return null;
+
+        // Validate: followed by 8-char hex length + 8-char hex count
+        String lenStr = ascii.substring(idx + 4, Math.min(idx + 12, ascii.length()));
+        if (!lenStr.matches("[0-9A-Fa-f]+")) return null;
+
+        // Skip tag(4) + length(8) + count(8) = 20, then read first entry
+        int bodyStart = idx + 20;
+        if (bodyStart >= data.length || data[bodyStart] != 0x02) return null;
+
+        // First entry: ^offset(value) — skip offset to find value after 0x01 or raw byte
+        for (int i = bodyStart + 1; i < Math.min(bodyStart + 10, data.length); i++) {
+            if (data[i] == 0x01) {
+                // Value follows as ASCII hex digit(s)
+                if (i + 1 < data.length) {
+                    int val = data[i + 1] & 0xFF;
+                    if (val >= '0' && val <= '9') val = val - '0';
+                    else if (val >= 'A' && val <= 'F') val = val - 'A' + 10;
+                    else if (val >= 'a' && val <= 'f') val = val - 'a' + 10;
+                    return switch (val & 0x7F) {
+                        case 1 -> "center";
+                        case 2 -> "right";
+                        default -> "left";
+                    };
+                }
+                break;
+            }
+            // Raw high byte (0x80+) after offset = value with high-bit flag
+            int b = data[i] & 0xFF;
+            if (b >= 0x80) {
+                return switch (b & 0x7F) {
+                    case 1 -> "center";
+                    case 2 -> "right";
+                    default -> "left";
+                };
+            }
+        }
+        return null;
     }
 
     private static final char[] MAC_ROMAN = {

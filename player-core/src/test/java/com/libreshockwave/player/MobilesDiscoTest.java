@@ -338,6 +338,42 @@ System.out.println("\n=== Starting playback ===");
         }
         System.out.printf("Text area diff breakdown: ref=white/us=dark=%d ref=dark/us=white=%d other=%d%n",
                 textWhiteVsGray, textGrayVsWhite, textOther);
+
+        // Per-sprite text alignment analysis: find first/last white pixel X in each text sprite region
+        int[][] textSprites = {
+            {481, 482, 81, 22, 8},   // CREDITS <<
+            {432, 295, 34, 11, 15},  // User :
+            {409, 320, 58, 11, 16},  // Password :
+            {189, 418, 374, 66, 17}, // WELCOME !!!
+            {451, 265, 116, 22, 18}, // ENTER THE DISCO:
+            {316, 367, 253, 22, 19}, // Not registered yet?
+            {236, 385, 349, 22, 21}, // Want to modify?
+            {513, 345, 73, 17, 25},  // Login!! >>
+        };
+        System.out.println("\nPer-sprite text alignment (first/last white pixel X offset within sprite):");
+        for (int[] sp : textSprites) {
+            int sx = sp[0], sy = sp[1], sw = sp[2], sh = sp[3], ch = sp[4];
+            int rendFirstX = -1, rendLastX = -1, refFirstX = -1, refLastX = -1;
+            for (int y = sy; y < Math.min(sy + sh, h); y++) {
+                for (int x = sx; x < Math.min(sx + sw, w); x++) {
+                    int rend = rendered.getRGB(x, y) & 0xFFFFFF;
+                    int ref = reference.getRGB(x, y) & 0xFFFFFF;
+                    if (rend > 0xC0C0C0) { // white-ish pixel (text)
+                        int xOff = x - sx;
+                        if (rendFirstX < 0) rendFirstX = xOff;
+                        rendLastX = xOff;
+                    }
+                    if (ref > 0xC0C0C0) {
+                        int xOff = x - sx;
+                        if (refFirstX < 0) refFirstX = xOff;
+                        refLastX = xOff;
+                    }
+                }
+            }
+            System.out.printf("  ch=%d (%dx%d): rend=[%d..%d] ref=[%d..%d] shift=%d%n",
+                    ch, sw, sh, rendFirstX, rendLastX, refFirstX, refLastX,
+                    rendFirstX >= 0 && refFirstX >= 0 ? rendFirstX - refFirstX : 0);
+        }
     }
 
     private static int maxChannelDiff(int p1, int p2) {
