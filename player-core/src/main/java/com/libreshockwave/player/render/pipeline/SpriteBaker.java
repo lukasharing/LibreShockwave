@@ -317,6 +317,7 @@ public class SpriteBaker {
             return null;
         }
 
+
         var renderer = CastMember.getTextRendererStatic();
         if (renderer == null) return null;
 
@@ -339,12 +340,14 @@ public class SpriteBaker {
         // Empirically, XMED 12pt maps to AWT ~10pt for best pixel match.
         int renderFontSize = Math.max(6, Math.round(xmedText.fontSize() * 5f / 6f));
 
+        // Director's font ascent for Geneva 12pt (72 DPI) is ~1px less than Java AWT's
+        // ascent for SansSerif 10pt. Shift text up 1px to align glyph positions.
         return renderer.renderText(
                 xmedText.text(), width, height,
                 xmedText.fontName(), renderFontSize, "",
                 "left", textColor, bgColor,
                 true, false,
-                0, 0);
+                0, -1);
     }
 
     /**
@@ -517,4 +520,5 @@ public class SpriteBaker {
 
         return shape;
     }
+
 }
