@@ -137,6 +137,7 @@ public final class RenderSprite {
         SHAPE,
         TEXT,
         BUTTON,
+        FILM_LOOP,
         UNKNOWN
     }
 }

@@ -118,6 +118,10 @@ public record ScoreChunk(
         }
 
         public static ChannelData read(BinaryReader reader) {
+            return read(reader, 28);
+        }
+
+        public static ChannelData read(BinaryReader reader, int spriteRecordSize) {
             int spriteType = reader.readU8();
             // D7: ink is bits 0-5; bit 6 = trails, bit 7 = stretch
             int inkByte = reader.readU8();
@@ -132,17 +136,27 @@ public record ScoreChunk(
             int posX = reader.readU16();
             int height = reader.readU16();
             int width = reader.readU16();
+            // 20 bytes read so far
 
-            // Extended color data
-            int unk3 = reader.readU8();
-            int colorFlag = (unk3 & 0xF0) >> 4;
-            reader.readU8(); // unk4
-            reader.readU8(); // unk5
-            reader.readU8(); // unk6
-            int foreColorG = reader.readU8();
-            int backColorG = reader.readU8();
-            int foreColorB = reader.readU8();
-            int backColorB = reader.readU8();
+            int colorFlag = 0;
+            int foreColorG = 0, backColorG = 0, foreColorB = 0, backColorB = 0;
+
+            if (spriteRecordSize >= 24) {
+                // Bytes 20-23: colorFlag and unknown bytes
+                int unk3 = reader.readU8();
+                colorFlag = (unk3 & 0xF0) >> 4;
+                reader.readU8(); // unk4
+                reader.readU8(); // unk5
+                reader.readU8(); // unk6
+            }
+
+            if (spriteRecordSize >= 28) {
+                // Bytes 24-27: extended RGB color components
+                foreColorG = reader.readU8();
+                backColorG = reader.readU8();
+                foreColorB = reader.readU8();
+                backColorB = reader.readU8();
+            }
 
             return new ChannelData(
                 spriteType, ink, foreColor, backColor,
@@ -158,17 +172,27 @@ public record ScoreChunk(
                 && height == 0 && width == 0;
         }
 
-        /** Resolve foreColor: assemble RGB when colorFlag/G/B indicate it, else palette index. */
+        /** Resolve foreColor: assemble RGB only when colorFlag bit 0 is explicitly set. */
         public int resolvedForeColor() {
-            if ((colorFlag & 0x1) != 0 || foreColorG != 0 || foreColorB != 0) {
+            if ((colorFlag & 0x1) != 0) {
                 return (foreColor << 16) | (foreColorG << 8) | foreColorB;
             }
             return foreColor;
         }
 
-        /** Resolve backColor: assemble RGB when colorFlag/G/B indicate it, else palette index. */
+        /** Whether foreColor is an explicit RGB value (colorFlag bit 0 set). */
+        public boolean isForeColorRGB() {
+            return (colorFlag & 0x1) != 0;
+        }
+
+        /** Whether backColor is an explicit RGB value (colorFlag bit 1 set). */
+        public boolean isBackColorRGB() {
+            return (colorFlag & 0x2) != 0;
+        }
+
+        /** Resolve backColor: assemble RGB only when colorFlag bit 1 is explicitly set. */
         public int resolvedBackColor() {
-            if ((colorFlag & 0x2) != 0 || backColorG != 0 || backColorB != 0) {
+            if ((colorFlag & 0x2) != 0) {
                 return (backColor << 16) | (backColorG << 8) | backColorB;
             }
             return backColor;
@@ -494,7 +518,7 @@ public record ScoreChunk(
 
                     BinaryReader channelReader = new BinaryReader(channelData, ByteOrder.BIG_ENDIAN);
                     channelReader.setPosition(pos);
-                    ChannelData cd = ChannelData.read(channelReader);
+                    ChannelData cd = ChannelData.read(channelReader, spriteRecordSize);
                     if (!cd.isEmpty()) {
                         int channelIndex = s + 6; // Sprite channels start at 6 in D5
                         frameChannelEntries.add(new FrameChannelEntry(new FrameIndex(f), new ChannelId(channelIndex), cd));
@@ -529,7 +553,7 @@ public record ScoreChunk(
                         if (pos + 24 <= channelData.length) {
                             BinaryReader channelReader = new BinaryReader(channelData, ByteOrder.BIG_ENDIAN);
                             channelReader.setPosition(pos);
-                            ChannelData cd = ChannelData.read(channelReader);
+                            ChannelData cd = ChannelData.read(channelReader, spriteRecordSize);
                             if (!cd.isEmpty()) {
                                 frameChannelEntries.add(new FrameChannelEntry(new FrameIndex(f), new ChannelId(c), cd));
                             }

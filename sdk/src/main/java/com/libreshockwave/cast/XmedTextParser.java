@@ -16,7 +16,8 @@ package com.libreshockwave.cast;
  */
 public class XmedTextParser {
 
-    public record XmedText(String text, String fontName, int fontSize) {}
+    public record XmedText(String text, String fontName, int fontSize,
+                              int colorR, int colorG, int colorB) {}
 
     /**
      * Check if specificData indicates a "text" sub-type Xtra.
@@ -41,8 +42,10 @@ public class XmedTextParser {
         String text = extractText(data, ascii);
         String fontName = extractFont(data, ascii);
         int fontSize = 12; // default
+        int[] color = extractColor(data, ascii);
 
-        return new XmedText(text, fontName != null ? fontName : "Geneva", fontSize);
+        return new XmedText(text, fontName != null ? fontName : "Geneva", fontSize,
+                color[0], color[1], color[2]);
     }
 
     /**
@@ -165,6 +168,42 @@ public class XmedTextParser {
             }
         }
         return null;
+    }
+
+    /**
+     * Extract text color from XMED data.
+     * XMED text color may be stored as a tagged section (e.g., "0003" for color).
+     * Returns {R, G, B} or {255, 255, 255} as default (white).
+     */
+    private static int[] extractColor(byte[] data, String ascii) {
+        // Look for color tag "0003" which typically contains RGB color data
+        int tagIdx = ascii.indexOf("0003");
+        if (tagIdx >= 0) {
+            // After the tag, look for color data
+            for (int i = tagIdx + 4; i < data.length - 6; i++) {
+                if (data[i] == 0x00) {
+                    // Try to parse "HEX,R,G,B" format or direct bytes
+                    String colorStr = extractCountCommaText(data, i + 1);
+                    if (colorStr != null && !colorStr.isEmpty()) {
+                        // Color might be encoded as comma-separated RGB
+                        String[] parts = colorStr.split(",");
+                        if (parts.length >= 3) {
+                            try {
+                                int r = Integer.parseInt(parts[0].trim());
+                                int g = Integer.parseInt(parts[1].trim());
+                                int b = Integer.parseInt(parts[2].trim());
+                                return new int[]{r, g, b};
+                            } catch (NumberFormatException e) {
+                                // Not numeric
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        // Default: white text (common for Director text on dark backgrounds)
+        return new int[]{255, 255, 255};
     }
 
     private static boolean isHexDigit(int c) {

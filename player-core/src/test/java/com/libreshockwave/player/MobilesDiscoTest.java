@@ -27,7 +27,7 @@ public class MobilesDiscoTest {
     // Load from the htdocs path (same file served at http://localhost/mobiles/dcr_0519b_e/...)
     private static final String MOVIE_PATH = "C:/xampp/htdocs/mobiles/dcr_0519b_e/20000201_mobiles_disco.dcr";
     private static final String OUTPUT_DIR = "build/mobiles-disco-test";
-    private static final String REFERENCE_PATH = "docs/mobiles-disco-reference.png";
+    private static final String REFERENCE_PATH = "../docs/mobiles-disco-reference.png";
 
     public static void main(String[] args) throws Exception {
         new File(OUTPUT_DIR).mkdirs();
@@ -41,9 +41,6 @@ public class MobilesDiscoTest {
         Player player = new Player(file);
         player.getNetManager().setLocalHttpRoot("C:/xampp/htdocs");
         player.getNetManager().setBasePath("http://localhost/mobiles/dcr_0519b_e/");
-
-        // Enable debug on frame context and behavior manager
-        player.getFrameContext().setDebugEnabled(true);
 
         // Track errors
         List<String> errors = new ArrayList<>();
@@ -78,7 +75,6 @@ public class MobilesDiscoTest {
         // Track frame transitions
         int maxTicks = 300;
         Map<Integer, Integer> frameVisits = new LinkedHashMap<>();
-        int lastFrame = -1;
 
         for (int tick = 0; tick < maxTicks; tick++) {
             int frameBefore = player.getCurrentFrame();
@@ -117,17 +113,18 @@ public class MobilesDiscoTest {
         List<RenderSprite> sprites = renderer.getSpritesForFrame(frame);
         System.out.printf("Frame %d: %d sprites%n", frame, sprites.size());
 
-        // Dump all sprites
+        // Dump all sprites with color info
         for (RenderSprite s : sprites) {
             String memberInfo = s.getMemberName() != null ? s.getMemberName() : "null";
             if (s.getCastMember() != null) {
                 memberInfo += " [" + s.getCastMember().memberType() + "]";
             }
-            System.out.printf("  ch=%d z=%d type=%s pos=(%d,%d) %dx%d ink=%d(%s) blend=%d visible=%s member=%s%n",
-                    s.getChannel(), s.getLocZ(), s.getType(),
+            System.out.printf("  ch=%d type=%s pos=(%d,%d) %dx%d ink=%s member=%s fg=0x%06X bg=0x%06X hasFg=%s hasBg=%s%n",
+                    s.getChannel(), s.getType(),
                     s.getX(), s.getY(), s.getWidth(), s.getHeight(),
-                    s.getInk(), s.getInkMode(), s.getBlend(), s.isVisible(),
-                    memberInfo);
+                    s.getInkMode(), memberInfo,
+                    s.getForeColor() & 0xFFFFFF, s.getBackColor() & 0xFFFFFF,
+                    s.hasForeColor(), s.hasBackColor());
         }
 
         // Warmup bake (trigger bitmap decoding), wait, then real bake
@@ -168,9 +165,6 @@ public class MobilesDiscoTest {
         System.out.println("Rendered image saved: " + outputFile.getAbsolutePath());
         System.out.printf("Image size: %dx%d%n", renderedImg.getWidth(), renderedImg.getHeight());
 
-        // Also capture splash frame if we visited it
-        // (already captured as final if we're still on splash)
-
         // Pixel diff against reference
         File refFile = new File(REFERENCE_PATH);
         if (refFile.exists()) {
@@ -188,7 +182,6 @@ public class MobilesDiscoTest {
         // Deduplicate errors
         Map<String, Integer> errorCounts = new LinkedHashMap<>();
         for (String err : errors) {
-            // Truncate long error messages for grouping
             String key = err.length() > 120 ? err.substring(0, 120) : err;
             errorCounts.merge(key, 1, Integer::sum);
         }

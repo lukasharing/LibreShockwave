@@ -7,6 +7,7 @@ import com.libreshockwave.player.Player;
 import com.libreshockwave.player.cast.CastLib;
 import com.libreshockwave.player.cast.CastLibManager;
 import com.libreshockwave.player.cast.CastMember;
+import com.libreshockwave.chunks.ScoreChunk;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -47,6 +48,7 @@ public class SpriteBaker {
             case BITMAP -> bakeBitmap(sprite);
             case TEXT, BUTTON -> bakeText(sprite);
             case SHAPE -> bakeShape(sprite);
+            case FILM_LOOP -> bakeFilmLoop(sprite);
             default -> null;
         };
 
@@ -184,22 +186,25 @@ public class SpriteBaker {
         Bitmap textImage = null;
 
         if (member != null && member.hasDynamicText()) {
-            // Lingo set member.text — render using sprite dimensions
+            // Lingo set member.text — render using sprite dimensions and sprite foreColor
             var renderer = CastMember.getTextRendererStatic();
             if (renderer != null) {
                 int width = sprite.getWidth() > 0 ? sprite.getWidth() : 200;
                 int height = sprite.getHeight() > 0 ? sprite.getHeight() : 20;
-                int textColor = 0xFF000000 | (sprite.getForeColor() & 0xFFFFFF);
-                int bgColor = 0xFF000000 | (sprite.getBackColor() & 0xFFFFFF);
+                int textColor = resolvePaletteColor(sprite.getForeColor());
+                int bgColor = (sprite.getInkMode() == com.libreshockwave.id.InkMode.BACKGROUND_TRANSPARENT)
+                        ? 0x00000000 : resolvePaletteColor(sprite.getBackColor());
                 textImage = renderer.renderText(
                         member.getTextContent(), width, height,
                         member.getTextFont(), member.getTextFontSize(), "",
                         "left", textColor, bgColor,
                         true, false, 0, 0);
             }
-        } else if (member != null) {
-            textImage = member.renderTextToImage();
         }
+        // For file-loaded text members (no dynamic text), skip member.renderTextToImage()
+        // and fall through to bakeTextFromFile() which applies the sprite's foreColor/backColor
+        // from the score. member.renderTextToImage() uses the member's default color (black)
+        // which doesn't reflect the score's foreColor for this sprite channel.
 
         // Fall back to rendering directly from the file's STXT/XMED chunk
         // (for score-placed text sprites that don't have a runtime CastMember,
@@ -212,7 +217,14 @@ public class SpriteBaker {
             return null;
         }
 
-        // Apply ink processing if needed (e.g., Background Transparent for text)
+        // For BACKGROUND_TRANSPARENT text, the text renderer already produces
+        // transparent background pixels (alpha=0). Skip ink processing to avoid
+        // making the text itself transparent when it matches the resolved bg color.
+        if (sprite.getInkMode() == com.libreshockwave.id.InkMode.BACKGROUND_TRANSPARENT) {
+            return textImage;
+        }
+
+        // Apply ink processing for other ink modes
         if (InkProcessor.shouldProcessInk(sprite.getInk())) {
             textImage = InkProcessor.applyInk(textImage, sprite.getInk(),
                     sprite.getBackColor(), false, null);
@@ -230,7 +242,6 @@ public class SpriteBaker {
         var castMember = sprite.getCastMember();
         var file = castMember.file();
         if (file == null) return null;
-
         // Try XMED text first (Director 7+ Text Asset Xtra)
         if (castMember.isTextXtra()) {
             return bakeTextFromXmed(sprite, file, castMember);
@@ -247,10 +258,14 @@ public class SpriteBaker {
         String fontName = "Arial";
         int fontSize = 12;
         int fontStyle = 0;
+        int runColorR = -1, runColorG = -1, runColorB = -1;
         if (!textChunk.runs().isEmpty()) {
             var run = textChunk.runs().get(0);
             fontSize = run.fontSize();
             fontStyle = run.fontStyle();
+            runColorR = run.colorR();
+            runColorG = run.colorG();
+            runColorB = run.colorB();
         }
 
         String styleStr = "";
@@ -272,9 +287,17 @@ public class SpriteBaker {
         var renderer = CastMember.getTextRendererStatic();
         if (renderer == null) return null;
 
-        // Use sprite foreColor for text color; ARGB format with full alpha
-        int textColor = 0xFF000000 | (sprite.getForeColor() & 0xFFFFFF);
-        int bgColor = 0xFF000000 | ((textInfo.bgRed() << 16) | (textInfo.bgGreen() << 8) | textInfo.bgBlue());
+        // Text color: prefer STXT run color, fall back to palette-resolved sprite foreColor
+        int textColor;
+        if (runColorR >= 0) {
+            textColor = 0xFF000000 | (runColorR << 16) | (runColorG << 8) | runColorB;
+        } else {
+            textColor = resolvePaletteColor(sprite.getForeColor());
+        }
+        // Use transparent background for BACKGROUND_TRANSPARENT ink
+        int bgColor = (sprite.getInkMode() == com.libreshockwave.id.InkMode.BACKGROUND_TRANSPARENT)
+                ? 0x00000000
+                : 0xFF000000 | ((textInfo.bgRed() << 16) | (textInfo.bgGreen() << 8) | textInfo.bgBlue());
 
         return renderer.renderText(
                 textChunk.text(), width, height,
@@ -300,9 +323,17 @@ public class SpriteBaker {
         int width = sprite.getWidth() > 0 ? sprite.getWidth() : 200;
         int height = sprite.getHeight() > 0 ? sprite.getHeight() : 20;
 
-        // ARGB format — text color from sprite foreColor, background from backColor
-        int textColor = 0xFF000000 | (sprite.getForeColor() & 0xFFFFFF);
-        int bgColor = 0xFF000000 | (sprite.getBackColor() & 0xFFFFFF);
+        // ARGB format — text color from XMED data if available, fall back to palette-resolved foreColor
+        int textColor;
+        if (xmedText.colorR() >= 0) {
+            textColor = 0xFF000000 | (xmedText.colorR() << 16) | (xmedText.colorG() << 8) | xmedText.colorB();
+        } else {
+            textColor = resolvePaletteColor(sprite.getForeColor());
+        }
+        // Use transparent background for BACKGROUND_TRANSPARENT ink so the text
+        // can be composited directly without ink processing removing the text pixels.
+        int bgColor = (sprite.getInkMode() == com.libreshockwave.id.InkMode.BACKGROUND_TRANSPARENT)
+                ? 0x00000000 : resolvePaletteColor(sprite.getBackColor());
 
         return renderer.renderText(
                 xmedText.text(), width, height,
@@ -310,6 +341,39 @@ public class SpriteBaker {
                 "left", textColor, bgColor,
                 true, false,
                 0, 0);
+    }
+
+    /**
+     * Resolve a score color value (palette index 0-255) to packed ARGB for text rendering.
+     * Values > 255 are already RGB (from script-set colors).
+     * Values 0-255 are palette indices looked up through the default palette.
+     */
+    private int resolvePaletteColor(int color) {
+        if (color > 255) {
+            // Already packed RGB (script-set)
+            return 0xFF000000 | (color & 0xFFFFFF);
+        }
+        // Palette index lookup
+        Palette palette = player != null && player.getFile() != null
+                ? player.getFile().resolvePalette(-1) : null;
+        if (palette != null) {
+            return 0xFF000000 | (palette.getColor(color) & 0xFFFFFF);
+        }
+        // Fallback: Director grayscale ramp (0=white, 255=black)
+        int gray = 255 - color;
+        return 0xFF000000 | (gray << 16) | (gray << 8) | gray;
+    }
+
+    /**
+     * Bake a FILM_LOOP sprite: render the first frame of the film loop.
+     * Film loops contain embedded score data with sub-sprites; full animation
+     * playback is not yet supported. Returns null if the embedded data cannot
+     * be decoded.
+     */
+    private Bitmap bakeFilmLoop(RenderSprite sprite) {
+        // FilmLoop embedded score data parsing not yet implemented
+        // TODO: Parse the film loop's embedded mini-score and composite sub-sprites
+        return null;
     }
 
     /**

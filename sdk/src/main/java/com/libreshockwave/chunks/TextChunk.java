@@ -29,7 +29,10 @@ public record TextChunk(
         int endOffset,
         int fontId,
         int fontSize,
-        int fontStyle
+        int fontStyle,
+        int colorR,
+        int colorG,
+        int colorB
     ) {}
 
     public static TextChunk read(DirectorFile file, BinaryReader reader, ChunkId id) {
@@ -56,9 +59,14 @@ public record TextChunk(
                 int fontStyle = reader.readU8();
                 reader.skip(1);
                 int fontSize = reader.readI16();
-                reader.skip(6);
+                reader.skip(2); // unknown
+                int colorR = reader.readU8();
+                int colorG = reader.readU8();
+                int colorB = reader.readU8();
+                reader.skip(1); // unknown
 
-                runs.add(new TextRun(startOffset, textLen, fontId, fontSize, fontStyle));
+                runs.add(new TextRun(startOffset, textLen, fontId, fontSize, fontStyle,
+                        colorR, colorG, colorB));
             }
         }
 

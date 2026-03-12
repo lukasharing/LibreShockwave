@@ -2,6 +2,7 @@ package com.libreshockwave.player.render.pipeline;
 
 import com.libreshockwave.DirectorFile;
 import com.libreshockwave.bitmap.Bitmap;
+import com.libreshockwave.bitmap.Palette;
 import com.libreshockwave.cast.MemberType;
 import com.libreshockwave.cast.ShapeInfo;
 import com.libreshockwave.chunks.CastMemberChunk;
@@ -206,7 +207,7 @@ public class StageRenderer {
         return new RenderSprite(
             channel, x, y, width, height, locZ, visible, type, member, null,
             state.hasForeColor() ? state.getForeColor() : data.resolvedForeColor(),
-            state.hasBackColor() ? state.getBackColor() : data.backColor(),
+            state.hasBackColor() ? state.getBackColor() : data.resolvedBackColor(),
             state.hasForeColor(), state.hasBackColor(),
             data.ink(), state.getBlend(),
             state.isFlipH(), state.isFlipV(), null,
@@ -335,6 +336,7 @@ public class StageRenderer {
             case SHAPE -> RenderSprite.SpriteType.SHAPE;
             case TEXT -> RenderSprite.SpriteType.TEXT;
             case BUTTON -> RenderSprite.SpriteType.BUTTON;
+            case FILM_LOOP -> RenderSprite.SpriteType.FILM_LOOP;
             default -> RenderSprite.SpriteType.UNKNOWN;
         };
     }
@@ -358,6 +360,7 @@ public class StageRenderer {
             case SHAPE -> RenderSprite.SpriteType.SHAPE;
             case TEXT, RICH_TEXT -> RenderSprite.SpriteType.TEXT;
             case BUTTON -> RenderSprite.SpriteType.BUTTON;
+            case FILM_LOOP -> RenderSprite.SpriteType.FILM_LOOP;
             default -> RenderSprite.SpriteType.UNKNOWN;
         };
     }
@@ -385,6 +388,30 @@ public class StageRenderer {
             return new int[]{ regX, regY };
         }
         return new int[]{ member.regPointX(), member.regPointY() };
+    }
+
+    /**
+     * Resolve a score color value to RGB.
+     * If the color is already RGB (colorFlag set), return it directly.
+     * Otherwise, treat it as a Director color number and look up through the default palette.
+     *
+     * Director's score foreColor/backColor bytes use inverted palette indexing:
+     * foreColor 0 = black (palette index 255), foreColor 255 = white (palette index 0).
+     * This is the standard Director color model for D5+ movies.
+     */
+    private int resolveScoreColor(int color, boolean isRGB) {
+        if (isRGB) {
+            return color;
+        }
+        // Director color number → palette index (inverted mapping)
+        if (color >= 0 && color <= 255 && file != null) {
+            Palette palette = file.resolvePalette(-1); // Default palette
+            if (palette != null) {
+                int paletteIndex = 255 - color;
+                return palette.getColor(paletteIndex);
+            }
+        }
+        return color;
     }
 
     public void reset() {
