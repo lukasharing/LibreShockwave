@@ -16,7 +16,7 @@ package com.libreshockwave.cast;
  */
 public class XmedTextParser {
 
-    public record XmedText(String text, String fontName, int fontSize,
+    public record XmedText(String text, String fontName, int fontSize, int fontStyle,
                               int colorR, int colorG, int colorB) {}
 
     /**
@@ -41,10 +41,11 @@ public class XmedTextParser {
 
         String text = extractText(data, ascii);
         String fontName = extractFont(data, ascii);
-        int fontSize = extractFontSize(data, ascii);
+        int[] fontSizeAndStyle = extractFontSizeAndStyle(data, ascii);
         int[] color = extractColor(data, ascii);
 
-        return new XmedText(text, fontName != null ? fontName : "Geneva", fontSize,
+        return new XmedText(text, fontName != null ? fontName : "Geneva",
+                fontSizeAndStyle[0], fontSizeAndStyle[1],
                 color[0], color[1], color[2]);
     }
 
@@ -222,20 +223,24 @@ public class XmedTextParser {
     }
 
     /**
-     * Extract font size from XMED section 0006 (per-run style data).
+     * Extract font size and style from XMED section 0006 (per-run style data).
      * The section contains 0x02-delimited hex-encoded values. The font size
-     * appears as a single hex digit (e.g., 'C' = 12) after the pattern:
+     * appears as a hex digit (e.g., 'C' = 12) after the pattern:
      * "480048" (resolution) → "-1" → "0" → font_size_hex
+     * The font style follows the font size, delimited by 0x01:
+     * font_size 0x01 font_style (0=plain, 1=bold, 2=italic, 4=underline)
+     *
+     * @return int[]{fontSize, fontStyle}
      */
-    private static int extractFontSize(byte[] data, String ascii) {
+    private static int[] extractFontSizeAndStyle(byte[] data, String ascii) {
         int idx0006 = ascii.indexOf("0006");
-        if (idx0006 < 0) return 12;
+        if (idx0006 < 0) return new int[]{12, 0};
 
         // Skip header: tag(4) + length(8) + count(8) = 20, then data starts
         int secStart = idx0006 + 20;
 
         // Search for "480048" pattern followed by font size
-        // Pattern: 0x02 "480048" 0x02 "-1" 0x02 "0" 0x02 <fontSize>
+        // Pattern: 0x02 "480048" 0x02 "-1" 0x02 "0" 0x02 <fontSize> 0x01 <fontStyle>
         for (int i = secStart; i < data.length - 20; i++) {
             if (data[i] == 0x02 && i + 7 < data.length
                     && data[i+1] == '4' && data[i+2] == '8'
@@ -243,7 +248,6 @@ public class XmedTextParser {
                     && data[i+5] == '4' && data[i+6] == '8') {
                 // Found "480048" — skip to font size field
                 // After "480048": 0x02"-1" 0x02"0" 0x02<fontSize>
-                // Need to skip 3 0x02-delimited fields to reach fontSize content
                 int j = i + 7;
                 int fieldCount = 0;
                 while (j < data.length && fieldCount < 3) {
@@ -251,6 +255,8 @@ public class XmedTextParser {
                     j++;
                 }
                 // j now points to fontSize content
+                int fontSize = 12;
+                int fontStyle = 0;
                 if (j < data.length) {
                     // Read hex-encoded font size (1-2 hex chars)
                     StringBuilder sizeStr = new StringBuilder();
@@ -262,16 +268,33 @@ public class XmedTextParser {
                     if (sizeStr.length() > 0) {
                         try {
                             int size = Integer.parseInt(sizeStr.toString(), 16);
-                            if (size >= 6 && size <= 36) return size;
+                            if (size >= 6 && size <= 36) fontSize = size;
                         } catch (NumberFormatException e) {
                             // Not valid hex
                         }
                     }
+                    // Read font style after 0x01 delimiter
+                    if (j < data.length && data[j] == 0x01) {
+                        j++;
+                        StringBuilder styleStr = new StringBuilder();
+                        while (j < data.length && data[j] != 0x01 && data[j] != 0x02
+                                && data[j] != 0x03 && (data[j] & 0xFF) < 0x80) {
+                            styleStr.append((char) data[j]);
+                            j++;
+                        }
+                        if (styleStr.length() > 0) {
+                            try {
+                                fontStyle = Integer.parseInt(styleStr.toString(), 16);
+                            } catch (NumberFormatException e) {
+                                // Not valid hex
+                            }
+                        }
+                    }
                 }
-                break;
+                return new int[]{fontSize, fontStyle};
             }
         }
-        return 12; // default
+        return new int[]{12, 0}; // defaults
     }
 
     private static boolean isHexDigit(int c) {

@@ -40,9 +40,7 @@ public class MobilesDiscoTest {
         System.out.println("Stage: " + file.getStageWidth() + "x" + file.getStageHeight());
 
         Player player = new Player(file);
-        // Use AWT text renderer for proper font rendering on desktop
-        com.libreshockwave.player.cast.CastMember.setTextRenderer(
-                new com.libreshockwave.player.render.output.AwtTextRenderer());
+        // Use SimpleTextRenderer (TeaVM-compatible) — AWT is not available in WASM
         player.getNetManager().setLocalHttpRoot("C:/xampp/htdocs");
         player.getNetManager().setBasePath("http://localhost/mobiles/dcr_0519b_e/");
 
@@ -56,6 +54,12 @@ public class MobilesDiscoTest {
         });
 
         player.preloadAllCasts();
+
+        // Verify Mac font bundle loaded
+        var genevaFont = com.libreshockwave.player.cast.FontRegistry.getBitmapFont("Geneva", 12);
+        System.out.println("Mac Geneva 12pt: " + (genevaFont != null
+                ? genevaFont.getLineHeight() + "px lineHeight, space=" + genevaFont.getCharWidth(' ')
+                : "NOT LOADED"));
 
         // Dump cast lib info
         CastLibManager clm = player.getCastLibManager();
@@ -341,4 +345,5 @@ System.out.println("\n=== Starting playback ===");
         int r2 = (p2 >> 16) & 0xFF, g2 = (p2 >> 8) & 0xFF, b2 = p2 & 0xFF;
         return Math.max(Math.abs(r1 - r2), Math.max(Math.abs(g1 - g2), Math.abs(b1 - b2)));
     }
+
 }

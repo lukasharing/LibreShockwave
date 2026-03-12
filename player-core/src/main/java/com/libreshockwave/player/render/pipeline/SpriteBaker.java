@@ -317,10 +317,6 @@ public class SpriteBaker {
             return null;
         }
 
-
-        var renderer = CastMember.getTextRendererStatic();
-        if (renderer == null) return null;
-
         int width = sprite.getWidth() > 0 ? sprite.getWidth() : 200;
         int height = sprite.getHeight() > 0 ? sprite.getHeight() : 20;
 
@@ -336,18 +332,31 @@ public class SpriteBaker {
         int bgColor = (sprite.getInkMode() == com.libreshockwave.id.InkMode.BACKGROUND_TRANSPARENT)
                 ? 0x00000000 : resolvePaletteColor(sprite.getBackColor());
 
-        // Director uses 72 DPI for font sizing; AWT uses screen DPI (96 on Windows).
-        // Empirically, XMED 12pt maps to AWT ~10pt for best pixel match.
-        int renderFontSize = Math.max(6, Math.round(xmedText.fontSize() * 5f / 6f));
+        var renderer = CastMember.getTextRendererStatic();
+        if (renderer == null) return null;
 
-        // Director's font ascent for Geneva 12pt (72 DPI) is ~1px less than Java AWT's
-        // ascent for SansSerif 10pt. Shift text up 1px to align glyph positions.
+        // Build font style string from XMED style flags (1=bold, 2=italic, 4=underline)
+        int style = xmedText.fontStyle();
+        String styleStr = "";
+        if ((style & 1) != 0) styleStr += "bold";
+        if ((style & 2) != 0) styleStr += (styleStr.isEmpty() ? "" : ",") + "italic";
+        if ((style & 4) != 0) styleStr += (styleStr.isEmpty() ? "" : ",") + "underline";
+
+        // Debug: log font requests
+        if (com.libreshockwave.vm.DebugConfig.isDebugPlaybackEnabled()) {
+            System.out.printf("XMED TEXT: font='%s' size=%d style='%s' text='%s' color=0x%06X%n",
+                    xmedText.fontName(), xmedText.fontSize(), styleStr,
+                    xmedText.text().length() > 40 ? xmedText.text().substring(0, 40) + "..." : xmedText.text(),
+                    textColor & 0xFFFFFF);
+        }
+
+        // Director uses 72 DPI: 1pt = 1px. No DPI scaling needed for SimpleTextRenderer/BitmapFont.
         return renderer.renderText(
                 xmedText.text(), width, height,
-                xmedText.fontName(), renderFontSize, "",
+                xmedText.fontName(), xmedText.fontSize(), styleStr,
                 "left", textColor, bgColor,
                 true, false,
-                0, -1);
+                0, 0);
     }
 
     /**

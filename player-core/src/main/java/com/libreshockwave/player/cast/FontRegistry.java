@@ -84,11 +84,8 @@ public class FontRegistry {
 
     /**
      * Get a rasterized bitmap font for the given name and size.
-     * Returns null if no PFR font is registered for this name.
-     * Used by SimpleTextRenderer where AWT may not be available.
-     *
-     * On desktop (AWT available): renders glyphs using AWT Graphics2D for pixel-perfect
-     * match with AwtTextRenderer. On WASM: falls back to TtfBitmapRasterizer.
+     * Tries PFR fonts first, then bundled Mac system fonts as fallback.
+     * Uses TtfBitmapRasterizer (pure Java, TeaVM-compatible).
      */
     public static BitmapFont getBitmapFont(String fontName, int fontSize) {
         if (fontName == null) return null;
@@ -100,7 +97,7 @@ public class FontRegistry {
         BitmapFont cached = rasterizedCache.get(cacheKey);
         if (cached != null) return cached;
 
-        // TTF rasterizer (pure Java — works on both desktop and WASM)
+        // TTF rasterizer from PFR-converted TTF (pure Java — works on both desktop and WASM)
         byte[] ttfBytes = ttfCache.get(key);
         if (ttfBytes != null) {
             BitmapFont rasterized = TtfBitmapRasterizer.rasterize(ttfBytes, fontSize, fontName);
@@ -110,12 +107,29 @@ public class FontRegistry {
             }
         }
 
-        // Last resort: PFR1 direct rasterization
+        // PFR1 direct rasterization
         Pfr1Font parsed = parsedFonts.get(key);
-        if (parsed == null) return null;
-        BitmapFont rasterized = BitmapFont.fromPfr1(parsed, fontSize);
-        if (rasterized != null) rasterizedCache.put(cacheKey, rasterized);
-        return rasterized;
+        if (parsed != null) {
+            BitmapFont rasterized = BitmapFont.fromPfr1(parsed, fontSize);
+            if (rasterized != null) {
+                rasterizedCache.put(cacheKey, rasterized);
+                return rasterized;
+            }
+        }
+
+        // Bundled Mac system font fallback (Geneva, Chicago, Monaco, etc.)
+        BitmapFont macFont = MacFontBundle.getFont(fontName, fontSize);
+        if (macFont != null) return macFont; // already cached by MacFontBundle
+
+        return null;
+    }
+
+    /**
+     * Direct cache lookup without triggering any font loading.
+     * Used by MacFontBundle to check if a font is already cached.
+     */
+    static BitmapFont getBitmapFontDirect(String cacheKey) {
+        return rasterizedCache.get(cacheKey);
     }
 
     /**
@@ -175,6 +189,16 @@ public class FontRegistry {
     public static boolean hasPfrFont(String fontName) {
         if (fontName == null) return false;
         return parsedFonts.containsKey(fontName.toLowerCase());
+    }
+
+    /**
+     * Register a pre-built BitmapFont (e.g., from GDI rasterization).
+     * This bypasses the TTF/PFR pipeline and stores directly in the rasterized cache.
+     */
+    public static void registerBitmapFont(String fontName, int fontSize, BitmapFont font) {
+        if (fontName == null || font == null) return;
+        String cacheKey = fontName.toLowerCase() + ":" + fontSize;
+        rasterizedCache.put(cacheKey, font);
     }
 
     /**
