@@ -3,7 +3,7 @@ package com.libreshockwave.player;
 import com.libreshockwave.DirectorFile;
 import com.libreshockwave.bitmap.Bitmap;
 import com.libreshockwave.player.cast.CastLibManager;
-import com.libreshockwave.player.render.RenderType;
+
 import com.libreshockwave.player.render.pipeline.FrameSnapshot;
 import com.libreshockwave.player.render.pipeline.RenderSprite;
 import com.libreshockwave.player.render.pipeline.SpriteBaker;
@@ -93,7 +93,7 @@ public class HotelViewDiagnosticTest {
                 Thread.sleep(2000); // Wait for async decoders
                 // Now bake with decoded bitmaps
                 FrameSnapshot errSnap = captureSnapshot(renderer, frame, "error-dialog", baker);
-                Bitmap errImg = errSnap.renderFrame(RenderType.SOFTWARE);
+                Bitmap errImg = errSnap.renderFrame();
                 ImageIO.write(errImg.toBufferedImage(), "png",
                         new File(OUTPUT_DIR + "/error_dialog.png"));
                 System.out.printf("Captured error dialog at tick %d with %d sprites%n", tick, sprites.size());
@@ -533,7 +533,7 @@ public class HotelViewDiagnosticTest {
             }
         }
 
-        Bitmap rendered = snapshot.renderFrame(RenderType.SOFTWARE);
+        Bitmap rendered = snapshot.renderFrame();
         ImageIO.write(rendered.toBufferedImage(), "png",
                 new File(OUTPUT_DIR + "/hotel_view.png"));
 

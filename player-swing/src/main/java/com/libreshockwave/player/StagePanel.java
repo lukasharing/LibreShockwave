@@ -1,11 +1,13 @@
 package com.libreshockwave.player;
 
+import com.libreshockwave.bitmap.Bitmap;
 import com.libreshockwave.player.input.DirectorKeyCodes;
-import com.libreshockwave.player.render.output.AwtFrameRenderer;
 import com.libreshockwave.player.render.pipeline.FrameSnapshot;
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.*;
+import java.awt.image.BufferedImage;
+import java.awt.image.DataBufferInt;
 
 /**
  * Swing panel that renders the Director stage using the player-core rendering API.
@@ -202,8 +204,15 @@ public class StagePanel extends JPanel {
         // Translate to canvas origin
         g2d.translate(canvasX, canvasY);
 
-        // Render frame using shared renderer
-        AwtFrameRenderer.renderFrame(g2d, snapshot, stageWidth, stageHeight);
+        // Render frame using software renderer, then blit to Graphics2D
+        Bitmap frameBitmap = snapshot.renderFrame();
+        if (frameBitmap != null) {
+            int[] pixels = frameBitmap.getPixels();
+            BufferedImage frameImage = new BufferedImage(stageWidth, stageHeight, BufferedImage.TYPE_INT_ARGB);
+            int[] destPixels = ((DataBufferInt) frameImage.getRaster().getDataBuffer()).getData();
+            System.arraycopy(pixels, 0, destPixels, 0, Math.min(pixels.length, destPixels.length));
+            g2d.drawImage(frameImage, 0, 0, null);
+        }
 
         // Draw debug info
         drawDebugInfo(g2d, snapshot);

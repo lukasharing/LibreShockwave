@@ -5,7 +5,7 @@ import com.libreshockwave.bitmap.Bitmap;
 import com.libreshockwave.player.cast.CastLibManager;
 import com.libreshockwave.player.cast.CastMember;
 import com.libreshockwave.player.input.HitTester;
-import com.libreshockwave.player.render.RenderType;
+
 import com.libreshockwave.player.render.SpriteRegistry;
 import com.libreshockwave.player.render.pipeline.FrameSnapshot;
 import com.libreshockwave.player.render.pipeline.RenderSprite;
@@ -151,7 +151,7 @@ public class HitTestDiagnosticTest {
         // ============================================================
         // 3. RENDER AND SAVE IMAGE FOR VISUAL INSPECTION
         // ============================================================
-        Bitmap rendered = snapshot.renderFrame(RenderType.SOFTWARE);
+        Bitmap rendered = snapshot.renderFrame();
         ImageIO.write(rendered.toBufferedImage(), "png",
                 new File(OUTPUT_DIR + "/hit_test_frame.png"));
         System.out.printf("%nRendered frame to %s/hit_test_frame.png%n", OUTPUT_DIR);

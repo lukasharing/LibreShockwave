@@ -3,7 +3,7 @@ package com.libreshockwave.player;
 import com.libreshockwave.DirectorFile;
 import com.libreshockwave.bitmap.Bitmap;
 import com.libreshockwave.player.cast.CastLibManager;
-import com.libreshockwave.player.render.RenderType;
+
 import com.libreshockwave.player.render.pipeline.FrameSnapshot;
 import com.libreshockwave.player.render.pipeline.RenderSprite;
 import com.libreshockwave.player.render.pipeline.SpriteBaker;
@@ -135,7 +135,7 @@ public class LoadingBarDiagnosticTest {
                             System.out.printf("    baked ch=%d: NULL%n", bs.getChannel());
                         }
                     }
-                    Bitmap rendered = snapshot.renderFrame(RenderType.SOFTWARE);
+                    Bitmap rendered = snapshot.renderFrame();
                     ImageIO.write(rendered.toBufferedImage(), "png",
                             new File(String.format("%s/tick_%04d.png", OUTPUT_DIR, tick)));
                     // Check if any non-black pixels in render

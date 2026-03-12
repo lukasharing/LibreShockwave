@@ -212,8 +212,8 @@ public class Player {
             }
         });
 
-        // Set AWT text renderer for desktop environment
-        com.libreshockwave.player.cast.CastMember.setTextRenderer(new com.libreshockwave.player.render.output.AwtTextRenderer());
+        // Set software text renderer (no AWT dependency)
+        com.libreshockwave.player.cast.CastMember.setTextRenderer(new com.libreshockwave.player.render.output.SimpleTextRenderer());
         // Wire up member visual change callback to bump sprite revision
         com.libreshockwave.player.cast.CastMember.setMemberVisualChangedCallback(
                 () -> stageRenderer.getSpriteRegistry().bumpRevision());
