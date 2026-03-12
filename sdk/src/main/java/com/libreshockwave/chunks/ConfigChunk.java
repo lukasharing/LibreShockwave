@@ -116,12 +116,12 @@ public record ConfigChunk(
         /* 54 */ int tempo = reader.readI16();
         /* 56 */ short platform = reader.readShort();
 
-        // Read default palette (D5+) — stored at offsets 76-80 in the DRCF/VWCF chunk.
+        // Read default palette (D5+) — stored at offsets 58-80 in the DRCF/VWCF chunk.
         // ScummVM: Cast::loadConfig() reads castLib (int16) at 76, member (int16) at 78.
         int defaultPaletteCastLib = 0;
         int defaultPaletteMember = 0;
         if (reader.bytesLeft() >= 22) { // Need at least 22 bytes from offset 58 to 80
-            reader.skip(18); // Skip offsets 58-75 (field30, defPaletteNum, chunkBaseNum, etc.)
+            reader.skip(18); // Skip offsets 58-75 (field30..field38)
             /* 76 */ defaultPaletteCastLib = reader.readI16();
             /* 78 */ defaultPaletteMember = reader.readI16();
         }

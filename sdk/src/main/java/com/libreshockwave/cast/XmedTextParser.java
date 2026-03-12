@@ -41,7 +41,7 @@ public class XmedTextParser {
 
         String text = extractText(data, ascii);
         String fontName = extractFont(data, ascii);
-        int fontSize = 12; // default
+        int fontSize = extractFontSize(data, ascii);
         int[] color = extractColor(data, ascii);
 
         return new XmedText(text, fontName != null ? fontName : "Geneva", fontSize,
@@ -151,18 +151,33 @@ public class XmedTextParser {
 
     /**
      * Extract font name from XMED data.
-     * Looks for "0008" tag or font name patterns.
+     * Section "0008" contains font entries in format:
+     *   tag(4) + length(8) + count(8) + null + "HEX_FIELD_WIDTH," + name_len_byte + font_name + null_padding
      */
     private static String extractFont(byte[] data, String ascii) {
         int tagIdx = ascii.indexOf("0008");
         if (tagIdx < 0) return null;
 
-        // After "0008" tag, find null byte then "COUNT,FONTNAME"
-        for (int i = tagIdx + 4; i < data.length - 2; i++) {
+        // Skip tag(4) + length(8) + count(8) = 20 chars, then find null byte
+        for (int i = tagIdx + 20; i < data.length - 2; i++) {
             if (data[i] == 0x00) {
-                String result = extractCountCommaText(data, i + 1);
-                if (result != null && !result.isEmpty()) {
-                    return result.trim();
+                // After null: "HEX_FIELD_WIDTH," then length_byte + font_name
+                // Find the comma
+                for (int j = i + 1; j < Math.min(i + 10, data.length); j++) {
+                    if (data[j] == ',') {
+                        // Next byte is the name length
+                        if (j + 1 < data.length) {
+                            int nameLen = data[j + 1] & 0xFF;
+                            if (nameLen > 0 && j + 2 + nameLen <= data.length) {
+                                String fontName = new String(data, j + 2, nameLen,
+                                        java.nio.charset.StandardCharsets.ISO_8859_1).trim();
+                                if (!fontName.isEmpty()) {
+                                    return fontName;
+                                }
+                            }
+                        }
+                        break;
+                    }
                 }
                 break;
             }
@@ -204,6 +219,59 @@ public class XmedTextParser {
         }
         // Default: white text (common for Director text on dark backgrounds)
         return new int[]{255, 255, 255};
+    }
+
+    /**
+     * Extract font size from XMED section 0006 (per-run style data).
+     * The section contains 0x02-delimited hex-encoded values. The font size
+     * appears as a single hex digit (e.g., 'C' = 12) after the pattern:
+     * "480048" (resolution) → "-1" → "0" → font_size_hex
+     */
+    private static int extractFontSize(byte[] data, String ascii) {
+        int idx0006 = ascii.indexOf("0006");
+        if (idx0006 < 0) return 12;
+
+        // Skip header: tag(4) + length(8) + count(8) = 20, then data starts
+        int secStart = idx0006 + 20;
+
+        // Search for "480048" pattern followed by font size
+        // Pattern: 0x02 "480048" 0x02 "-1" 0x02 "0" 0x02 <fontSize>
+        for (int i = secStart; i < data.length - 20; i++) {
+            if (data[i] == 0x02 && i + 7 < data.length
+                    && data[i+1] == '4' && data[i+2] == '8'
+                    && data[i+3] == '0' && data[i+4] == '0'
+                    && data[i+5] == '4' && data[i+6] == '8') {
+                // Found "480048" — skip to font size field
+                // After "480048": 0x02"-1" 0x02"0" 0x02<fontSize>
+                // Need to skip 3 0x02-delimited fields to reach fontSize content
+                int j = i + 7;
+                int fieldCount = 0;
+                while (j < data.length && fieldCount < 3) {
+                    if (data[j] == 0x02) fieldCount++;
+                    j++;
+                }
+                // j now points to fontSize content
+                if (j < data.length) {
+                    // Read hex-encoded font size (1-2 hex chars)
+                    StringBuilder sizeStr = new StringBuilder();
+                    while (j < data.length && data[j] != 0x01 && data[j] != 0x02
+                            && (data[j] & 0xFF) < 0x80) {
+                        sizeStr.append((char) data[j]);
+                        j++;
+                    }
+                    if (sizeStr.length() > 0) {
+                        try {
+                            int size = Integer.parseInt(sizeStr.toString(), 16);
+                            if (size >= 6 && size <= 36) return size;
+                        } catch (NumberFormatException e) {
+                            // Not valid hex
+                        }
+                    }
+                }
+                break;
+            }
+        }
+        return 12; // default
     }
 
     private static boolean isHexDigit(int c) {

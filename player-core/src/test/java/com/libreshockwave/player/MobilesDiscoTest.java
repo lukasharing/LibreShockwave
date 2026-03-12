@@ -3,6 +3,7 @@ package com.libreshockwave.player;
 import com.libreshockwave.DirectorFile;
 import com.libreshockwave.bitmap.Bitmap;
 import com.libreshockwave.player.cast.CastLibManager;
+
 import com.libreshockwave.player.render.pipeline.FrameSnapshot;
 import com.libreshockwave.player.render.pipeline.RenderSprite;
 import com.libreshockwave.player.render.pipeline.SpriteBaker;
@@ -39,6 +40,9 @@ public class MobilesDiscoTest {
         System.out.println("Stage: " + file.getStageWidth() + "x" + file.getStageHeight());
 
         Player player = new Player(file);
+        // Use AWT text renderer for proper font rendering on desktop
+        com.libreshockwave.player.cast.CastMember.setTextRenderer(
+                new com.libreshockwave.player.render.output.AwtTextRenderer());
         player.getNetManager().setLocalHttpRoot("C:/xampp/htdocs");
         player.getNetManager().setBasePath("http://localhost/mobiles/dcr_0519b_e/");
 
@@ -65,7 +69,7 @@ public class MobilesDiscoTest {
             }
         }
 
-        System.out.println("\n=== Starting playback ===");
+System.out.println("\n=== Starting playback ===");
         player.play();
         System.out.println("Frame after play(): " + player.getCurrentFrame());
 
@@ -284,22 +288,57 @@ public class MobilesDiscoTest {
         ImageIO.write(diff, "PNG", diffFile);
         System.out.println("Diff image saved: " + diffFile.getAbsolutePath());
 
-        // Sample differing pixels
-        System.out.println("\nSample differing pixels (first 20 with diff>20):");
+        // Sample differing pixels from multiple regions
+        System.out.println("\nSample differing pixels (banner area y=33-137):");
         int sampled = 0;
-        for (int y = 0; y < h && sampled < 20; y++) {
-            for (int x = 0; x < w && sampled < 20; x++) {
+        for (int y = 33; y < Math.min(137, h) && sampled < 10; y++) {
+            for (int x = 0; x < w && sampled < 10; x++) {
                 int p1 = rendered.getRGB(x, y);
                 int p2 = reference.getRGB(x, y);
-                int r1 = (p1 >> 16) & 0xFF, g1 = (p1 >> 8) & 0xFF, b1 = p1 & 0xFF;
-                int r2 = (p2 >> 16) & 0xFF, g2 = (p2 >> 8) & 0xFF, b2 = p2 & 0xFF;
-                int maxD = Math.max(Math.abs(r1 - r2), Math.max(Math.abs(g1 - g2), Math.abs(b1 - b2)));
+                int maxD = maxChannelDiff(p1, p2);
                 if (maxD > 20) {
-                    System.out.printf("  (%3d,%3d): rendered=(%3d,%3d,%3d) ref=(%3d,%3d,%3d)%n",
-                            x, y, r1, g1, b1, r2, g2, b2);
+                    System.out.printf("  (%3d,%3d): rendered=0x%06X ref=0x%06X%n",
+                            x, y, p1 & 0xFFFFFF, p2 & 0xFFFFFF);
                     sampled++;
                 }
             }
         }
+        // Text field area (right side, y=260-500)
+        System.out.println("Sample differing pixels (text area y=260-500):");
+        sampled = 0;
+        for (int y = 260; y < Math.min(500, h) && sampled < 15; y++) {
+            for (int x = 300; x < w && sampled < 15; x++) {
+                int p1 = rendered.getRGB(x, y);
+                int p2 = reference.getRGB(x, y);
+                int maxD = maxChannelDiff(p1, p2);
+                if (maxD > 20) {
+                    System.out.printf("  (%3d,%3d): rendered=0x%06X ref=0x%06X%n",
+                            x, y, p1 & 0xFFFFFF, p2 & 0xFFFFFF);
+                    sampled++;
+                }
+            }
+        }
+        // Count pixels per diff type in text area
+        int textWhiteVsGray = 0, textGrayVsWhite = 0, textOther = 0;
+        for (int y = 260; y < Math.min(500, h); y++) {
+            for (int x = 300; x < w; x++) {
+                int p1 = rendered.getRGB(x, y);
+                int p2 = reference.getRGB(x, y);
+                if (maxChannelDiff(p1, p2) > 5) {
+                    int r1 = (p1 >> 16) & 0xFF, r2 = (p2 >> 16) & 0xFF;
+                    if (r2 > 200 && r1 < 100) textWhiteVsGray++; // ref=white, rendered=dark
+                    else if (r1 > 200 && r2 < 100) textGrayVsWhite++; // rendered=white, ref=dark
+                    else textOther++;
+                }
+            }
+        }
+        System.out.printf("Text area diff breakdown: ref=white/us=dark=%d ref=dark/us=white=%d other=%d%n",
+                textWhiteVsGray, textGrayVsWhite, textOther);
+    }
+
+    private static int maxChannelDiff(int p1, int p2) {
+        int r1 = (p1 >> 16) & 0xFF, g1 = (p1 >> 8) & 0xFF, b1 = p1 & 0xFF;
+        int r2 = (p2 >> 16) & 0xFF, g2 = (p2 >> 8) & 0xFF, b2 = p2 & 0xFF;
+        return Math.max(Math.abs(r1 - r2), Math.max(Math.abs(g1 - g2), Math.abs(b1 - b2)));
     }
 }

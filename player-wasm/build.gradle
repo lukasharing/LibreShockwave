@@ -287,3 +287,31 @@ tasks.register('runWasmWebSocketTest', Exec) {
     standardOutput = System.out
     errorOutput    = System.err
 }
+
+// ---------------------------------------------------------------------------
+// Mobiles Disco DCR integration test.
+// Loads the Director 5.19 Mobiles Disco movie through the WASM pipeline
+// and verifies it renders with non-trivial pixel content.
+//
+// Usage:
+//   ./gradlew :player-wasm:runWasmMobilesDiscoTest
+//   ./gradlew :player-wasm:runWasmMobilesDiscoTest -PoutputDir=C:/tmp/mobiles-test
+// ---------------------------------------------------------------------------
+tasks.register('runWasmMobilesDiscoTest', Exec) {
+    group       = 'verification'
+    description = 'Test Mobiles Disco DCR in headless Chromium (WASM pipeline)'
+    dependsOn 'assembleWasm', 'npmInstall'
+
+    def distPath  = layout.buildDirectory.dir('dist').get().asFile.absolutePath
+    def dcrFile   = project.findProperty('dcrFile')  ?: 'C:/xampp/htdocs/mobiles/dcr_0519b_e/20000201_mobiles_disco.dcr'
+    def outputDir = project.findProperty('outputDir') ?: ''
+
+    commandLine 'node',
+        file('src/test/js/wasm-mobiles-disco-test.js').absolutePath,
+        distPath,
+        dcrFile,
+        outputDir
+
+    standardOutput = System.out
+    errorOutput    = System.err
+}

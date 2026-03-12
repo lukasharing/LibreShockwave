@@ -313,8 +313,25 @@ public class AwtTextRenderer implements TextRenderer {
         return systemFontCache;
     }
 
+    /** Classic Mac → Windows font mapping for Director movies.
+     * Director's Shockwave plugin on Windows mapped Mac fonts to these equivalents. */
+    private static final java.util.Map<String, String> MAC_FONT_MAP = java.util.Map.of(
+            "geneva", "SansSerif",
+            "chicago", "Arial",
+            "monaco", "Courier New",
+            "new york", "Times New Roman",
+            "charcoal", "Tahoma"
+    );
+
     private static String resolveDirectorFontName(String name) {
         var cache = getSystemFontCache();
+
+        // 0. Mac → Windows font mapping
+        String mapped = MAC_FONT_MAP.get(name.toLowerCase());
+        if (mapped != null) {
+            String exact = cache.get(mapped.toLowerCase());
+            if (exact != null) return exact;
+        }
 
         // 1. Exact match (case-insensitive)
         String exact = cache.get(name.toLowerCase());

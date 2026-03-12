@@ -309,6 +309,15 @@ public record ScoreChunk(
         return frameData != null ? frameData.header().numChannels() : 0;
     }
 
+    /** Raw decompressed channel data for diagnostic purposes. */
+    public byte[] getRawChannelData() {
+        return frameData != null ? frameData.decompressedData() : null;
+    }
+
+    public int getSpriteRecordSize() {
+        return frameData != null ? frameData.header().spriteRecordSize() : 0;
+    }
+
     /**
      * Get the tempo (FPS) set in the score's tempo channel for the given frame.
      * Returns the most recent tempo change at or before the given frame,
@@ -532,8 +541,9 @@ public record ScoreChunk(
                     int pos = frameStart + c * spriteRecordSize;
                     if (pos + spriteRecordSize > channelData.length) break;
 
-                    if (c == 1) {
-                        // Tempo channel (ScummVM D7: offset 48): tempo FPS at byte 6
+                    if (c == 4) {
+                        // Tempo channel (D6+: channel 4, per ScummVM kScoreChannelTempo):
+                        // tempo FPS at byte 6 within the 48-byte record
                         if (pos + 7 <= channelData.length) {
                             int tempoVal = channelData[pos + 6] & 0xFF;
                             if (tempoVal > 0 && tempoVal <= 120) {
@@ -541,7 +551,7 @@ public record ScoreChunk(
                             }
                         }
                     } else if (c == 5) {
-                        // Palette channel (ScummVM D7: offset 240):
+                        // Palette channel (D6+: channel 5, per ScummVM kScoreChannelPalette):
                         // castLib (sint16) at bytes 0-1, member (sint16) at bytes 2-3
                         if (pos + 4 <= channelData.length) {
                             int palCastLib = (short)(((channelData[pos] & 0xFF) << 8) | (channelData[pos + 1] & 0xFF));

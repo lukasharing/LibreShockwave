@@ -217,15 +217,11 @@ public class SpriteBaker {
             return null;
         }
 
-        // For BACKGROUND_TRANSPARENT text:
-        // - XTRA text members (labels, dynamic text): apply ink processing to remove
-        //   white background, making text float over whatever is behind it.
-        // - Regular TEXT members (input fields): preserve white background as content.
+        // For BACKGROUND_TRANSPARENT text: both XTRA and regular text members are already
+        // rendered with transparent background (bgColor=0x00000000). No further ink processing
+        // needed — the bitmap already has correct alpha (opaque text, transparent background).
         if (sprite.getInkMode() == com.libreshockwave.id.InkMode.BACKGROUND_TRANSPARENT) {
-            boolean isXtra = sprite.getCastMember() != null && sprite.getCastMember().isTextXtra();
-            if (!isXtra) {
-                return textImage;
-            }
+            return textImage;
         }
 
         // Apply ink processing
@@ -339,9 +335,13 @@ public class SpriteBaker {
         int bgColor = (sprite.getInkMode() == com.libreshockwave.id.InkMode.BACKGROUND_TRANSPARENT)
                 ? 0x00000000 : resolvePaletteColor(sprite.getBackColor());
 
+        // Director uses 72 DPI for font sizing; AWT uses screen DPI (96 on Windows).
+        // Empirically, XMED 12pt maps to AWT ~10pt for best pixel match.
+        int renderFontSize = Math.max(6, Math.round(xmedText.fontSize() * 5f / 6f));
+
         return renderer.renderText(
                 xmedText.text(), width, height,
-                xmedText.fontName(), xmedText.fontSize(), "",
+                xmedText.fontName(), renderFontSize, "",
                 "left", textColor, bgColor,
                 true, false,
                 0, 0);
