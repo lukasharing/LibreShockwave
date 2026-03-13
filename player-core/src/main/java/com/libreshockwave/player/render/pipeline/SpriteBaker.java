@@ -319,11 +319,13 @@ public class SpriteBaker {
 
     /**
      * Render text from XMED chunk data (Director 7+ Text Asset Xtra).
+     * Uses XmedStyledText which contains all parsed properties from both
+     * the XMED chunk and the CASt specificData — no raw byte reading needed here.
      */
     private Bitmap bakeTextFromXmed(RenderSprite sprite, com.libreshockwave.DirectorFile file,
                                      com.libreshockwave.chunks.CastMemberChunk castMember) {
-        var xmedText = file.getXmedTextForMember(castMember);
-        if (xmedText == null || xmedText.text() == null || xmedText.text().isEmpty()) {
+        var styledText = file.getXmedStyledTextForMember(castMember);
+        if (styledText == null || styledText.text() == null || styledText.text().isEmpty()) {
             return null;
         }
 
@@ -331,22 +333,13 @@ public class SpriteBaker {
         // sprite dimensions. The score stores different heights for OLE text members
         // than the Property Inspector / member intrinsic size. Director uses the member
         // dimensions for rendering text, not the score's stored height.
-        int width = sprite.getWidth() > 0 ? sprite.getWidth() : 200;
-        int height = sprite.getHeight() > 0 ? sprite.getHeight() : 20;
-        byte[] sd = castMember.specificData();
-        if (sd != null && sd.length >= 56) {
-            int sdH = ((sd[48]&0xFF)<<24)|((sd[49]&0xFF)<<16)|((sd[50]&0xFF)<<8)|(sd[51]&0xFF);
-            int sdW = ((sd[52]&0xFF)<<24)|((sd[53]&0xFF)<<16)|((sd[54]&0xFF)<<8)|(sd[55]&0xFF);
-            if (sdW > 0 && sdH > 0) {
-                width = sdW;
-                height = sdH;
-            }
-        }
+        int width = styledText.width() > 0 ? styledText.width() : (sprite.getWidth() > 0 ? sprite.getWidth() : 200);
+        int height = styledText.height() > 0 ? styledText.height() : (sprite.getHeight() > 0 ? sprite.getHeight() : 20);
 
         // ARGB format — text color from XMED data if available, fall back to palette-resolved foreColor
         int textColor;
-        if (xmedText.colorR() >= 0) {
-            textColor = 0xFF000000 | (xmedText.colorR() << 16) | (xmedText.colorG() << 8) | xmedText.colorB();
+        if (styledText.colorR() >= 0) {
+            textColor = styledText.textColorARGB();
         } else {
             textColor = resolvePaletteColor(sprite.getForeColor());
         }
@@ -358,38 +351,18 @@ public class SpriteBaker {
         var renderer = CastMember.getTextRendererStatic();
         if (renderer == null) return null;
 
-        // Build font style string.
-        // Bold flag comes from specificData @32-35 (u32 BE: 1=bold, 0=plain),
-        // NOT from XMED section 0006 (which is identical between bold/non-bold members).
-        // Italic/underline still come from XMED style flags if present.
-        int style = xmedText.fontStyle();
-        boolean isBold = false;
-        if (sd != null && sd.length >= 36) {
-            int boldFlag = ((sd[32]&0xFF)<<24)|((sd[33]&0xFF)<<16)|((sd[34]&0xFF)<<8)|(sd[35]&0xFF);
-            isBold = boldFlag != 0;
-        }
-        String styleStr = "";
-        if (isBold || (style & 1) != 0) styleStr += "bold";
-        if ((style & 2) != 0) styleStr += (styleStr.isEmpty() ? "" : ",") + "italic";
-        if ((style & 4) != 0) styleStr += (styleStr.isEmpty() ? "" : ",") + "underline";
-
-        String alignment = xmedText.alignment();
+        String styleStr = styledText.fontStyleString();
 
         // Debug: log font requests
         if (com.libreshockwave.vm.DebugConfig.isDebugPlaybackEnabled()) {
-            System.out.printf("XMED TEXT: font='%s' size=%d style='%s' align='%s' dims=%dx%d text='%s' color=0x%06X%n",
-                    xmedText.fontName(), xmedText.fontSize(), styleStr,
-                    alignment, width, height,
-                    xmedText.text().length() > 40 ? xmedText.text().substring(0, 40) + "..." : xmedText.text(),
-                    textColor & 0xFFFFFF);
+            System.out.printf("XMED TEXT: font='%s' size=%d style='%s' align='%s' dims=%dx%d text='%s' color=0x%06X aa=%s%n",
+                    styledText.fontName(), styledText.fontSize(), styleStr,
+                    styledText.alignment(), width, height,
+                    styledText.text().length() > 40 ? styledText.text().substring(0, 40) + "..." : styledText.text(),
+                    textColor & 0xFFFFFF, styledText.antialias());
         }
 
-        return renderer.renderText(
-                xmedText.text(), width, height,
-                xmedText.fontName(), xmedText.fontSize(), styleStr,
-                alignment, textColor, bgColor,
-                true, false,
-                0, 0);
+        return renderer.renderXmedText(styledText, width, height, textColor, bgColor);
     }
 
     /**

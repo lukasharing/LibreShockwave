@@ -252,9 +252,30 @@ public class DirectorFile {
     }
 
     /**
-     * Look up XMED chunk for a cast member via KEY* table and parse text content.
+     * Look up XMED chunk for a cast member via KEY* table and parse into a fully-styled
+     * XmedStyledText record (combining XMED data with CASt specificData).
      * Used for Director 7+ Text Asset Xtra members.
      */
+    public com.libreshockwave.cast.XmedStyledText getXmedStyledTextForMember(CastMemberChunk member) {
+        if (keyTable == null) return null;
+        for (KeyTableChunk.KeyTableEntry entry : keyTable.getEntriesForOwner(member.id())) {
+            if (entry.fourccString().equals("XMED")) {
+                Chunk chunk = getChunk(entry.sectionId());
+                if (chunk instanceof RawChunk rc) {
+                    return com.libreshockwave.cast.XmedTextParser.parseStyled(
+                            rc.data(), member.specificData());
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Look up XMED chunk for a cast member via KEY* table and parse text content.
+     * Used for Director 7+ Text Asset Xtra members.
+     * @deprecated Use {@link #getXmedStyledTextForMember(CastMemberChunk)} instead.
+     */
+    @Deprecated
     public com.libreshockwave.cast.XmedTextParser.XmedText getXmedTextForMember(CastMemberChunk member) {
         if (keyTable == null) return null;
         for (KeyTableChunk.KeyTableEntry entry : keyTable.getEntriesForOwner(member.id())) {

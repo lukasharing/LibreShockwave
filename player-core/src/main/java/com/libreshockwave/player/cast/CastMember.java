@@ -222,14 +222,14 @@ public class CastMember {
             return;
         }
 
-        var xmedText = sourceFile.getXmedTextForMember(chunk);
-        if (xmedText != null && xmedText.text() != null) {
-            textContent = xmedText.text();
-            // Apply font info from XMED
-            if (xmedText.fontName() != null) {
-                textFont = xmedText.fontName();
+        var styledText = sourceFile.getXmedStyledTextForMember(chunk);
+        if (styledText != null && styledText.text() != null) {
+            textContent = styledText.text();
+            // Apply font info from XmedStyledText
+            if (styledText.fontName() != null) {
+                textFont = styledText.fontName();
             }
-            textFontSize = xmedText.fontSize();
+            textFontSize = styledText.fontSize();
         } else {
             textContent = "";
         }

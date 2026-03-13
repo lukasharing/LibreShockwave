@@ -1,6 +1,7 @@
 package com.libreshockwave.player.render.output;
 
 import com.libreshockwave.bitmap.Bitmap;
+import com.libreshockwave.cast.XmedStyledText;
 import com.libreshockwave.font.BitmapFont;
 import com.libreshockwave.player.cast.FontRegistry;
 
@@ -35,15 +36,120 @@ public class SimpleTextRenderer implements TextRenderer {
         BitmapFont pfrFont = resolveBitmapFont(fontName, fontSize, wantsBold, wantsItalic, usedRealBold);
         if (pfrFont != null) {
             boolean syntheticBold = wantsBold && !usedRealBold[0];
-            return renderWithBitmapFont(pfrFont, text, width, height,
+            Bitmap result = renderWithBitmapFont(pfrFont, text, width, height,
                     alignment, textColor, bgColor, wordWrap,
                     fixedLineSpace, topSpacing, syntheticBold, underline);
+            if (antialias && result != null) {
+                result = applyTextAA(result, bgColor);
+            }
+            return result;
         }
 
         // Fallback: render with built-in pixel font
-        return renderWithBuiltinFont(text, width, height, fontSize,
+        Bitmap result = renderWithBuiltinFont(text, width, height, fontSize,
                 alignment, textColor, bgColor, wordWrap,
                 fixedLineSpace, topSpacing, underline);
+        if (antialias && result != null) {
+            result = applyTextAA(result, bgColor);
+        }
+        return result;
+    }
+
+    /**
+     * Render XMED styled text to a bitmap.
+     * Dedicated path for Director 7+ Text Asset Xtra members.
+     * Uses its own font resolution chain: Mac bitmap TTF → Windows outline TTF → PFR → builtin.
+     */
+    @Override
+    public Bitmap renderXmedText(XmedStyledText styledText,
+                                 int width, int height,
+                                 int textColor, int bgColor) {
+        if (styledText == null || styledText.text() == null) return null;
+        if (width <= 0) width = 200;
+        if (height <= 0) height = 20;
+
+        String text = styledText.text();
+        String fontName = styledText.fontName();
+        int fontSize = styledText.fontSize();
+        String styleStr = styledText.fontStyleString();
+        String alignment = styledText.alignment();
+        boolean wordWrap = styledText.wordWrap();
+        boolean antialias = false; // disabled — AA blurs bitmap fonts at small sizes
+        int fixedLineSpace = styledText.fixedLineSpace();
+
+        String style = styleStr != null ? styleStr.toLowerCase() : "";
+        boolean wantsBold = style.contains("bold");
+        boolean wantsItalic = style.contains("italic");
+        boolean underline = style.contains("underline");
+
+        // XMED font resolution: Mac bitmap TTF → Windows outline TTF → PFR → builtin
+        boolean[] usedRealBold = {false};
+        BitmapFont font = resolveXmedFont(fontName, fontSize, wantsBold, wantsItalic, usedRealBold);
+        if (font != null) {
+            boolean syntheticBold = wantsBold && !usedRealBold[0];
+            Bitmap result = renderWithBitmapFont(font, text, width, height,
+                    alignment, textColor, bgColor, wordWrap,
+                    fixedLineSpace, 0, syntheticBold, underline);
+            if (antialias && result != null) {
+                result = applyTextAA(result, bgColor);
+            }
+            return result;
+        }
+
+        // Fallback: render with built-in pixel font
+        Bitmap result = renderWithBuiltinFont(text, width, height, fontSize,
+                alignment, textColor, bgColor, wordWrap,
+                fixedLineSpace, 0, underline);
+        if (antialias && result != null) {
+            result = applyTextAA(result, bgColor);
+        }
+        return result;
+    }
+
+    /**
+     * XMED-specific font resolution chain.
+     * Priority: Mac bitmap TTFs (pixel-perfect) → Windows outline TTFs → PFR → first registered.
+     * Separate from STXT path to allow independent tuning.
+     */
+    private static BitmapFont resolveXmedFont(String fontName, int fontSize,
+                                               boolean bold, boolean italic,
+                                               boolean[] usedRealBold) {
+        if (fontName == null) return null;
+
+        // 1. Mac bitmap TTFs first — pixel-perfect at target size, best for small sizes
+        BitmapFont macFont = com.libreshockwave.player.cast.MacFontBundle.getFont(
+                fontName, fontSize, bold, italic);
+        if (macFont != null) {
+            usedRealBold[0] = bold && com.libreshockwave.player.cast.MacFontBundle.hasBoldVariant(fontName);
+            return macFont;
+        }
+
+        // 2. Windows outline TTFs fallback
+        BitmapFont winFont = com.libreshockwave.player.cast.WindowsFontBundle.getFont(
+                fontName, fontSize, bold, italic);
+        if (winFont != null) {
+            usedRealBold[0] = bold && com.libreshockwave.player.cast.WindowsFontBundle.hasBoldVariant(fontName);
+            return winFont;
+        }
+
+        // 3. PFR fonts via FontRegistry
+        BitmapFont exact = FontRegistry.getBitmapFont(fontName, fontSize);
+        if (exact != null) return exact;
+
+        String resolved = FontRegistry.resolveFont(fontName);
+        if (resolved != null) {
+            BitmapFont font = FontRegistry.getBitmapFont(resolved, fontSize);
+            if (font != null) return font;
+        }
+
+        // 4. Last resort: first registered font
+        String fallback = FontRegistry.getFirstRegisteredFont();
+        if (fallback != null) {
+            int fbSize = fontSize > 1 ? fontSize - 1 : fontSize;
+            return FontRegistry.getBitmapFont(fallback, fbSize);
+        }
+
+        return null;
     }
 
     @Override
@@ -323,6 +429,48 @@ public class SimpleTextRenderer implements TextRenderer {
                 pixels[ulY * width + ux] = textColor;
             }
         }
+    }
+
+    /**
+     * Apply simple antialiasing to a rendered text bitmap by blurring boundary pixels.
+     * Only pixels on the edge between text and background are smoothed (3x3 box average).
+     */
+    private static Bitmap applyTextAA(Bitmap bitmap, int bgColor) {
+        int w = bitmap.getWidth();
+        int h = bitmap.getHeight();
+        int[] src = bitmap.getPixels();
+        int[] dst = src.clone();
+
+        for (int y = 1; y < h - 1; y++) {
+            for (int x = 1; x < w - 1; x++) {
+                int idx = y * w + x;
+                int cur = src[idx];
+                // Only blur pixels that are on a text/background boundary
+                boolean isBoundary = false;
+                for (int dy = -1; dy <= 1 && !isBoundary; dy++) {
+                    for (int dx = -1; dx <= 1 && !isBoundary; dx++) {
+                        if (dy == 0 && dx == 0) continue;
+                        int neighbor = src[(y + dy) * w + (x + dx)];
+                        if (neighbor != cur) isBoundary = true;
+                    }
+                }
+                if (!isBoundary) continue;
+
+                int aSum = 0, rSum = 0, gSum = 0, bSum = 0;
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dx = -1; dx <= 1; dx++) {
+                        int p = src[(y + dy) * w + (x + dx)];
+                        aSum += (p >> 24) & 0xFF;
+                        rSum += (p >> 16) & 0xFF;
+                        gSum += (p >> 8) & 0xFF;
+                        bSum += p & 0xFF;
+                    }
+                }
+                dst[idx] = ((aSum / 9) << 24) | ((rSum / 9) << 16) | ((gSum / 9) << 8) | (bSum / 9);
+            }
+        }
+
+        return new Bitmap(w, h, 32, dst);
     }
 
     // --- Built-in font metrics ---

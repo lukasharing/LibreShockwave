@@ -52,6 +52,31 @@ public interface TextRenderer {
                       int fixedLineSpace);
 
     /**
+     * Render XMED styled text to a bitmap image.
+     * Dedicated path for Director 7+ Text Asset Xtra members, separate from STXT.
+     * The XmedStyledText contains all properties needed for rendering.
+     *
+     * @param styledText the fully-parsed XMED text with per-run styling
+     * @param width      bitmap width in pixels
+     * @param height     bitmap height in pixels
+     * @param textColor  ARGB text color (overrides span colors if non-zero)
+     * @param bgColor    ARGB background color
+     * @return rendered bitmap, or null if rendering is not supported
+     */
+    default Bitmap renderXmedText(com.libreshockwave.cast.XmedStyledText styledText,
+                                  int width, int height,
+                                  int textColor, int bgColor) {
+        // Default: delegate to renderText() using primary font info
+        if (styledText == null) return null;
+        return renderText(styledText.text(), width, height,
+                styledText.fontName(), styledText.fontSize(),
+                styledText.fontStyleString(),
+                styledText.alignment(), textColor, bgColor,
+                styledText.wordWrap(), styledText.antialias(),
+                styledText.fixedLineSpace(), 0);
+    }
+
+    /**
      * Word-wrap a single line of text into multiple lines that fit within maxWidth.
      * Shared by all TextRenderer implementations.
      *

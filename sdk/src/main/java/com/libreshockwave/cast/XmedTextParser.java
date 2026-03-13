@@ -1,5 +1,7 @@
 package com.libreshockwave.cast;
 
+import java.util.List;
+
 /**
  * Parser for Director 7+ Text Asset Xtra XMED chunk data.
  * XMED chunks contain text content for "text" sub-type Xtra members.
@@ -16,6 +18,10 @@ package com.libreshockwave.cast;
  */
 public class XmedTextParser {
 
+    /**
+     * @deprecated Use {@link XmedStyledText} via {@link #parseStyled(byte[], byte[])} instead.
+     */
+    @Deprecated
     public record XmedText(String text, String fontName, int fontSize, int fontStyle,
                               String alignment,
                               int colorR, int colorG, int colorB) {}
@@ -31,21 +37,98 @@ public class XmedTextParser {
     }
 
     /**
-     * Parse text from XMED chunk data.
-     * Returns null if the data cannot be parsed.
+     * Parse XMED chunk data combined with CASt specificData into a fully-styled
+     * XmedStyledText record. This is the primary parse entry point.
+     *
+     * @param xmedData     raw bytes from the XMED chunk
+     * @param specificData raw bytes from the CASt specificData (may be null)
+     * @return parsed XmedStyledText, or null if XMED data cannot be parsed
      */
+    public static XmedStyledText parseStyled(byte[] xmedData, byte[] specificData) {
+        if (xmedData == null || xmedData.length < 10) return null;
+
+        String ascii = toAsciiString(xmedData);
+
+        String text = extractText(xmedData, ascii);
+        String fontName = extractFont(xmedData, ascii);
+        int[] fontSizeAndStyle = extractFontSizeAndStyle(xmedData, ascii);
+        int[] color = extractColor(xmedData, ascii);
+        String alignment = extractAlignment(xmedData, ascii);
+
+        if (fontName == null) fontName = "Geneva";
+        int fontSize = fontSizeAndStyle[0];
+        int fontStyle = fontSizeAndStyle[1];
+        if (alignment == null) alignment = "left";
+
+        // Extract specificData fields
+        int width = 0, height = 0;
+        boolean memberBold = false;
+        boolean antialias = false;
+        int aaThreshold = 14;
+
+        if (specificData != null && specificData.length >= 56) {
+            height = readU32BE(specificData, 48);
+            width = readU32BE(specificData, 52);
+        }
+        if (specificData != null && specificData.length >= 36) {
+            int boldFlag = readU32BE(specificData, 32);
+            memberBold = boldFlag != 0;
+        }
+        if (specificData != null && specificData.length >= 40) {
+            int aaDisabled = readU32BE(specificData, 12);
+            if (aaDisabled == 0) {
+                int thresholdEnabled = readU32BE(specificData, 24);
+                if (thresholdEnabled == 0) {
+                    antialias = true;
+                } else {
+                    aaThreshold = readU32BE(specificData, 36);
+                    antialias = fontSize >= aaThreshold;
+                }
+            }
+        }
+
+        if (text.contains("WELCOME")) {
+            var t2 = 2;
+        }
+
+        // Build a single styled span covering the full text (per-run parsing TBD)
+        boolean spanBold = memberBold || (fontStyle & 1) != 0;
+        boolean spanItalic = (fontStyle & 2) != 0;
+        boolean spanUnderline = (fontStyle & 4) != 0;
+        int textLen = text != null ? text.length() : 0;
+        StyledSpan span = new StyledSpan(0, textLen, fontName, fontSize,
+                spanBold, spanItalic, spanUnderline,
+                color[0], color[1], color[2]);
+
+        return new XmedStyledText(
+                text,
+                List.of(span),
+                alignment,
+                true,           // wordWrap — XMED text members default to wrapping
+                0,              // fixedLineSpace
+                width, height,
+                fontName, fontSize,
+                antialias, aaThreshold,
+                memberBold,
+                color[0], color[1], color[2]
+        );
+    }
+
+    /**
+     * Parse text from XMED chunk data (legacy API without specificData).
+     * Returns null if the data cannot be parsed.
+     * @deprecated Use {@link #parseStyled(byte[], byte[])} instead.
+     */
+    @Deprecated
     public static XmedText parse(byte[] data) {
         if (data == null || data.length < 10) return null;
 
-        // Convert raw bytes to string for searching (ASCII portion)
         String ascii = toAsciiString(data);
 
         String text = extractText(data, ascii);
         String fontName = extractFont(data, ascii);
         int[] fontSizeAndStyle = extractFontSizeAndStyle(data, ascii);
         int[] color = extractColor(data, ascii);
-
-        // Extract paragraph alignment from XMED data
         String alignment = extractAlignment(data, ascii);
 
         return new XmedText(text, fontName != null ? fontName : "Geneva",
@@ -286,7 +369,6 @@ public class XmedTextParser {
         java.util.Map<Integer, Integer> sizeCounts = new java.util.LinkedHashMap<>();
         int firstSize = -1;
         int fontStyle = 0;
-        boolean styleFound = false;
 
         for (int i = secStart; i < secEnd - 6; i++) {
             if (data[i] == 0x02) {
@@ -326,6 +408,14 @@ public class XmedTextParser {
         }
 
         return new int[]{fontSize, fontStyle};
+    }
+
+    /** Read a big-endian unsigned 32-bit integer from a byte array. */
+    private static int readU32BE(byte[] data, int offset) {
+        return ((data[offset] & 0xFF) << 24)
+             | ((data[offset + 1] & 0xFF) << 16)
+             | ((data[offset + 2] & 0xFF) << 8)
+             |  (data[offset + 3] & 0xFF);
     }
 
     private static boolean isHexDigit(int c) {
