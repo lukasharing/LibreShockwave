@@ -78,7 +78,11 @@ public class ScoreNavigator {
         if (labels == null) return;
 
         for (FrameLabelsChunk.FrameLabel label : labels.labels()) {
-            frameLabels.put(label.label().toLowerCase(), label.frameNum().value());
+            // Use local variables to avoid TeaVM WASM code-gen issue with chained
+            // method calls inside HashMap.put() arguments (garbled keys/values)
+            String key = label.label().toLowerCase();
+            int value = label.frameNum().value();
+            frameLabels.put(key, value);
         }
     }
 
@@ -145,7 +149,10 @@ public class ScoreNavigator {
      * @return Frame number (1-indexed) or -1 if not found
      */
     public int getFrameForLabel(String label) {
-        Integer frame = frameLabels.get(label.toLowerCase());
+        // Use local variable to avoid TeaVM WASM code-gen issue with chained
+        // method calls inside HashMap.get() arguments
+        String key = label.toLowerCase();
+        Integer frame = frameLabels.get(key);
         return frame != null ? frame : -1;
     }
 

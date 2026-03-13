@@ -72,12 +72,16 @@ public record FrameLabelsChunk(
 
         // Read label frame/offset pairs
         // Format: (frameNum U16, labelOffset U16) per entry
-        List<int[]> labelFrames = new ArrayList<>();
+        // Use parallel lists instead of int[] arrays to avoid TeaVM WASM code-gen
+        // issues with array element assignment reordering
+        List<Integer> frameNums = new ArrayList<>();
+        List<Integer> labelOffsets = new ArrayList<>();
         for (int i = 0; i < labelsCount; i++) {
             if (reader.bytesLeft() < 4) break;
             int frameNum = reader.readU16();
             int labelOffset = reader.readU16();
-            labelFrames.add(new int[] { labelOffset, frameNum });
+            frameNums.add(frameNum);
+            labelOffsets.add(labelOffset);
         }
 
         if (reader.bytesLeft() < 4) {
@@ -89,16 +93,31 @@ public record FrameLabelsChunk(
         // Read entire string data blob, then extract labels by offset
         byte[] stringData = reader.readBytes(Math.min(labelsSize, reader.bytesLeft()));
 
-        for (int i = 0; i < labelFrames.size(); i++) {
-            int labelOffset = labelFrames.get(i)[0];
-            int frameNum = labelFrames.get(i)[1];
+        // Build sorted index array (sorted by label offset for correct boundary detection)
+        int entryCount = frameNums.size();
+        List<Integer> sortedIndices = new ArrayList<>();
+        for (int i = 0; i < entryCount; i++) {
+            sortedIndices.add(i);
+        }
+        sortedIndices.sort((a, b) -> {
+            int offA = labelOffsets.get(a).intValue();
+            int offB = labelOffsets.get(b).intValue();
+            return Integer.compare(offA, offB);
+        });
+
+        for (int si = 0; si < sortedIndices.size(); si++) {
+            int idx = sortedIndices.get(si).intValue();
+            int labelOffset = labelOffsets.get(idx).intValue();
+            int frameNum = frameNums.get(idx).intValue();
 
             if (labelOffset < 0 || labelOffset >= stringData.length) continue;
 
             // Find label length: either to next offset or end of data
             int labelEnd;
-            if (i < labelFrames.size() - 1) {
-                labelEnd = Math.min(labelFrames.get(i + 1)[0], stringData.length);
+            if (si < sortedIndices.size() - 1) {
+                int nextIdx = sortedIndices.get(si + 1).intValue();
+                int nextOffset = labelOffsets.get(nextIdx).intValue();
+                labelEnd = Math.min(nextOffset, stringData.length);
             } else {
                 labelEnd = stringData.length;
             }
@@ -111,7 +130,8 @@ public record FrameLabelsChunk(
             int labelLen = labelEnd - labelOffset;
             if (labelLen > 0) {
                 String labelStr = new String(stringData, labelOffset, labelLen);
-                labels.add(new FrameLabel(new FrameId(Math.max(1, frameNum)), labelStr));
+                FrameId fid = new FrameId(Math.max(1, frameNum));
+                labels.add(new FrameLabel(fid, labelStr));
             }
         }
 

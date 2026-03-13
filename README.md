@@ -741,6 +741,47 @@ return switch (method) {
 
 The outer switch expression with `yield` works fine — only the **nesting** of a second switch expression inside it causes the issue.
 
+#### TeaVM `int[]` array element assignment reordering
+
+TeaVM 0.13 reorders element assignments when writing to `int[]` arrays. Both array initializers (`new int[] { a, b }`) and explicit index assignment (`arr[0] = a; arr[1] = b;`) can have their values swapped in the compiled WASM output:
+
+```java
+// BROKEN in TeaVM WASM — elements get swapped:
+int offset = reader.readU16();
+int frame = reader.readU16();
+int[] entry = new int[2];
+entry[0] = offset;  // may contain frame at runtime
+entry[1] = frame;   // may contain offset at runtime
+list.add(entry);
+
+// ALSO BROKEN — initializer has same problem:
+list.add(new int[] { offset, frame });
+
+// CORRECT — use parallel List<Integer> instead:
+List<Integer> offsets = new ArrayList<>();
+List<Integer> frames = new ArrayList<>();
+offsets.add(offset);
+frames.add(frame);
+```
+
+Use parallel `List<Integer>` or separate variables instead of multi-element `int[]` arrays when the element order matters.
+
+#### TeaVM chained method calls in `HashMap.put()`/`get()` arguments
+
+TeaVM 0.13 garbles values when chained method calls appear as arguments to `HashMap.put()` or `HashMap.get()`. The compiled WASM produces wrong keys and/or values:
+
+```java
+// BROKEN in TeaVM WASM — garbled HashMap keys/values:
+map.put(label.getName().toLowerCase(), label.getFrame().value());
+
+// CORRECT — extract to local variables first:
+String key = label.getName().toLowerCase();
+int value = label.getFrame().value();
+map.put(key, value);
+```
+
+Always extract chained method call results into local variables before passing them as arguments to collection methods like `put()`, `get()`, `add()`, etc.
+
 <details>
 <summary>Multiuser Xtra — WebSocket proxy setup</summary>
 
