@@ -927,21 +927,28 @@ var LibreShockwave = (function() {
     ShockwavePlayer.prototype._startNormalLoop = function() {
         var self = this;
         var ticking = false;
+        var lastTickTime = performance.now();
         function loop() {
             if (!self._playing) return;
             var tempo = self._lastTempo || 15;
             var ms = 1000.0 / (tempo > 0 ? tempo : 15);
             if (!ticking) {
+                var tickStart = performance.now();
                 ticking = true;
                 self._doTick().then(function() {
                     ticking = false;
                     if (self._playing) {
-                        self._normalTimerId = setTimeout(loop, ms);
+                        // Compensate for tick processing time to hit target FPS
+                        var elapsed = performance.now() - lastTickTime;
+                        var delay = Math.max(0, ms - elapsed);
+                        lastTickTime = performance.now();
+                        self._normalTimerId = setTimeout(loop, delay);
                     }
                 }).catch(function(err) {
                     ticking = false;
                     console.error('[LS] tick error:', err);
                     if (self._playing) {
+                        lastTickTime = performance.now();
                         self._normalTimerId = setTimeout(loop, ms);
                     }
                 });
