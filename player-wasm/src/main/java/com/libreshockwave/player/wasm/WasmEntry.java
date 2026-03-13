@@ -221,7 +221,9 @@ public class WasmEntry {
             if (wasmPlayer.getPlayer() != null) {
                 wasmPlayer.getPlayer().getVM().setStepLimit(5_000_000);
             }
+            log("play() called, frame before=" + wasmPlayer.getCurrentFrame());
             wasmPlayer.play();
+            log("play() done, frame after=" + wasmPlayer.getCurrentFrame());
         } catch (Throwable e) {
             captureError("play", e);
         }

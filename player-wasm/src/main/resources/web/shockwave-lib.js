@@ -915,61 +915,13 @@ var LibreShockwave = (function() {
 
     // --- Animation loop ---
 
-    /**
-     * Fast-loading mode: during the Director loading screen (frames 1-10),
-     * the Lingo state machine needs hundreds of ticks to parse external data.
-     * At the normal 15fps tempo that takes 30+ seconds. Instead, we send ticks
-     * as fast as the WASM round-trip allows (~4-10ms each), reaching the hotel
-     * view in a few seconds. Once loading completes, we switch to the normal
-     * tempo-gated loop for smooth animation playback.
-     */
     ShockwavePlayer.prototype._startLoop = function() {
-        this._stopLoop(); // cancel any previous fast/normal loop before starting a new one
-        var self = this;
-        this._loadingPhase = true;
+        this._stopLoop();
+        this._loadingPhase = false;
         this._tickCount = 0;
         this._lastRenderTime = 0;
-        this._loopSeq = this._loadSeq; // tie this loop to the current load
-        console.log('[LS] Starting fast-loading loop (seq=' + this._loopSeq + ')');
-        this._runFastLoop();
-    };
-
-    ShockwavePlayer.prototype._runFastLoop = function() {
-        var self = this;
-        if (!this._playing) return;
-        if (this._loadSeq !== this._loopSeq) return; // stale loop from old load
-
-        this._doTick().then(function() {
-            if (!self._playing) {
-                console.log('[LS] fast loop: _playing is false after tick ' + self._tickCount + ', stopping');
-                return;
-            }
-            if (self._loadSeq !== self._loopSeq) return; // stale
-
-            self._tickCount++;
-
-            // Detect loading complete: sprite count >= 10 means hotel view is
-            // rendering (has 25+ sprites), OR after 5000 fast ticks bail out
-            if (self._lastSpriteCount >= 10 || self._tickCount > 5000) {
-                if (self._loadingPhase) {
-                    console.log('[LS] Loading complete after ' + self._tickCount +
-                                ' ticks (' + Math.round(performance.now() - self._loadStartTime) +
-                                'ms), switching to normal loop');
-                    self._loadingPhase = false;
-                }
-                self._startNormalLoop();
-                return;
-            }
-
-            // Still loading — schedule next tick immediately (setTimeout(0) = ~1-4ms)
-            self._fastTimerId = setTimeout(function() { self._runFastLoop(); }, 0);
-
-        }).catch(function(err) {
-            console.error('[LS] fast tick error:', err);
-            // Fallback to normal loop on error
-            self._loadingPhase = false;
-            self._startNormalLoop();
-        });
+        this._loopSeq = this._loadSeq;
+        this._startNormalLoop();
     };
 
     ShockwavePlayer.prototype._startNormalLoop = function() {

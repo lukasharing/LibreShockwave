@@ -215,7 +215,7 @@ async function main() {
 <canvas id="stage" width="640" height="480"></canvas>
 <script src="${baseUrl}/libreshockwave.js"></script>
 <script>
-    var _testState = { tick: 0, maxSprites: 0, frame: 0, done: false, error: null };
+    var _testState = { tick: 0, maxSprites: 0, frame: 0, done: false, error: null, debugLogs: [] };
 
     var player = LibreShockwave.create('stage', {
         basePath: '${baseUrl}/',
@@ -231,10 +231,21 @@ async function main() {
         onError: function(msg) {
             _testState.error = msg;
             console.error('[TEST] Error: ' + msg);
+        },
+        onDebugLog: function(log) {
+            _testState.debugLogs.push(log);
+            // Print all non-empty lines for debugging
+            var lines = log.split('\\n');
+            for (var i = 0; i < lines.length; i++) {
+                var l = lines[i].trim();
+                if (l) console.log('[WASM] ' + l);
+            }
         }
     });
 
     player.load('${baseUrl}/${dcrFileName}');
+    // Enable debug AFTER load so WASM engine exists
+    setTimeout(function() { player.setDebugPlayback(true); }, 1000);
 </script>
 </body></html>`;
 
@@ -362,6 +373,19 @@ async function main() {
         if (errors.length > 0) {
             console.log('\nPage errors:');
             errors.forEach(e => console.log('  ' + e));
+        }
+
+        // Dump all accumulated WASM debug logs
+        const allDebugLogs = await page.evaluate(() => window._testState.debugLogs || []);
+        if (allDebugLogs.length > 0) {
+            console.log('\n--- WASM Debug Logs ---');
+            for (const log of allDebugLogs) {
+                // Print first 200 lines max
+                const lines = log.split('\n').filter(l => l.trim());
+                for (const line of lines) {
+                    console.log('  ' + line);
+                }
+            }
         }
 
         // Pass criteria: sprites rendered and canvas has meaningful content

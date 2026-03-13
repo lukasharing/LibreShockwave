@@ -293,6 +293,7 @@ public class Player {
         this.frameContext.setTimeoutManager(timeoutManager);
         this.frameContext.getEventDispatcher().setCastLibManager(castLibManager);
         this.frameContext.getEventDispatcher().setSpriteRegistry(stageRenderer.getSpriteRegistry());
+        this.frameContext.getBehaviorManager().setCastLibManager(castLibManager);
         this.frameContext.setActorListSupplier(movieProperties::getActorList);
         this.playerTraceListener = new PlayerTraceListener();
         vm.setTraceListener(playerTraceListener);

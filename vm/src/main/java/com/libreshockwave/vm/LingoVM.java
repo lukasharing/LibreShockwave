@@ -437,7 +437,6 @@ public class LingoVM {
                 le.setLingoCallStack(getCallStack());
             }
             if (DebugConfig.isDebugPlaybackEnabled()) {
-                System.err.println(e.getMessage());
                 System.err.println(formatCallStack());
                 // Print Java stack trace for unexpected exceptions (NPE etc.)
                 if (!(e instanceof LingoException)) {

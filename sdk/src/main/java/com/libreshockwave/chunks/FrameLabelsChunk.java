@@ -71,6 +71,7 @@ public record FrameLabelsChunk(
         int labelsCount = reader.readU16();
 
         // Read label frame/offset pairs
+        // Format: (frameNum U16, labelOffset U16) per entry
         List<int[]> labelFrames = new ArrayList<>();
         for (int i = 0; i < labelsCount; i++) {
             if (reader.bytesLeft() < 4) break;
@@ -85,20 +86,31 @@ public record FrameLabelsChunk(
 
         int labelsSize = reader.readI32();
 
-        // Read label strings
+        // Read entire string data blob, then extract labels by offset
+        byte[] stringData = reader.readBytes(Math.min(labelsSize, reader.bytesLeft()));
+
         for (int i = 0; i < labelFrames.size(); i++) {
             int labelOffset = labelFrames.get(i)[0];
             int frameNum = labelFrames.get(i)[1];
 
-            int labelLen;
+            if (labelOffset < 0 || labelOffset >= stringData.length) continue;
+
+            // Find label length: either to next offset or end of data
+            int labelEnd;
             if (i < labelFrames.size() - 1) {
-                labelLen = labelFrames.get(i + 1)[0] - labelOffset;
+                labelEnd = Math.min(labelFrames.get(i + 1)[0], stringData.length);
             } else {
-                labelLen = labelsSize - labelOffset;
+                labelEnd = stringData.length;
             }
 
-            if (reader.bytesLeft() >= labelLen && labelLen > 0) {
-                String labelStr = reader.readString(labelLen);
+            // Trim trailing null bytes
+            while (labelEnd > labelOffset && stringData[labelEnd - 1] == 0) {
+                labelEnd--;
+            }
+
+            int labelLen = labelEnd - labelOffset;
+            if (labelLen > 0) {
+                String labelStr = new String(stringData, labelOffset, labelLen);
                 labels.add(new FrameLabel(new FrameId(Math.max(1, frameNum)), labelStr));
             }
         }
