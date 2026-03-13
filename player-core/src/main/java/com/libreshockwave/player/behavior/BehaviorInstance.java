@@ -89,9 +89,11 @@ public class BehaviorInstance {
 
     /**
      * Convert to a Datum for use as a receiver in handler calls.
+     * Shares the property map so that handler-set properties persist
+     * across multiple handler invocations (beginSprite → exitFrame, etc.).
      */
     public Datum toDatum() {
-        return new Datum.ScriptInstance(id, new HashMap<>(properties));
+        return new Datum.ScriptInstance(id, properties);
     }
 
     @Override

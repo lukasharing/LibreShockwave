@@ -207,9 +207,6 @@ public sealed interface Datum {
 
     /** Script instance reference */
     record ScriptInstance(int scriptId, Map<String, Datum> properties) implements Datum {
-        public ScriptInstance {
-            properties = new LinkedHashMap<>(properties);
-        }
         @Override
         public String toString() { return "<script instance " + scriptId + ">"; }
     }

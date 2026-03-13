@@ -76,21 +76,34 @@ public class EventDispatcher {
         // This allows execution to continue after errors
         vm.resetErrorState();
 
-        // 1. Sprite behaviors (in channel order)
+        // Director event propagation model:
+        // - Each sprite's behaviors form their own propagation chain.
+        //   stopPropagation within a sprite only prevents OTHER behaviors
+        //   on the SAME sprite from receiving the event.
+        // - Frame script and movie scripts are dispatched independently
+        //   of sprite behavior propagation.
+
+        // 1. Sprite behaviors (in channel order, reset propagation per sprite)
         List<BehaviorInstance> spriteInstances = behaviorManager.getSpriteInstances();
         BehaviorInstance frameInstance = behaviorManager.getFrameScriptInstance();
+        int lastChannel = -1;
         for (BehaviorInstance instance : spriteInstances) {
+            int channel = instance.getSpriteNum();
+            if (channel != lastChannel) {
+                // New sprite — reset propagation so each sprite gets the event
+                stopPropagation = false;
+                lastChannel = channel;
+            }
             if (stopPropagation) {
-                break;
+                continue;  // Skip remaining behaviors on same sprite
             }
             invokeHandler(instance, handlerName, args);
         }
 
-        // 2. Frame behavior
-        if (!stopPropagation) {
-            if (frameInstance != null) {
-                invokeHandler(frameInstance, handlerName, args);
-            }
+        // 2. Frame behavior (always dispatched, independent of sprite propagation)
+        stopPropagation = false;
+        if (frameInstance != null) {
+            invokeHandler(frameInstance, handlerName, args);
         }
 
         // 3. Movie scripts

@@ -103,6 +103,27 @@ public class FrameContext {
     }
 
     /**
+     * Force an immediate frame transition, bypassing the exitFrame handler.
+     * Used when external navigation (e.g. mouse click → go to "label") must
+     * override an exitFrame script that loops with "go to the frame".
+     * In Director, user-initiated go() during mouse events takes priority.
+     */
+    public void forceGoToFrame(int frame) {
+        int max = getFrameCount();
+        if (frame < 1 || frame > max) return;
+
+        int oldFrame = currentFrame;
+        logEvent("forceGoToFrame: " + oldFrame + " -> " + frame);
+
+        endSpritesLeavingFrame(oldFrame, frame);
+        behaviorManager.clearFrameScript();
+
+        currentFrame = frame;
+        pendingFrame = null;  // Clear any pending to prevent exitFrame override
+        enterFrame(frame);
+    }
+
+    /**
      * Go to a labeled frame.
      */
     public void goToLabel(String label) {

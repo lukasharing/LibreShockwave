@@ -224,6 +224,153 @@ System.out.println("\n=== Starting playback ===");
                 file.disassembleScript(script135);
             }
         }
+        // === STAR SPRITE DIAGNOSTIC ===
+        System.out.println("\n=== STAR SPRITE DIAGNOSTIC (ch 33-49) ===");
+        // Check sprite spans for star channels
+        System.out.println("Sprite spans for star channels:");
+        for (var span : nav.getAllSpans()) {
+            int ch = span.getChannel();
+            if (ch >= 33 && ch <= 49) {
+                System.out.printf("  ch=%d frames=%d-%d behaviors=%d%n",
+                        ch, span.getStartFrame(), span.getEndFrame(), span.getBehaviors().size());
+                for (var beh : span.getBehaviors()) {
+                    System.out.printf("    behavior: castLib=%d member=%d%n",
+                            beh.castLib(), beh.castMember());
+                    // Look up the script
+                    var behMember = file.getCastMemberByNumber(beh.castLib(), beh.castMember());
+                    if (behMember != null) {
+                        System.out.printf("    -> member name='%s' type=%s isScript=%s scriptId=%d%n",
+                                behMember.name(), behMember.memberType(), behMember.isScript(), behMember.scriptId());
+                        if (behMember.isScript()) {
+                            var script = file.getScriptByContextId(behMember.scriptId());
+                            if (script != null) {
+                                System.out.printf("    -> script type=%s handlers:%n", script.getScriptType());
+                                var names = file.getScriptNamesForScript(script);
+                                if (names != null) {
+                                    for (var handler : script.handlers()) {
+                                        String hName = names.getName(handler.nameId());
+                                        System.out.printf("      handler: %s (nameIdx=%d)%n", hName, handler.nameId());
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        System.out.printf("    -> member NOT FOUND%n");
+                    }
+                }
+            }
+        }
+        // Check score channel data for star channels at frame 98
+        System.out.println("\nScore channel data for star channels at frame 97 (0-indexed):");
+        if (scoreChunk != null) {
+            byte[] rawData = scoreChunk.getRawChannelData();
+            int sprRecSize = scoreChunk.getSpriteRecordSize();
+            int numCh = scoreChunk.getChannelCount();
+            int frameSize = numCh * sprRecSize;
+            int frameIdx = 97;
+            for (int ch = 33; ch <= 49; ch++) {
+                int pos = frameIdx * frameSize + ch * sprRecSize;
+                if (pos + sprRecSize <= rawData.length) {
+                    int sprType = rawData[pos] & 0xFF;
+                    int ink = rawData[pos+1] & 0x3F;
+                    int castLib = ((rawData[pos+4]&0xFF)<<8) | (rawData[pos+5]&0xFF);
+                    int castMem = ((rawData[pos+6]&0xFF)<<8) | (rawData[pos+7]&0xFF);
+                    int posY = ((rawData[pos+12]&0xFF)<<8) | (rawData[pos+13]&0xFF);
+                    int posX = ((rawData[pos+14]&0xFF)<<8) | (rawData[pos+15]&0xFF);
+                    int width = ((rawData[pos+18]&0xFF)<<8) | (rawData[pos+19]&0xFF);
+                    int height = ((rawData[pos+16]&0xFF)<<8) | (rawData[pos+17]&0xFF);
+                    if (sprType != 0 || castMem != 0) {
+                        var member = file.getCastMemberByNumber(castLib, castMem);
+                        String memberName = member != null ? member.name() : "?";
+                        String memberType = member != null ? String.valueOf(member.memberType()) : "?";
+                        System.out.printf("  ch=%d sprType=%d ink=%d castLib=%d castMem=%d pos=(%d,%d) %dx%d member='%s' type=%s%n",
+                                ch, sprType, ink, castLib, castMem, posX, posY, width, height, memberName, memberType);
+                    }
+                }
+            }
+        }
+        // Disassemble the "random stars" behavior script with full name dump
+        System.out.println("\nDisassembling 'random stars' behavior (member 129):");
+        var starMember = file.getCastMemberByNumber(1, 129);
+        if (starMember != null && starMember.isScript()) {
+            var starScript = file.getScriptByContextId(starMember.scriptId());
+            if (starScript != null) {
+                var starNames = file.getScriptNamesForScript(starScript);
+                if (starNames != null) {
+                    System.out.println("Star script names:");
+                    for (int ni = 0; ni < 200; ni++) {
+                        String n = starNames.getName(ni);
+                        if (!n.startsWith("<unknown")) {
+                            System.out.printf("  [%d] = '%s'%n", ni, n);
+                        }
+                    }
+                }
+                file.disassembleScript(starScript);
+            }
+        }
+
+        // Dump all movie scripts and their handlers
+        System.out.println("\nAll movie scripts:");
+        for (var script : file.getScripts()) {
+            if (script.getScriptType() == com.libreshockwave.chunks.ScriptChunk.ScriptType.MOVIE_SCRIPT) {
+                var sNames = file.getScriptNamesForScript(script);
+                System.out.printf("  Movie script (member %s):%n", script.id());
+                if (sNames != null) {
+                    for (var handler : script.handlers()) {
+                        System.out.printf("    handler: %s%n", sNames.getName(handler.nameId()));
+                    }
+                }
+            }
+        }
+
+        // Dump frame 98 script names too
+        System.out.println("\nFrame 98 script names:");
+        var frame98Script = file.getScriptByContextId(23); // scriptId=23 from earlier
+        if (frame98Script != null) {
+            var f98Names = file.getScriptNamesForScript(frame98Script);
+            if (f98Names != null) {
+                for (int ni = 0; ni < 200; ni++) {
+                    String n = f98Names.getName(ni);
+                    if (!n.startsWith("<unknown")) {
+                        System.out.printf("  [%d] = '%s'%n", ni, n);
+                    }
+                }
+            }
+        }
+
+        // Check what frame the movie actually stays on and what frames have star spans
+        System.out.println("\nFrame labels:");
+        for (var label : nav.getFrameLabels()) {
+            int fnum = nav.getFrameForLabel(label);
+            System.out.printf("  '%s' -> frame %d%n", label, fnum);
+        }
+
+        // Check if star channels have spans at frame 98
+        System.out.println("\nActive star spans at frame 98:");
+        for (var span : nav.getActiveSprites(98)) {
+            int ch = span.getChannel();
+            if (ch >= 33 && ch <= 49) {
+                System.out.printf("  ch=%d frames=%d-%d behaviors=%d%n",
+                        ch, span.getStartFrame(), span.getEndFrame(), span.getBehaviors().size());
+            }
+        }
+
+        // Check total frame intervals and dump raw interval data for star channels
+        System.out.println("\nTotal frame intervals: " + scoreChunk.frameIntervals().size());
+        System.out.println("ALL spans that overlap frames 62-98 or star channels:");
+        for (var span : nav.getAllSpans()) {
+            int ch = span.getChannel();
+            boolean isStarCh = ch >= 33 && ch <= 49;
+            boolean overlaps62_98 = span.getStartFrame() <= 98 && span.getEndFrame() >= 62;
+            if (isStarCh || (overlaps62_98 && ch > 6)) {
+                System.out.printf("  ch=%d frames=%d-%d behaviors=%d%s%n",
+                        ch, span.getStartFrame(), span.getEndFrame(), span.getBehaviors().size(),
+                        isStarCh ? " [STAR]" : "");
+            }
+        }
+
+        System.out.println("=== END STAR SPRITE DIAGNOSTIC ===\n");
+
         // No debug diagnostics
         player.play();
         System.out.println("Frame after play(): " + player.getCurrentFrame());
@@ -235,6 +382,7 @@ System.out.println("\n=== Starting playback ===");
         int maxTicks = 300;
         Map<Integer, Integer> frameVisits = new LinkedHashMap<>();
 
+        boolean jumpedToStars = false;
         for (int tick = 0; tick < maxTicks; tick++) {
             int frameBefore = player.getCurrentFrame();
             boolean alive = player.tick();
@@ -250,10 +398,51 @@ System.out.println("\n=== Starting playback ===");
             }
             frameVisits.merge(frameAfter, 1, Integer::sum);
 
+            // After reaching frame 98, force jump to frame 110 where star behaviors are active.
+            // Frame 98's exitFrame script does `go to the frame` which overrides normal goToFrame(),
+            // so we use forceGoToFrame() to bypass the exitFrame handler (simulates user click → go).
+            // Only force-go ONCE — repeated forceGoToFrame destroys and recreates behavior
+            // instances, resetting their properties (animPhase, x1, x2 etc.).
+            if (!jumpedToStars && frameAfter == 98 && tick > 40) {
+                System.out.println("\n=== Force-jumping to frame 114 for star animation ===");
+                // Frame 114 has both star behaviors (ch 33-49) AND a `go to the frame` loop
+                player.getFrameContext().forceGoToFrame(114);
+                jumpedToStars = true;
+            }
+
             // Log periodically
             if (tick < 10 || tick % 50 == 0) {
                 List<RenderSprite> sprites = renderer.getSpritesForFrame(frameAfter);
                 System.out.printf("Tick %d: frame=%d sprites=%d%n", tick, frameAfter, sprites.size());
+            }
+
+            // Star sprite diagnostics after jumping
+            if (tick == 50 || tick == 100 || tick == 200) {
+                System.out.printf("\n--- Star sprite state at tick %d (frame %d) ---%n", tick, frameAfter);
+                var spriteReg = renderer.getSpriteRegistry();
+                for (int ch = 33; ch <= 40; ch++) {
+                    var state = spriteReg.get(ch);
+                    if (state != null) {
+                        System.out.printf("  ch=%d locH=%d locV=%d %dx%d visible=%s puppet=%s dynamicMember=%s effectiveMember=CL%d/M%d%n",
+                                ch, state.getLocH(), state.getLocV(), state.getWidth(), state.getHeight(),
+                                state.isVisible(), state.isPuppet(), state.hasDynamicMember(),
+                                state.getEffectiveCastLib(), state.getEffectiveCastMember());
+                    }
+                }
+                // Check behavior instances and their properties
+                var behMgr = player.getFrameContext().getBehaviorManager();
+                int totalBehaviors = 0;
+                for (int ch = 33; ch <= 49; ch++) {
+                    var instances = behMgr.getInstancesForChannel(ch);
+                    totalBehaviors += instances.size();
+                    if (ch <= 35) { // Dump first 3 channels' properties
+                        for (var inst : instances) {
+                            System.out.printf("  ch=%d behavior props: %s%n", ch, inst.getProperties());
+                        }
+                    }
+                }
+                System.out.printf("  Total star behavior instances: %d%n", totalBehaviors);
+                System.out.println("--- end star state ---\n");
             }
 
             Thread.sleep(5);
