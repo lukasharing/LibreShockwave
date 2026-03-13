@@ -386,7 +386,7 @@ public class XmedTextParser {
                     try {
                         int size = Integer.parseInt(sizeHex, 16);
                         if (size >= 6 && size <= 200) {
-                            sizeCounts.merge(size, 1, Integer::sum);
+                            sizeCounts.put(size, sizeCounts.getOrDefault(size, 0) + 1);
                             if (firstSize < 0) firstSize = size;
                         }
                     } catch (NumberFormatException e) { /* ignore */ }
