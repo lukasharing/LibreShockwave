@@ -471,25 +471,9 @@ public class EditorMenuBar extends JMenuBar {
 
         menu.addSeparator();
 
-        // Arrange
-        JMenuItem tile = new JMenuItem("Tile");
-        tile.addActionListener(e -> editorFrame.tileWindows());
-        menu.add(tile);
-
-        JMenuItem cascade = new JMenuItem("Cascade");
-        cascade.addActionListener(e -> editorFrame.cascadeWindows());
-        menu.add(cascade);
-
-        menu.addSeparator();
-
-        // Docking layout
-        JMenuItem dockedLayout = new JMenuItem("IDE Docked Layout");
-        dockedLayout.addActionListener(e -> editorFrame.getDockingManager().applyDefaultDockedLayout());
-        menu.add(dockedLayout);
-
-        JMenuItem floatingLayout = new JMenuItem("Floating Layout (Classic)");
-        floatingLayout.addActionListener(e -> editorFrame.getDockingManager().undockAll());
-        menu.add(floatingLayout);
+        JMenuItem resetLayout = new JMenuItem("Reset Layout");
+        resetLayout.addActionListener(e -> editorFrame.resetLayout());
+        menu.add(resetLayout);
 
         return menu;
     }
@@ -500,6 +484,17 @@ public class EditorMenuBar extends JMenuBar {
             item.setAccelerator(KeyStroke.getKeyStroke(keyCode, modifiers));
         }
         item.addActionListener(e -> editorFrame.togglePanel(title, item.isSelected()));
+
+        // Update checkbox state when the Window menu is about to be shown
+        menu.addMenuListener(new javax.swing.event.MenuListener() {
+            @Override
+            public void menuSelected(javax.swing.event.MenuEvent e) {
+                item.setSelected(editorFrame.isPanelVisible(title));
+            }
+            @Override public void menuDeselected(javax.swing.event.MenuEvent e) {}
+            @Override public void menuCanceled(javax.swing.event.MenuEvent e) {}
+        });
+
         menu.add(item);
     }
 

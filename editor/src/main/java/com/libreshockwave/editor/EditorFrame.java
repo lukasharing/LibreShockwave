@@ -1,6 +1,7 @@
 package com.libreshockwave.editor;
 
 import com.libreshockwave.editor.docking.DockingManager;
+import com.libreshockwave.editor.docking.LayoutPersistence;
 import com.libreshockwave.editor.panel.*;
 
 import javax.swing.*;
@@ -12,8 +13,8 @@ import java.util.Map;
 
 /**
  * Main editor window with JDesktopPane MDI container and IDE-style docking.
- * Panels can be docked to LEFT, RIGHT, or BOTTOM zones by dragging to edges
- * or via right-click context menus.
+ * Panels can be docked to edges, corners, or center via drag or right-click.
+ * Layout is persisted to ~/.libreshockwave/layout.json.
  */
 public class EditorFrame extends JFrame {
 
@@ -47,8 +48,15 @@ public class EditorFrame extends JFrame {
         EditorMenuBar menuBar = new EditorMenuBar(this, context);
         setJMenuBar(menuBar);
 
-        // Arrange floating panels in default positions
+        // Set default floating positions first, then try to load saved layout
         arrangeDefaultLayout();
+
+        // Try loading saved layout after the frame is displayed
+        SwingUtilities.invokeLater(() -> {
+            if (!dockingManager.loadLayout()) {
+                // No saved layout — keep the default floating layout
+            }
+        });
 
         // Wire the DetailedStackWindow as a debug listener when files open/close
         context.addPropertyChangeListener(evt -> {
@@ -102,7 +110,7 @@ public class EditorFrame extends JFrame {
     }
 
     /**
-     * Arrange panels in a default layout resembling Director MX 2004.
+     * Arrange panels in a default floating layout resembling Director MX 2004.
      */
     private void arrangeDefaultLayout() {
         // Core panels visible and positioned
@@ -110,26 +118,21 @@ public class EditorFrame extends JFrame {
         setPanel("Score", 170, 520, 700, 300);
         setPanel("Cast", 880, 520, 400, 300);
         setPanel("Property Inspector", 880, 10, 280, 400);
-        setPanel("Script", 170, 520, 500, 400);  // Behind Score
+        setPanel("Script", 170, 520, 500, 400);
         setPanel("Message", 880, 420, 400, 200);
-
-        // Tool Palette on left
         setPanel("Tool Palette", 5, 10, 160, 350);
 
-        // Media panels - hidden by default
+        // Media and advanced panels - hidden by default
         hidePanel("Paint");
         hidePanel("Vector Shape");
         hidePanel("Text");
         hidePanel("Field");
         hidePanel("Color Palettes");
-
-        // Advanced panels - hidden by default
         hidePanel("Behavior Inspector");
         hidePanel("Library Palette");
         hidePanel("Markers");
         hidePanel("Bytecode Debugger");
 
-        // Bring core panels to front in the right order
         try {
             EditorPanel stage = panels.get("Stage");
             if (stage != null) stage.setSelected(true);
@@ -166,43 +169,35 @@ public class EditorFrame extends JFrame {
         }
     }
 
-    /** Toggle panel visibility, handling both docked and floating states. */
+    /**
+     * Toggle panel visibility. Opening a closed panel docks it to center.
+     * Closing a panel undocks it first (resetting the view) then hides.
+     */
     public void togglePanel(String title, boolean visible) {
-        dockingManager.togglePanel(title, visible);
-    }
-
-    public void tileWindows() {
-        JInternalFrame[] frames = desktop.getAllFrames();
-        int visibleCount = 0;
-        for (JInternalFrame f : frames) {
-            if (f.isVisible() && !f.isIcon()) visibleCount++;
-        }
-        if (visibleCount == 0) return;
-
-        int cols = (int) Math.ceil(Math.sqrt(visibleCount));
-        int rows = (int) Math.ceil((double) visibleCount / cols);
-        int w = desktop.getWidth() / cols;
-        int h = desktop.getHeight() / rows;
-
-        int idx = 0;
-        for (JInternalFrame f : frames) {
-            if (f.isVisible() && !f.isIcon()) {
-                int row = idx / cols;
-                int col = idx % cols;
-                f.setBounds(col * w, row * h, w, h);
-                idx++;
+        if (!visible) {
+            // Closing: undock if docked (resets view), then hide
+            if (dockingManager.isDocked(title)) {
+                dockingManager.undock(title);
             }
+            EditorPanel panel = panels.get(title);
+            if (panel != null) panel.setVisible(false);
+        } else {
+            // Opening: dock to center
+            dockingManager.dockCenter(title);
         }
     }
 
-    public void cascadeWindows() {
-        JInternalFrame[] frames = desktop.getAllFrames();
-        int offset = 0;
-        for (JInternalFrame f : frames) {
-            if (f.isVisible() && !f.isIcon()) {
-                f.setBounds(offset, offset, 500, 400);
-                offset += 30;
-            }
-        }
+    /** Check if a panel is currently visible (floating or docked). */
+    public boolean isPanelVisible(String title) {
+        if (dockingManager.isDocked(title)) return true;
+        EditorPanel panel = panels.get(title);
+        return panel != null && panel.isVisible();
+    }
+
+    /** Reset layout to defaults: undock everything, delete saved layout, restore default positions. */
+    public void resetLayout() {
+        dockingManager.undockAll();
+        LayoutPersistence.delete();
+        arrangeDefaultLayout();
     }
 }
