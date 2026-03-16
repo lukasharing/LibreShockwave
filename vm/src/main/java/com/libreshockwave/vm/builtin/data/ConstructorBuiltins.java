@@ -24,6 +24,7 @@ public final class ConstructorBuiltins {
         builtins.put("rect", ConstructorBuiltins::rect);
         builtins.put("color", ConstructorBuiltins::color);
         builtins.put("rgb", ConstructorBuiltins::rgb);
+        builtins.put("paletteindex", ConstructorBuiltins::paletteIndex);
         builtins.put("sprite", ConstructorBuiltins::sprite);
         builtins.put("new", ConstructorBuiltins::newInstance);
     }
@@ -139,6 +140,18 @@ public final class ConstructorBuiltins {
         int g = args.size() > 1 ? args.get(1).toInt() : 0;
         int b = args.size() > 2 ? args.get(2).toInt() : 0;
         return new Datum.Color(r, g, b);
+    }
+
+    /**
+     * paletteIndex(index) - create a color by looking up an index in the active movie palette.
+     * In Director, paletteIndex(n) resolves index n through the current palette to produce
+     * an RGB color. Used extensively by Habbo's window system for row backgrounds, buttons, etc.
+     */
+    private static Datum paletteIndex(LingoVM vm, List<Datum> args) {
+        if (args.isEmpty()) {
+            return new Datum.PaletteIndexColor(0);
+        }
+        return new Datum.PaletteIndexColor(args.get(0).toInt() & 0xFF);
     }
 
     /**

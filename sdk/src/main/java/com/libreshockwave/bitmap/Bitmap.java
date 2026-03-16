@@ -13,6 +13,7 @@ public class Bitmap {
     private final int[] pixels; // ARGB format (0xAARRGGBB)
     private final int bitDepth;
     private boolean scriptModified; // Set when Lingo modifies this bitmap via image API
+    private Palette imagePalette; // Palette for 8-bit images created via image(w,h,8,paletteMember)
 
     public Bitmap(int width, int height, int bitDepth) {
         this.width = width;
@@ -48,6 +49,30 @@ public class Bitmap {
     /** Mark this bitmap as modified by Lingo script operations. */
     public void markScriptModified() {
         this.scriptModified = true;
+    }
+
+    /** Set the palette for this bitmap (for 8-bit images created with a palette member). */
+    public void setImagePalette(Palette palette) {
+        this.imagePalette = palette;
+    }
+
+    /** Get the palette for this bitmap, or null if none. */
+    public Palette getImagePalette() {
+        return imagePalette;
+    }
+
+    /**
+     * Resolve a palette index color through this bitmap's palette.
+     * Falls back to the given default palette if no image palette is set.
+     */
+    public int resolvePaletteIndex(int index, Palette fallback) {
+        Palette pal = imagePalette != null ? imagePalette : fallback;
+        if (pal != null) {
+            return pal.getColor(index & 0xFF);
+        }
+        // Ultimate fallback: grayscale ramp
+        int gray = 255 - (index & 0xFF);
+        return (gray << 16) | (gray << 8) | gray;
     }
 
     public int[] getPixels() {

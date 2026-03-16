@@ -1,6 +1,7 @@
 package com.libreshockwave.vm.datum;
 
 import com.libreshockwave.bitmap.Bitmap;
+import com.libreshockwave.bitmap.Palette;
 import com.libreshockwave.id.CastLibId;
 import com.libreshockwave.id.ChannelId;
 import com.libreshockwave.id.MemberId;
@@ -11,6 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Supplier;
 
 /**
  * Runtime value in the Lingo VM.
@@ -18,6 +20,42 @@ import java.util.Objects;
  * Similar to dirplayer-rs datum.rs.
  */
 public sealed interface Datum {
+
+    /**
+     * Global palette supplier for resolving palette index colors.
+     * Set by the Player at startup so that datumToArgb() and other color
+     * resolution paths can look up palette indices without parameter threading.
+     * Returns the movie's active palette, or null to use the default (System Win).
+     */
+    Supplier<Palette> activePaletteSupplier = new Supplier<>() {
+        private volatile Supplier<Palette> delegate;
+        @Override public Palette get() { return delegate != null ? delegate.get() : null; }
+        // Setter accessed via Datum.setActivePaletteSupplier()
+    };
+
+    /** Package-private mutable holder for the active palette supplier. */
+    // Using a simple static field since interfaces can't have mutable static fields directly.
+    // We use a holder class instead.
+    final class PaletteHolder {
+        static volatile Supplier<Palette> supplier;
+    }
+
+    /**
+     * Set the global palette supplier. Called by Player at startup.
+     */
+    static void setActivePaletteSupplier(Supplier<Palette> supplier) {
+        PaletteHolder.supplier = supplier;
+    }
+
+    /**
+     * Get the active palette for color resolution.
+     * Falls back to System Win palette if no supplier is set.
+     */
+    static Palette getActivePalette() {
+        Supplier<Palette> sup = PaletteHolder.supplier;
+        Palette p = sup != null ? sup.get() : null;
+        return p != null ? p : Palette.SYSTEM_MAC_PALETTE;
+    }
 
     /** Void/null value */
     record Void() implements Datum {
@@ -262,6 +300,16 @@ public sealed interface Datum {
     }
 
     /**
+     * Palette-indexed color value. Created by paletteIndex(n).
+     * Carries the raw palette index and gets resolved through the target bitmap's palette
+     * when used in fill(), copyPixels(), etc.
+     */
+    record PaletteIndexColor(int index) implements Datum {
+        @Override
+        public String toString() { return "paletteIndex(" + index + ")"; }
+    }
+
+    /**
      * Image reference (wraps a bitmap for Director's image API).
      * Can either hold a direct bitmap or a supplier that resolves to a member's current bitmap.
      * The supplier form is used for member.image so that Lingo variables like pImg = member.image
@@ -475,6 +523,7 @@ public sealed interface Datum {
             case Point p -> "point";
             case Rect r -> "rect";
             case Color c -> "color";
+            case PaletteIndexColor pic -> "color";
             case ImageRef ir -> "image";
             case XtraRef xr -> "xtra";
             case XtraInstance xi -> "xtraInstance";
@@ -532,6 +581,11 @@ public sealed interface Datum {
                 }
             }
             case Color c -> (c.r() << 16) | (c.g() << 8) | c.b();
+            case PaletteIndexColor pic -> {
+                // Resolve through active palette for toInt() conversion
+                Palette pal = getActivePalette();
+                yield pal.getColor(pic.index()) & 0xFFFFFF;
+            }
             default -> 0;
         };
     }
@@ -572,21 +626,41 @@ public sealed interface Datum {
 
     /**
      * Convert a Datum color to ARGB int.
-     * Handles: Color(r,g,b), packed RGB int, palette index.
+     * Handles: Color(r,g,b), packed RGB int, grayscale ramp index.
+     * In Director, raw integer color values 0-255 use a grayscale ramp (0=white, 255=black).
+     * Palette index colors are created via paletteIndex() which produces a Color datum.
      */
     static int datumToArgb(Datum colorDatum) {
         if (colorDatum instanceof Color c) {
             return 0xFF000000 | (c.r() << 16) | (c.g() << 8) | c.b();
+        } else if (colorDatum instanceof PaletteIndexColor pic) {
+            // Resolve through active palette (no target bitmap context available here)
+            Palette pal = getActivePalette();
+            int rgb = pal.getColor(pic.index());
+            return 0xFF000000 | (rgb & 0xFFFFFF);
         } else if (colorDatum instanceof Int i) {
             int val = i.value();
             if (val > 255) {
                 return 0xFF000000 | (val & 0xFFFFFF);
             } else {
+                // Director grayscale ramp: 0 = white, 255 = black
                 int gray = 255 - val;
                 return 0xFF000000 | (gray << 16) | (gray << 8) | gray;
             }
         }
         return 0xFF000000;
+    }
+
+    /**
+     * Convert a Datum color to ARGB, resolving PaletteIndexColor through the given bitmap's palette.
+     * This is the preferred method when a target bitmap is available (e.g., in fill(), copyPixels()).
+     */
+    static int datumToArgb(Datum colorDatum, Bitmap targetBitmap) {
+        if (colorDatum instanceof PaletteIndexColor pic && targetBitmap != null) {
+            int rgb = targetBitmap.resolvePaletteIndex(pic.index(), getActivePalette());
+            return 0xFF000000 | (rgb & 0xFFFFFF);
+        }
+        return datumToArgb(colorDatum);
     }
 
     /**
@@ -606,6 +680,7 @@ public sealed interface Datum {
             case Point p -> new Point(p.x(), p.y());
             case Rect r -> new Rect(r.left(), r.top(), r.right(), r.bottom());
             case Color c -> c;
+            case PaletteIndexColor pic -> pic;
             case ImageRef ir -> ir.isLive() ? ir : new ImageRef(ir.bitmap().copy());
             case SpriteRef sr -> sr;
             case CastMemberRef cm -> cm;

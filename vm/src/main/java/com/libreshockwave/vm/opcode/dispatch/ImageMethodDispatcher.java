@@ -146,7 +146,9 @@ public final class ImageMethodDispatcher {
         // Director's convention where VOID means "use default background."
         // Habbo's clearImage() passes pProps[#bgColor] which may be VOID
         // when the layout definition omits bgColor.
-        int colorArgb = colorDatum.isVoid() ? 0xFFFFFFFF : Datum.datumToArgb(colorDatum);
+        // Use bitmap-aware color resolution so paletteIndex() colors resolve
+        // through the target bitmap's custom palette (e.g., nav_ui_palette).
+        int colorArgb = colorDatum.isVoid() ? 0xFFFFFFFF : Datum.datumToArgb(colorDatum, bmp);
 
         int w = right - left;
         int h = bottom - top;
@@ -239,6 +241,7 @@ public final class ImageMethodDispatcher {
         }
         Bitmap src = srcRef.bitmap();
 
+
         Datum destRectDatum = args.get(1);
         Datum srcRectDatum = args.get(2);
 
@@ -277,12 +280,12 @@ public final class ImageMethodDispatcher {
             // Check for #color property (foreground color remap)
             Datum colorDatum = getPropIgnoreCase(pl, "color", "Color");
             if (!colorDatum.isVoid()) {
-                colorRemap = Datum.datumToArgb(colorDatum) & 0xFFFFFF;
+                colorRemap = Datum.datumToArgb(colorDatum, dest) & 0xFFFFFF;
             }
             // Check for #bgColor property (background color remap)
             Datum bgColorDatum = getPropIgnoreCase(pl, "bgColor", "bgcolor", "BgColor");
             if (!bgColorDatum.isVoid()) {
-                bgColorRemap = Datum.datumToArgb(bgColorDatum) & 0xFFFFFF;
+                bgColorRemap = Datum.datumToArgb(bgColorDatum, dest) & 0xFFFFFF;
             }
             // Check for #maskImage property (matte mask for transparency)
             Datum maskDatum = getPropIgnoreCase(pl, "maskImage", "maskimage", "MaskImage");
