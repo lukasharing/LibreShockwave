@@ -46,6 +46,10 @@ public record CastMemberChunk(
         return memberType == MemberType.SOUND;
     }
 
+    public boolean isShockwave3D() {
+        return memberType == MemberType.SHOCKWAVE_3D;
+    }
+
     /** Director 7+ "Text Asset" Xtra: XTRA type with "text" sub-type in specificData. */
     public boolean isTextXtra() {
         return memberType == MemberType.XTRA

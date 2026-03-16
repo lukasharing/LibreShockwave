@@ -20,6 +20,7 @@ public class CastMember {
     private ShapeInfo shapeInfo;
     private FilmLoopInfo filmLoopInfo;
     private ScriptType scriptType;
+    private Shockwave3DInfo shockwave3DInfo;
 
     public CastMember(int id, int castLib, int memberNum, CastMemberChunk chunk) {
         this.id = id;
@@ -49,6 +50,7 @@ public class CastMember {
                     scriptType = ScriptType.fromCode(typeCode);
                 }
             }
+            case SHOCKWAVE_3D -> shockwave3DInfo = Shockwave3DInfo.parse(specificData);
             default -> { /* No specific data to parse */ }
         }
     }
@@ -69,6 +71,7 @@ public class CastMember {
     public ShapeInfo getShapeInfo() { return shapeInfo; }
     public FilmLoopInfo getFilmLoopInfo() { return filmLoopInfo; }
     public ScriptType getScriptType() { return scriptType; }
+    public Shockwave3DInfo getShockwave3DInfo() { return shockwave3DInfo; }
 
     // Type checks
 
@@ -80,6 +83,7 @@ public class CastMember {
     public boolean isFilmLoop() { return memberType == MemberType.FILM_LOOP; }
     public boolean isPalette() { return memberType == MemberType.PALETTE; }
     public boolean isFont() { return memberType == MemberType.FONT; }
+    public boolean isShockwave3D() { return memberType == MemberType.SHOCKWAVE_3D; }
 
     // Dimensions (for visual members)
     // Refactored: Uses Dimensioned interface to eliminate duplicate null-check chains

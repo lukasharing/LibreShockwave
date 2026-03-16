@@ -246,6 +246,12 @@ public class BinaryReader implements AutoCloseable {
         return readStringMacRoman(length);
     }
 
+    public String readPString16() {
+        int length = readU16();
+        if (length == 0) return "";
+        return readString(length);
+    }
+
     public String readNullTerminatedString() {
         int start = position;
         while (position < data.length && data[position] != 0) {
