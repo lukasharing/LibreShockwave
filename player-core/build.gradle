@@ -383,6 +383,17 @@ tasks.register('runMobilesDiscoCastDiag', JavaExec) {
     }
 }
 
+tasks.register('runNavigatorSSOTest', JavaExec) {
+    group = 'verification'
+    description = 'Navigator SSO test: sw6 SSO login, render to PNG, pixel diff vs reference'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.libreshockwave.player.NavigatorSSOTest'
+    dependsOn compileTestJava
+    javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
 tasks.register('runExternalCastDump', JavaExec) {
     group = 'verification'
     description = 'Dump all cast members from Mobiles Disco external .cct files, looking for English text'
