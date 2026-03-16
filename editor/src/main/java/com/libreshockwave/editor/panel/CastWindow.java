@@ -1,9 +1,12 @@
 package com.libreshockwave.editor.panel;
 
 import com.libreshockwave.DirectorFile;
+import com.libreshockwave.cast.MemberType;
 import com.libreshockwave.editor.EditorContext;
+import com.libreshockwave.editor.EditorFrame;
 import com.libreshockwave.editor.cast.CastGridPanel;
 import com.libreshockwave.editor.cast.CastListPanel;
+import com.libreshockwave.editor.cast.CastThumbnailRenderer;
 import com.libreshockwave.editor.extraction.ExportHandler;
 import com.libreshockwave.editor.model.CastMemberInfo;
 import com.libreshockwave.editor.model.MemberNodeData;
@@ -12,10 +15,16 @@ import com.libreshockwave.editor.selection.SelectionEvent;
 
 import javax.swing.*;
 import java.awt.*;
+import java.awt.event.ComponentAdapter;
+import java.awt.event.ComponentEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.awt.image.BufferedImage;
+import java.lang.ref.SoftReference;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Cast window - Director MX 2004 cast member browser.
@@ -33,8 +42,11 @@ public class CastWindow extends EditorPanel {
     private List<CastMemberInfo> allMembers = new ArrayList<>();
     private List<CastMemberInfo> filteredMembers = new ArrayList<>();
 
+    private final Map<Integer, SoftReference<BufferedImage>> thumbnailCache = new HashMap<>();
+    private SwingWorker<Void, ThumbnailResult> thumbnailWorker;
+
     public CastWindow(EditorContext context) {
-        super("Cast", context, true, true, true, true);
+        super("cast", "Cast", context, true, true, true, true);
 
         JPanel panel = new JPanel(new BorderLayout());
 
@@ -106,6 +118,8 @@ public class CastWindow extends EditorPanel {
 
     @Override
     protected void onFileClosed() {
+        cancelThumbnailWorker();
+        thumbnailCache.clear();
         allMembers.clear();
         filteredMembers.clear();
         castTabs.removeAll();
@@ -140,6 +154,7 @@ public class CastWindow extends EditorPanel {
     }
 
     private void rebuildView() {
+        cancelThumbnailWorker();
         castTabs.removeAll();
 
         if (filteredMembers.isEmpty() && allMembers.isEmpty()) {
@@ -156,9 +171,19 @@ public class CastWindow extends EditorPanel {
 
     private JScrollPane buildGridView() {
         CastGridPanel grid = new CastGridPanel();
+        Map<Integer, JLabel> thumbnailLabels = new HashMap<>();
 
         for (CastMemberInfo info : filteredMembers) {
-            grid.addMemberCell(info.memberNum(), info.name(), info.memberType().getName());
+            JLabel thumbLabel = grid.addMemberCell(info);
+            if (info.memberType() == MemberType.BITMAP) {
+                // Check cache first
+                SoftReference<BufferedImage> cached = thumbnailCache.get(info.memberNum());
+                if (cached != null && cached.get() != null) {
+                    thumbLabel.setIcon(new ImageIcon(cached.get()));
+                } else {
+                    thumbnailLabels.put(info.memberNum(), thumbLabel);
+                }
+            }
         }
 
         // Click handler for selection and context menu
@@ -174,8 +199,74 @@ public class CastWindow extends EditorPanel {
         });
 
         JScrollPane sp = new JScrollPane(grid);
+        sp.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
         sp.getVerticalScrollBar().setUnitIncrement(16);
+
+        // Revalidate grid when viewport is resized so rows re-wrap
+        sp.getViewport().addComponentListener(new ComponentAdapter() {
+            @Override
+            public void componentResized(ComponentEvent e) {
+                grid.revalidate();
+            }
+        });
+
+        // Launch background bitmap decoding if there are bitmaps to decode
+        if (!thumbnailLabels.isEmpty()) {
+            launchThumbnailWorker(thumbnailLabels);
+        }
+
         return sp;
+    }
+
+    private void launchThumbnailWorker(Map<Integer, JLabel> thumbnailLabels) {
+        DirectorFile dirFile = context.getFile();
+        if (dirFile == null) return;
+
+        // Collect bitmap members that need decoding
+        List<CastMemberInfo> bitmapMembers = new ArrayList<>();
+        for (CastMemberInfo info : filteredMembers) {
+            if (info.memberType() == MemberType.BITMAP && thumbnailLabels.containsKey(info.memberNum())) {
+                bitmapMembers.add(info);
+            }
+        }
+
+        thumbnailWorker = new SwingWorker<>() {
+            @Override
+            protected Void doInBackground() {
+                for (CastMemberInfo info : bitmapMembers) {
+                    if (isCancelled()) break;
+                    try {
+                        dirFile.decodeBitmap(info.member()).ifPresent(bitmap -> {
+                            BufferedImage fullImage = bitmap.toBufferedImage();
+                            BufferedImage thumb = CastThumbnailRenderer.createBitmapThumbnail(fullImage, 48);
+                            thumbnailCache.put(info.memberNum(), new SoftReference<>(thumb));
+                            publish(new ThumbnailResult(info.memberNum(), thumb));
+                        });
+                    } catch (Exception e) {
+                        // Skip members that fail to decode
+                    }
+                }
+                return null;
+            }
+
+            @Override
+            protected void process(List<ThumbnailResult> results) {
+                for (ThumbnailResult result : results) {
+                    JLabel label = thumbnailLabels.get(result.memberNum);
+                    if (label != null) {
+                        label.setIcon(new ImageIcon(result.thumbnail));
+                    }
+                }
+            }
+        };
+        thumbnailWorker.execute();
+    }
+
+    private void cancelThumbnailWorker() {
+        if (thumbnailWorker != null && !thumbnailWorker.isDone()) {
+            thumbnailWorker.cancel(true);
+            thumbnailWorker = null;
+        }
     }
 
     private void handleGridClick(CastGridPanel grid, MouseEvent e) {
@@ -201,7 +292,9 @@ public class CastWindow extends EditorPanel {
                 cell.setBorder(BorderFactory.createLineBorder(new Color(0, 102, 204), 2));
 
                 if (e.isPopupTrigger()) {
-                    showExportPopup(grid, e, info);
+                    showContextMenu(grid, e, info);
+                } else {
+                    openMemberEditor(info);
                 }
             }
         }
@@ -223,11 +316,12 @@ public class CastWindow extends EditorPanel {
                     CastMemberInfo info = filteredMembers.get(idx);
                     context.getSelectionManager().select(
                         SelectionEvent.castMember(0, info.memberNum()));
+                    openMemberEditor(info);
                 }
             }
         });
 
-        // Context menu on list
+        // Right-click context menu
         jList.addMouseListener(new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent e) {
@@ -249,12 +343,45 @@ public class CastWindow extends EditorPanel {
         if (idx >= 0 && idx < filteredMembers.size()) {
             jList.setSelectedIndex(idx);
             CastMemberInfo info = filteredMembers.get(idx);
-            showExportPopup(jList, e, info);
+            showContextMenu(jList, e, info);
         }
     }
 
-    private void showExportPopup(Component parent, MouseEvent e, CastMemberInfo info) {
+    private void openMemberEditor(CastMemberInfo info) {
+        EditorFrame editorFrame = getEditorFrame();
+        if (editorFrame == null) return;
+
+        // Map member type to the right editor window by panelId
+        String panelId = switch (info.memberType()) {
+            case BITMAP, PICTURE -> "paint";
+            case TEXT, RICH_TEXT, BUTTON -> "text";
+            case SCRIPT -> "script";
+            case SOUND -> "sound";
+            case SHAPE -> "vector-shape";
+            default -> null;
+        };
+        if (panelId == null) return;
+
+        // Show the panel (handles docked/floating/hidden)
+        editorFrame.showPanel(panelId);
+
+        // Load the member into the panel
+        EditorPanel panel = editorFrame.getPanel(panelId);
+        if (panel instanceof PaintWindow pw) pw.loadMember(info);
+        else if (panel instanceof TextEditorWindow tw) tw.loadMember(info);
+        else if (panel instanceof FieldEditorWindow fw) fw.loadMember(info);
+        else if (panel instanceof ScriptEditorWindow sw) sw.loadMember(info);
+        else if (panel instanceof SoundWindow sow) sow.loadMember(info);
+    }
+
+    private EditorFrame getEditorFrame() {
+        Window w = SwingUtilities.getWindowAncestor(this);
+        return w instanceof EditorFrame ef ? ef : null;
+    }
+
+    private void showContextMenu(Component parent, MouseEvent e, CastMemberInfo info) {
         JPopupMenu popup = new JPopupMenu();
+
         JMenuItem exportItem = new JMenuItem("Export...");
         exportItem.addActionListener(ev -> exportMember(info));
         popup.add(exportItem);
@@ -283,4 +410,6 @@ public class CastWindow extends EditorPanel {
         JFrame parentFrame = (JFrame) SwingUtilities.getWindowAncestor(this);
         handler.export(parentFrame, dirFile, memberData, "");
     }
+
+    private record ThumbnailResult(int memberNum, BufferedImage thumbnail) {}
 }

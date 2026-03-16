@@ -54,7 +54,7 @@ public class BytecodeDebuggerWindow extends EditorPanel implements DebugStateLis
     };
 
     public BytecodeDebuggerWindow(EditorContext context) {
-        super("Bytecode Debugger", context, true, true, true, true);
+        super("bytecode-debugger", "Bytecode Debugger", context, true, true, true, true);
 
         JPanel mainContent = new JPanel(new BorderLayout());
 

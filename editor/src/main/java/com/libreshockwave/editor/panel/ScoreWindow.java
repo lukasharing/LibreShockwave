@@ -27,7 +27,7 @@ public class ScoreWindow extends EditorPanel {
     private final JPanel contentPanel;
 
     public ScoreWindow(EditorContext context) {
-        super("Score", context, true, true, true, true);
+        super("score", "Score", context, true, true, true, true);
 
         contentPanel = new JPanel(new BorderLayout());
 

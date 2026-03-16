@@ -444,62 +444,55 @@ public class EditorMenuBar extends JMenuBar {
         menu.setMnemonic(KeyEvent.VK_W);
 
         // Core panels
-        addWindowToggle(menu, "Stage", KeyEvent.VK_1, InputEvent.CTRL_DOWN_MASK);
-        addWindowToggle(menu, "Score", KeyEvent.VK_2, InputEvent.CTRL_DOWN_MASK);
-        addWindowToggle(menu, "Cast", KeyEvent.VK_3, InputEvent.CTRL_DOWN_MASK);
-        addWindowToggle(menu, "Property Inspector", KeyEvent.VK_4, InputEvent.CTRL_DOWN_MASK);
-        addWindowToggle(menu, "Script", KeyEvent.VK_0, InputEvent.CTRL_DOWN_MASK);
-        addWindowToggle(menu, "Message", KeyEvent.VK_M, InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK);
+        addWindowToggle(menu, "stage", "Stage", KeyEvent.VK_1, InputEvent.CTRL_DOWN_MASK);
+        addWindowToggle(menu, "score", "Score", KeyEvent.VK_2, InputEvent.CTRL_DOWN_MASK);
+        addWindowToggle(menu, "cast", "Cast", KeyEvent.VK_3, InputEvent.CTRL_DOWN_MASK);
+        addWindowToggle(menu, "property-inspector", "Property Inspector", KeyEvent.VK_4, InputEvent.CTRL_DOWN_MASK);
+        addWindowToggle(menu, "script", "Script", KeyEvent.VK_0, InputEvent.CTRL_DOWN_MASK);
+        addWindowToggle(menu, "message", "Message", KeyEvent.VK_M, InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK);
+        addWindowToggle(menu, "tool-palette", "Tool Palette", KeyEvent.VK_7, InputEvent.CTRL_DOWN_MASK);
 
         menu.addSeparator();
 
         // Media panels
-        addWindowToggle(menu, "Paint", KeyEvent.VK_5, InputEvent.CTRL_DOWN_MASK);
-        addWindowToggle(menu, "Vector Shape", 0, 0);
-        addWindowToggle(menu, "Text", KeyEvent.VK_6, InputEvent.CTRL_DOWN_MASK);
-        addWindowToggle(menu, "Field", 0, 0);
-        addWindowToggle(menu, "Color Palettes", KeyEvent.VK_7, InputEvent.CTRL_DOWN_MASK | InputEvent.ALT_DOWN_MASK);
+        addWindowToggle(menu, "paint", "Paint", KeyEvent.VK_5, InputEvent.CTRL_DOWN_MASK);
+        addWindowToggle(menu, "vector-shape", "Vector Shape", 0, 0);
+        addWindowToggle(menu, "text", "Text", KeyEvent.VK_6, InputEvent.CTRL_DOWN_MASK);
+        addWindowToggle(menu, "field", "Field", 0, 0);
+        addWindowToggle(menu, "sound", "Sound", 0, 0);
+        addWindowToggle(menu, "color-palettes", "Color Palettes", KeyEvent.VK_7, InputEvent.CTRL_DOWN_MASK | InputEvent.ALT_DOWN_MASK);
 
         menu.addSeparator();
 
         // Advanced panels
-        addWindowToggle(menu, "Behavior Inspector", 0, 0);
-        addWindowToggle(menu, "Library Palette", 0, 0);
-        addWindowToggle(menu, "Tool Palette", KeyEvent.VK_7, InputEvent.CTRL_DOWN_MASK);
-        addWindowToggle(menu, "Markers", 0, 0);
-        addWindowToggle(menu, "Bytecode Debugger", KeyEvent.VK_D, InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK);
+        addWindowToggle(menu, "bytecode-debugger", "Bytecode Debugger", KeyEvent.VK_D, InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK);
 
         menu.addSeparator();
 
-        // Arrange
-        JMenuItem tile = new JMenuItem("Tile");
-        tile.addActionListener(e -> editorFrame.tileWindows());
-        menu.add(tile);
-
-        JMenuItem cascade = new JMenuItem("Cascade");
-        cascade.addActionListener(e -> editorFrame.cascadeWindows());
-        menu.add(cascade);
-
-        menu.addSeparator();
-
-        // Docking layout
-        JMenuItem dockedLayout = new JMenuItem("IDE Docked Layout");
-        dockedLayout.addActionListener(e -> editorFrame.getDockingManager().applyDefaultDockedLayout());
-        menu.add(dockedLayout);
-
-        JMenuItem floatingLayout = new JMenuItem("Floating Layout (Classic)");
-        floatingLayout.addActionListener(e -> editorFrame.getDockingManager().undockAll());
-        menu.add(floatingLayout);
+        JMenuItem resetLayout = new JMenuItem("Reset Layout");
+        resetLayout.addActionListener(e -> editorFrame.resetLayout());
+        menu.add(resetLayout);
 
         return menu;
     }
 
-    private void addWindowToggle(JMenu menu, String title, int keyCode, int modifiers) {
-        JCheckBoxMenuItem item = new JCheckBoxMenuItem(title, true);
+    private void addWindowToggle(JMenu menu, String panelId, String label, int keyCode, int modifiers) {
+        JCheckBoxMenuItem item = new JCheckBoxMenuItem(label, true);
         if (keyCode != 0) {
             item.setAccelerator(KeyStroke.getKeyStroke(keyCode, modifiers));
         }
-        item.addActionListener(e -> editorFrame.togglePanel(title, item.isSelected()));
+        item.addActionListener(e -> editorFrame.togglePanel(panelId, item.isSelected()));
+
+        // Update checkbox state when the Window menu is about to be shown
+        menu.addMenuListener(new javax.swing.event.MenuListener() {
+            @Override
+            public void menuSelected(javax.swing.event.MenuEvent e) {
+                item.setSelected(editorFrame.isPanelVisible(panelId));
+            }
+            @Override public void menuDeselected(javax.swing.event.MenuEvent e) {}
+            @Override public void menuCanceled(javax.swing.event.MenuEvent e) {}
+        });
+
         menu.add(item);
     }
 

@@ -14,12 +14,14 @@ import java.beans.PropertyChangeEvent;
  */
 public abstract class EditorPanel extends JInternalFrame implements SelectionListener {
 
+    private final String panelId;
     protected final EditorContext context;
 
-    protected EditorPanel(String title, EditorContext context,
+    protected EditorPanel(String panelId, String title, EditorContext context,
                           boolean resizable, boolean closable,
                           boolean maximizable, boolean iconifiable) {
         super(title, resizable, closable, maximizable, iconifiable);
+        this.panelId = panelId;
         this.context = context;
 
         // Listen to context property changes
@@ -42,6 +44,11 @@ public abstract class EditorPanel extends JInternalFrame implements SelectionLis
                 onFrameChanged(frame);
             }
         }
+    }
+
+    /** Stable identifier for this panel, used as map key and for layout persistence. */
+    public String getPanelId() {
+        return panelId;
     }
 
     /**

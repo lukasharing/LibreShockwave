@@ -17,7 +17,7 @@ public class MessageWindow extends EditorPanel {
     private final JTextField inputField;
 
     public MessageWindow(EditorContext context) {
-        super("Message", context, true, true, true, true);
+        super("message", "Message", context, true, true, true, true);
 
         JPanel panel = new JPanel(new BorderLayout());
 

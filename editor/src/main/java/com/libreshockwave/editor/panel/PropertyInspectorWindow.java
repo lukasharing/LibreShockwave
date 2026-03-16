@@ -19,7 +19,7 @@ public class PropertyInspectorWindow extends EditorPanel {
     private final JPanel movieTab;
 
     public PropertyInspectorWindow(EditorContext context) {
-        super("Property Inspector", context, true, true, true, true);
+        super("property-inspector", "Property Inspector", context, true, true, true, true);
 
         tabs = new JTabbedPane(JTabbedPane.TOP);
 

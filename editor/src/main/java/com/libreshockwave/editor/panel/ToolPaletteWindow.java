@@ -11,7 +11,7 @@ import java.awt.*;
 public class ToolPaletteWindow extends EditorPanel {
 
     public ToolPaletteWindow(EditorContext context) {
-        super("Tool Palette", context, true, true, false, true);
+        super("tool-palette", "Tool Palette", context, true, true, false, true);
 
         JPanel panel = new JPanel(new GridLayout(0, 2, 2, 2));
         panel.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));

@@ -11,7 +11,7 @@ import java.awt.*;
 public class VectorShapeWindow extends EditorPanel {
 
     public VectorShapeWindow(EditorContext context) {
-        super("Vector Shape", context, true, true, true, true);
+        super("vector-shape", "Vector Shape", context, true, true, true, true);
 
         JPanel panel = new JPanel(new BorderLayout());
 

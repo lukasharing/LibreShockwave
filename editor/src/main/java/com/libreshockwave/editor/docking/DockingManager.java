@@ -11,60 +11,54 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Manages IDE-style docking for editor panels.
- * Panels can be docked to LEFT, RIGHT, or BOTTOM zones via drag-to-edge
- * or right-click context menus. Docked panels appear as tabs in resizable
- * split pane zones. Undocked panels float as JInternalFrames in the desktop.
+ * Manages IDE-style docking using a recursive binary split tree.
+ * <p>
+ * The layout is a tree of {@link DockNode} objects:
+ * <ul>
+ *   <li>{@link DockSplit} — two children separated by a JSplitPane</li>
+ *   <li>{@link DockLeaf} — JTabbedPane holding one or more docked panels</li>
+ *   <li>{@link DockCenter} — the JDesktopPane (immutable, always one)</li>
+ * </ul>
+ * Multiple panels in the same position use tabs. Users can split any tab group
+ * via right-click to create sub-zones (e.g., top-right and bottom-right).
+ * <p>
+ * All panel identity is by stable panelId, not by display title.
  */
 public class DockingManager {
 
-    public enum Zone { LEFT, RIGHT, BOTTOM }
+    public enum Edge { LEFT, RIGHT, TOP, BOTTOM }
 
-    private final JDesktopPane desktop;
     private final Map<String, EditorPanel> allPanels;
 
-    // Dock zone tab panes
-    private final JTabbedPane leftTabs = new JTabbedPane(JTabbedPane.TOP);
-    private final JTabbedPane rightTabs = new JTabbedPane(JTabbedPane.TOP);
-    private final JTabbedPane bottomTabs = new JTabbedPane(JTabbedPane.TOP);
+    // Tree state
+    private DockNode root;
+    private final DockCenter center;
+    private final JPanel rootWrapper = new JPanel(new BorderLayout());
 
-    // Placeholder panels for collapsed zones (zero-size)
-    private final JPanel emptyLeft = newEmptyPanel();
-    private final JPanel emptyRight = newEmptyPanel();
-    private final JPanel emptyBottom = newEmptyPanel();
+    // Fast lookup: panelId → which leaf it's in
+    private final Map<String, DockLeaf> panelLeaves = new LinkedHashMap<>();
 
-    // Split panes: outerSplit(V) = [innerSplit(H) = [left | centerRightSplit(H) = [desktop | right]] | bottom]
-    private final JSplitPane outerSplit;
-    private final JSplitPane innerSplit;
-    private final JSplitPane centerRightSplit;
-
-    // Docked panel state
-    private final Map<String, Zone> dockedZones = new LinkedHashMap<>();
-    private final Map<String, Rectangle> savedBounds = new LinkedHashMap<>();
+    // Saved state for undocking
     private final Map<String, Container> savedContent = new LinkedHashMap<>();
+    private final Map<String, Rectangle> savedBounds = new LinkedHashMap<>();
 
-    // Remembered divider sizes for when zones re-appear
-    private int leftDivLoc = 200;
-    private int rightDivWidth = 300;
-    private int bottomDivHeight = 250;
-
-    // Snap overlay shown during drag
+    // Snap overlay for drag-to-dock
     private final SnapOverlay snapOverlay;
-    private Zone pendingSnap;
+    private Edge pendingSnap;
+
+    // Suppress save during compound operations
+    private boolean suppressSave = false;
 
     private static final int SNAP_MARGIN = 50;
-    private static final int DIVIDER_SIZE = Math.max(UIManager.getInt("SplitPane.dividerSize"), 4);
 
     public DockingManager(JFrame frame, JDesktopPane desktop, Map<String, EditorPanel> allPanels) {
-        this.desktop = desktop;
         this.allPanels = allPanels;
+        this.center = new DockCenter(desktop);
+        this.center.setManager(this);
+        this.root = center;
+        rootWrapper.add(root.getComponent(), BorderLayout.CENTER);
 
-        // Minimum sizes for dock zones
-        leftTabs.setMinimumSize(new Dimension(100, 0));
-        rightTabs.setMinimumSize(new Dimension(100, 0));
-        bottomTabs.setMinimumSize(new Dimension(0, 60));
-
-        // Snap overlay (lives on desktop's drag layer)
+        // Snap overlay on desktop's drag layer
         snapOverlay = new SnapOverlay();
         snapOverlay.setVisible(false);
         desktop.add(snapOverlay, JLayeredPane.DRAG_LAYER);
@@ -75,32 +69,10 @@ public class DockingManager {
             }
         });
 
-        // Tab right-click menus
-        installTabContextMenu(leftTabs, Zone.LEFT);
-        installTabContextMenu(rightTabs, Zone.RIGHT);
-        installTabContextMenu(bottomTabs, Zone.BOTTOM);
-
-        // Build split pane hierarchy
-        centerRightSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, desktop, emptyRight);
-        centerRightSplit.setContinuousLayout(true);
-        centerRightSplit.setResizeWeight(1.0);
-        centerRightSplit.setDividerSize(0);
-
-        innerSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, emptyLeft, centerRightSplit);
-        innerSplit.setContinuousLayout(true);
-        innerSplit.setResizeWeight(0.0);
-        innerSplit.setDividerSize(0);
-        innerSplit.setDividerLocation(0);
-
-        outerSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, innerSplit, emptyBottom);
-        outerSplit.setContinuousLayout(true);
-        outerSplit.setResizeWeight(1.0);
-        outerSplit.setDividerSize(0);
-
         // Custom desktop manager for drag-to-dock
         desktop.setDesktopManager(new DockingDesktopManager());
 
-        // Title bar right-click menus on all panels
+        // Right-click menus on floating panel title bars
         for (EditorPanel panel : allPanels.values()) {
             installTitleBarMenu(panel);
         }
@@ -108,97 +80,257 @@ public class DockingManager {
 
     /** Returns the root component to add to the frame's content area. */
     public JComponent getComponent() {
-        return outerSplit;
+        return rootWrapper;
+    }
+
+    /** Get the root node (for serialization). */
+    public DockNode getRoot() {
+        return root;
+    }
+
+    /** Save the current layout to disk. */
+    public void saveLayout() {
+        LayoutPersistence.save(root);
+    }
+
+    private void autoSave() {
+        if (!suppressSave) saveLayout();
+    }
+
+    /** Load a saved layout from disk. Returns true if a layout was loaded. */
+    public boolean loadLayout() {
+        return LayoutPersistence.load(this);
     }
 
     // ---- Public API ----
 
-    public void dock(String title, Zone zone) {
-        EditorPanel panel = allPanels.get(title);
-        if (panel == null || dockedZones.containsKey(title)) return;
+    /** Dock a panel as a center tab (alongside the desktop/stage). */
+    public void dockCenter(String panelId) {
+        EditorPanel panel = allPanels.get(panelId);
+        if (panel == null) return;
+        if (isDocked(panelId)) undock(panelId);
 
-        // Save state for later restore
-        savedBounds.put(title, panel.getBounds());
-        Container content = panel.getContentPane();
-        savedContent.put(title, content);
-
-        // Detach content from JInternalFrame
-        panel.setContentPane(new JPanel());
-        panel.setVisible(false);
-
-        // Add to dock zone
-        JPanel wrapper = new JPanel(new BorderLayout());
-        wrapper.add(content, BorderLayout.CENTER);
-        JTabbedPane tabs = tabsFor(zone);
-        tabs.addTab(title, wrapper);
-        tabs.setTabComponentAt(tabs.getTabCount() - 1, createTabLabel(title, tabs));
-        tabs.setSelectedIndex(tabs.getTabCount() - 1);
-
-        dockedZones.put(title, zone);
-        updateDockLayout();
+        Container content = extractContent(panel);
+        center.addTab(panelId, panel.getTitle(), content);
+        // Track in panelLeaves as null to indicate center-docked
+        panelLeaves.put(panelId, null);
+        autoSave();
     }
 
-    /**
-     * Undock a panel, restoring its content to the JInternalFrame.
-     * Does NOT automatically make the floating frame visible.
-     */
-    public void undock(String title) {
-        if (!dockedZones.containsKey(title)) return;
+    /** Dock a panel to a desktop edge. Adds as tab if a zone already exists there. */
+    public void dockAtEdge(String panelId, Edge edge) {
+        EditorPanel panel = allPanels.get(panelId);
+        if (panel == null) return;
+        suppressSave = true;
+        if (isDocked(panelId)) undock(panelId);
+        suppressSave = false;
 
-        Zone zone = dockedZones.remove(title);
-        JTabbedPane tabs = tabsFor(zone);
+        Container content = extractContent(panel);
 
-        for (int i = 0; i < tabs.getTabCount(); i++) {
-            if (title.equals(tabs.getTitleAt(i))) {
-                Container content = savedContent.remove(title);
-                if (content != null) {
-                    EditorPanel panel = allPanels.get(title);
-                    panel.setContentPane(content);
-                    Rectangle bounds = savedBounds.remove(title);
-                    if (bounds != null) panel.setBounds(bounds);
-                }
-                tabs.removeTabAt(i);
-                break;
-            }
+        // Check if there's already a leaf adjacent to the center at this edge
+        DockLeaf adjacent = findAdjacentLeaf(edge);
+        if (adjacent != null) {
+            adjacent.addTab(panelId, panel.getTitle(), content);
+            panelLeaves.put(panelId, adjacent);
+            autoSave();
+            return;
         }
 
-        updateDockLayout();
+        // Create new leaf and split around the center (or its nearest ancestor)
+        DockLeaf newLeaf = createLeaf();
+        newLeaf.addTab(panelId, panel.getTitle(), content);
+        panelLeaves.put(panelId, newLeaf);
+
+        DockNode target = center;
+        int orientation;
+        boolean newFirst;
+        double fraction;
+
+        switch (edge) {
+            case LEFT -> { orientation = JSplitPane.HORIZONTAL_SPLIT; newFirst = true; fraction = 0.15; }
+            case RIGHT -> { orientation = JSplitPane.HORIZONTAL_SPLIT; newFirst = false; fraction = 0.85; }
+            case TOP -> { orientation = JSplitPane.VERTICAL_SPLIT; newFirst = true; fraction = 0.15; }
+            case BOTTOM -> { orientation = JSplitPane.VERTICAL_SPLIT; newFirst = false; fraction = 0.70; }
+            default -> { return; }
+        }
+
+        DockSplit split = newFirst
+            ? new DockSplit(newLeaf, target, orientation, fraction)
+            : new DockSplit(target, newLeaf, orientation, fraction);
+
+        replaceNode(target, split);
+        autoSave();
+    }
+
+    /** Dock a panel to a desktop edge, always creating a new split (never tabs). */
+    public void dockAtEdgeNew(String panelId, Edge edge) {
+        EditorPanel panel = allPanels.get(panelId);
+        if (panel == null) return;
+        suppressSave = true;
+        if (panelLeaves.containsKey(panelId)) undock(panelId);
+        suppressSave = false;
+
+        Container content = extractContent(panel);
+
+        // If there's an adjacent leaf, split it instead of tabbing
+        DockLeaf adjacent = findAdjacentLeaf(edge);
+        if (adjacent != null) {
+            DockLeaf newLeaf = createLeaf();
+            newLeaf.addTab(panelId, panel.getTitle(), content);
+            panelLeaves.put(panelId, newLeaf);
+
+            int splitOrientation = (edge == Edge.LEFT || edge == Edge.RIGHT)
+                ? JSplitPane.VERTICAL_SPLIT : JSplitPane.HORIZONTAL_SPLIT;
+
+            DockSplit split = new DockSplit(adjacent, newLeaf, splitOrientation, 0.5);
+            replaceNode(adjacent, split);
+            autoSave();
+            return;
+        }
+
+        // No existing zone — same as dockAtEdge
+        DockLeaf newLeaf = createLeaf();
+        newLeaf.addTab(panelId, panel.getTitle(), content);
+        panelLeaves.put(panelId, newLeaf);
+
+        DockNode target = center;
+        int orientation;
+        boolean newFirst;
+        double fraction;
+
+        switch (edge) {
+            case LEFT -> { orientation = JSplitPane.HORIZONTAL_SPLIT; newFirst = true; fraction = 0.15; }
+            case RIGHT -> { orientation = JSplitPane.HORIZONTAL_SPLIT; newFirst = false; fraction = 0.85; }
+            case TOP -> { orientation = JSplitPane.VERTICAL_SPLIT; newFirst = true; fraction = 0.15; }
+            case BOTTOM -> { orientation = JSplitPane.VERTICAL_SPLIT; newFirst = false; fraction = 0.70; }
+            default -> { return; }
+        }
+
+        DockSplit newSplit = newFirst
+            ? new DockSplit(newLeaf, target, orientation, fraction)
+            : new DockSplit(target, newLeaf, orientation, fraction);
+
+        replaceNode(target, newSplit);
+        autoSave();
+    }
+
+    /** Dock a panel adjacent to a specific leaf (creates a split). */
+    public void dockAt(String panelId, DockLeaf targetLeaf, Edge direction) {
+        EditorPanel panel = allPanels.get(panelId);
+        if (panel == null) return;
+        suppressSave = true;
+        if (panelLeaves.containsKey(panelId)) undock(panelId);
+        suppressSave = false;
+
+        Container content = extractContent(panel);
+
+        DockLeaf newLeaf = createLeaf();
+        newLeaf.addTab(panelId, panel.getTitle(), content);
+        panelLeaves.put(panelId, newLeaf);
+
+        int orientation = (direction == Edge.LEFT || direction == Edge.RIGHT)
+            ? JSplitPane.HORIZONTAL_SPLIT : JSplitPane.VERTICAL_SPLIT;
+
+        boolean newFirst = (direction == Edge.LEFT || direction == Edge.TOP);
+
+        DockSplit split = newFirst
+            ? new DockSplit(newLeaf, targetLeaf, orientation, 0.5)
+            : new DockSplit(targetLeaf, newLeaf, orientation, 0.5);
+
+        replaceNode(targetLeaf, split);
+        autoSave();
+    }
+
+    /** Split a tab out of a leaf into a new adjacent leaf. */
+    public void splitTab(DockLeaf leaf, String panelId, Edge direction) {
+        if (leaf.getTabCount() <= 1) return;
+
+        int idx = leaf.getPanelIds().indexOf(panelId);
+        if (idx < 0) return;
+        Container content = leaf.getContentAt(idx);
+        leaf.removeTab(panelId);
+
+        EditorPanel panel = allPanels.get(panelId);
+        String displayTitle = panel != null ? panel.getTitle() : panelId;
+
+        DockLeaf newLeaf = createLeaf();
+        newLeaf.addTab(panelId, displayTitle, content);
+        panelLeaves.put(panelId, newLeaf);
+
+        int orientation = (direction == Edge.LEFT || direction == Edge.RIGHT)
+            ? JSplitPane.HORIZONTAL_SPLIT : JSplitPane.VERTICAL_SPLIT;
+
+        boolean newFirst = (direction == Edge.LEFT || direction == Edge.TOP);
+
+        DockSplit split = newFirst
+            ? new DockSplit(newLeaf, leaf, orientation, 0.5)
+            : new DockSplit(leaf, newLeaf, orientation, 0.5);
+
+        replaceNode(leaf, split);
+        autoSave();
+    }
+
+    /** Undock a panel, restoring its content to the JInternalFrame. Does NOT show it. */
+    public void undock(String panelId) {
+        if (!panelLeaves.containsKey(panelId)) return;
+
+        DockLeaf leaf = panelLeaves.remove(panelId);
+
+        if (leaf == null) {
+            // Center-docked panel
+            Container content = center.removeTab(panelId);
+            if (content != null) {
+                restoreContent(panelId, content);
+            }
+            return;
+        }
+
+        // Normal leaf-docked panel
+        int idx = leaf.getPanelIds().indexOf(panelId);
+        Container content = (idx >= 0) ? leaf.getContentAt(idx) : null;
+        leaf.removeTab(panelId);
+
+        if (content != null) {
+            restoreContent(panelId, content);
+        }
+
+        if (leaf.isEmpty()) {
+            collapseEmptyLeaf(leaf);
+        }
+        autoSave();
     }
 
     /** Undock and show the panel as a floating window. */
-    public void undockAndShow(String title) {
-        undock(title);
-        EditorPanel panel = allPanels.get(title);
+    public void undockAndShow(String panelId) {
+        undock(panelId);
+        EditorPanel panel = allPanels.get(panelId);
         if (panel != null) {
             panel.setVisible(true);
             try { panel.setSelected(true); } catch (PropertyVetoException ignored) {}
         }
     }
 
-    public boolean isDocked(String title) {
-        return dockedZones.containsKey(title);
+    public boolean isDocked(String panelId) {
+        return panelLeaves.containsKey(panelId);
     }
 
     /** Toggle visibility, handling both docked and floating states. */
-    public void togglePanel(String title, boolean visible) {
-        if (dockedZones.containsKey(title)) {
+    public void togglePanel(String panelId, boolean visible) {
+        if (panelLeaves.containsKey(panelId)) {
             if (visible) {
-                // Select the tab
-                Zone zone = dockedZones.get(title);
-                JTabbedPane tabs = tabsFor(zone);
-                for (int i = 0; i < tabs.getTabCount(); i++) {
-                    if (title.equals(tabs.getTitleAt(i))) {
-                        tabs.setSelectedIndex(i);
-                        break;
-                    }
+                DockLeaf leaf = panelLeaves.get(panelId);
+                if (leaf != null) {
+                    leaf.selectTab(panelId);
+                } else {
+                    center.selectTab(panelId);
                 }
             } else {
-                undock(title);
-                EditorPanel panel = allPanels.get(title);
+                undock(panelId);
+                EditorPanel panel = allPanels.get(panelId);
                 if (panel != null) panel.setVisible(false);
             }
         } else {
-            EditorPanel panel = allPanels.get(title);
+            EditorPanel panel = allPanels.get(panelId);
             if (panel != null) {
                 panel.setVisible(visible);
                 if (visible) {
@@ -210,25 +342,38 @@ public class DockingManager {
 
     /** Undock all panels and restore them to floating. */
     public void undockAll() {
-        for (String title : dockedZones.keySet().toArray(new String[0])) {
-            undockAndShow(title);
+        suppressSave = true;
+        for (String panelId : panelLeaves.keySet().toArray(new String[0])) {
+            undockAndShow(panelId);
         }
+        suppressSave = false;
+        autoSave();
     }
 
     /** Set up a default IDE-style docked layout. */
     public void applyDefaultDockedLayout() {
         undockAll();
 
-        dock("Tool Palette", Zone.LEFT);
-        dock("Property Inspector", Zone.RIGHT);
-        dock("Bytecode Debugger", Zone.RIGHT);
-        dock("Score", Zone.BOTTOM);
-        dock("Cast", Zone.BOTTOM);
-        dock("Script", Zone.BOTTOM);
-        dock("Message", Zone.BOTTOM);
+        // Bottom: tabbed together
+        dockAtEdge("score", Edge.BOTTOM);
+        dockAtEdge("cast", Edge.BOTTOM);
+        dockAtEdge("script", Edge.BOTTOM);
+        dockAtEdge("message", Edge.BOTTOM);
 
-        // Show the Stage floating in center
-        EditorPanel stage = allPanels.get("Stage");
+        // Left: tool palette
+        dockAtEdge("tool-palette", Edge.LEFT);
+
+        // Right: property inspector
+        dockAtEdge("property-inspector", Edge.RIGHT);
+
+        // Split right zone: debugger below inspector
+        DockLeaf rightLeaf = panelLeaves.get("property-inspector");
+        if (rightLeaf != null) {
+            dockAt("bytecode-debugger", rightLeaf, Edge.BOTTOM);
+        }
+
+        // Show Stage floating in center
+        EditorPanel stage = allPanels.get("stage");
         if (stage != null) {
             stage.setVisible(true);
             stage.setBounds(10, 10, 660, 500);
@@ -236,145 +381,201 @@ public class DockingManager {
         }
     }
 
-    // ---- Layout updates ----
+    // ---- Tree operations ----
 
-    private void updateDockLayout() {
-        SwingUtilities.invokeLater(() -> {
-            updateZone(leftTabs, innerSplit, true, emptyLeft);
-            updateZone(rightTabs, centerRightSplit, false, emptyRight);
-            updateZoneVertical(bottomTabs, outerSplit, emptyBottom);
-            outerSplit.revalidate();
-            outerSplit.repaint();
-        });
+    private DockSplit findParent(DockNode target) {
+        return findParentRec(root, target);
     }
 
-    private void updateZone(JTabbedPane tabs, JSplitPane split, boolean isLeft, JPanel empty) {
-        if (tabs.getTabCount() > 0) {
-            if (isLeft) {
-                if (split.getLeftComponent() != tabs) split.setLeftComponent(tabs);
-                split.setDividerSize(DIVIDER_SIZE);
-                SwingUtilities.invokeLater(() -> split.setDividerLocation(leftDivLoc));
+    private DockSplit findParentRec(DockNode current, DockNode target) {
+        if (current instanceof DockSplit split) {
+            if (split.getFirst() == target || split.getSecond() == target) return split;
+            DockSplit result = findParentRec(split.getFirst(), target);
+            if (result != null) return result;
+            return findParentRec(split.getSecond(), target);
+        }
+        return null;
+    }
+
+    private void replaceNode(DockNode oldNode, DockNode newNode) {
+        if (root == oldNode) {
+            setRoot(newNode);
+            return;
+        }
+        DockSplit parent = findParent(oldNode);
+        if (parent != null) {
+            if (parent.getFirst() == oldNode) {
+                parent.setFirst(newNode);
             } else {
-                if (split.getRightComponent() != tabs) split.setRightComponent(tabs);
-                split.setDividerSize(DIVIDER_SIZE);
-                SwingUtilities.invokeLater(() -> {
-                    int w = split.getWidth();
-                    if (w > 0) split.setDividerLocation(w - rightDivWidth);
-                });
-            }
-        } else {
-            // Save current divider location before collapsing
-            if (isLeft) {
-                if (split.getLeftComponent() == tabs && split.getDividerLocation() > 50) {
-                    leftDivLoc = split.getDividerLocation();
-                }
-                split.setLeftComponent(empty);
-                split.setDividerSize(0);
-                split.setDividerLocation(0);
-            } else {
-                if (split.getRightComponent() == tabs) {
-                    int w = split.getWidth();
-                    int d = split.getDividerLocation();
-                    if (w > 0 && d > 0 && w - d > 50) rightDivWidth = w - d;
-                }
-                split.setRightComponent(empty);
-                split.setDividerSize(0);
-                SwingUtilities.invokeLater(() -> split.setDividerLocation(split.getWidth()));
+                parent.setSecond(newNode);
             }
         }
     }
 
-    private void updateZoneVertical(JTabbedPane tabs, JSplitPane split, JPanel empty) {
-        if (tabs.getTabCount() > 0) {
-            if (split.getBottomComponent() != tabs) split.setBottomComponent(tabs);
-            split.setDividerSize(DIVIDER_SIZE);
-            SwingUtilities.invokeLater(() -> {
-                int h = split.getHeight();
-                if (h > 0) split.setDividerLocation(h - bottomDivHeight);
+    private void setRoot(DockNode newRoot) {
+        rootWrapper.removeAll();
+        root = newRoot;
+        rootWrapper.add(root.getComponent(), BorderLayout.CENTER);
+        rootWrapper.revalidate();
+        rootWrapper.repaint();
+    }
+
+    /**
+     * Walk up from center looking for an adjacent DockLeaf at the given edge.
+     */
+    private DockLeaf findAdjacentLeaf(Edge edge) {
+        DockNode node = center;
+        while (true) {
+            DockSplit parent = findParent(node);
+            if (parent == null) return null;
+
+            switch (edge) {
+                case LEFT -> {
+                    if (parent.getOrientation() == JSplitPane.HORIZONTAL_SPLIT
+                            && parent.getSecond() == node
+                            && parent.getFirst() instanceof DockLeaf leaf) {
+                        return leaf;
+                    }
+                }
+                case RIGHT -> {
+                    if (parent.getOrientation() == JSplitPane.HORIZONTAL_SPLIT
+                            && parent.getFirst() == node
+                            && parent.getSecond() instanceof DockLeaf leaf) {
+                        return leaf;
+                    }
+                }
+                case TOP -> {
+                    if (parent.getOrientation() == JSplitPane.VERTICAL_SPLIT
+                            && parent.getSecond() == node
+                            && parent.getFirst() instanceof DockLeaf leaf) {
+                        return leaf;
+                    }
+                }
+                case BOTTOM -> {
+                    if (parent.getOrientation() == JSplitPane.VERTICAL_SPLIT
+                            && parent.getFirst() == node
+                            && parent.getSecond() instanceof DockLeaf leaf) {
+                        return leaf;
+                    }
+                }
+            }
+
+            node = parent; // keep walking up
+        }
+    }
+
+    private void collapseEmptyLeaf(DockLeaf leaf) {
+        DockSplit parent = findParent(leaf);
+        if (parent == null) {
+            setRoot(center);
+            return;
+        }
+
+        DockNode sibling = (parent.getFirst() == leaf) ? parent.getSecond() : parent.getFirst();
+        replaceNode(parent, sibling);
+    }
+
+    // ---- Content extraction/restoration ----
+
+    private Container extractContent(EditorPanel panel) {
+        savedBounds.put(panel.getPanelId(), panel.getBounds());
+        Container content = panel.getContentPane();
+        savedContent.put(panel.getPanelId(), content);
+        panel.setContentPane(new JPanel());
+        panel.setVisible(false);
+        return content;
+    }
+
+    private void restoreContent(String panelId, Container content) {
+        EditorPanel panel = allPanels.get(panelId);
+        if (panel == null) return;
+
+        panel.setContentPane(content);
+
+        savedContent.remove(panelId);
+        Rectangle bounds = savedBounds.remove(panelId);
+        if (bounds != null) panel.setBounds(bounds);
+    }
+
+    private DockLeaf createLeaf() {
+        DockLeaf leaf = new DockLeaf();
+        leaf.setManager(this);
+        leaf.installContextMenu();
+        return leaf;
+    }
+
+    // ---- Tab context menu (called from DockLeaf) ----
+
+    void showTabContextMenu(DockLeaf leaf, String panelId, JTabbedPane tabs, int x, int y) {
+        EditorPanel panel = allPanels.get(panelId);
+        String displayName = panel != null ? panel.getTitle() : panelId;
+
+        JPopupMenu menu = new JPopupMenu();
+
+        JMenuItem floatItem = new JMenuItem("Float");
+        floatItem.addActionListener(e -> undockAndShow(panelId));
+        menu.add(floatItem);
+
+        menu.addSeparator();
+
+        // Split options (only if leaf has multiple tabs)
+        boolean canSplit = leaf.getTabCount() > 1;
+
+        JMenuItem splitLeft = new JMenuItem("Split Left");
+        splitLeft.setEnabled(canSplit);
+        splitLeft.addActionListener(e -> splitTab(leaf, panelId, Edge.LEFT));
+        menu.add(splitLeft);
+
+        JMenuItem splitRight = new JMenuItem("Split Right");
+        splitRight.setEnabled(canSplit);
+        splitRight.addActionListener(e -> splitTab(leaf, panelId, Edge.RIGHT));
+        menu.add(splitRight);
+
+        JMenuItem splitUp = new JMenuItem("Split Up");
+        splitUp.setEnabled(canSplit);
+        splitUp.addActionListener(e -> splitTab(leaf, panelId, Edge.TOP));
+        menu.add(splitUp);
+
+        JMenuItem splitDown = new JMenuItem("Split Down");
+        splitDown.setEnabled(canSplit);
+        splitDown.addActionListener(e -> splitTab(leaf, panelId, Edge.BOTTOM));
+        menu.add(splitDown);
+
+        menu.addSeparator();
+
+        // Move to edge options (tabs with existing zone)
+        for (Edge edge : Edge.values()) {
+            JMenuItem moveItem = new JMenuItem("Move to " + edgeName(edge));
+            moveItem.addActionListener(e -> {
+                undock(panelId);
+                dockAtEdge(panelId, edge);
             });
-        } else {
-            if (split.getBottomComponent() == tabs) {
-                int h = split.getHeight();
-                int d = split.getDividerLocation();
-                if (h > 0 && d > 0 && h - d > 50) bottomDivHeight = h - d;
-            }
-            split.setBottomComponent(empty);
-            split.setDividerSize(0);
-            SwingUtilities.invokeLater(() -> split.setDividerLocation(split.getHeight()));
+            menu.add(moveItem);
         }
-    }
 
-    // ---- Helpers ----
-
-    private JTabbedPane tabsFor(Zone zone) {
-        return switch (zone) {
-            case LEFT -> leftTabs;
-            case RIGHT -> rightTabs;
-            case BOTTOM -> bottomTabs;
-        };
-    }
-
-    private static JPanel newEmptyPanel() {
-        return new JPanel() {
-            @Override public Dimension getMinimumSize() { return new Dimension(0, 0); }
-            @Override public Dimension getPreferredSize() { return new Dimension(0, 0); }
-        };
-    }
-
-    private JPanel createTabLabel(String title, JTabbedPane parent) {
-        JPanel tab = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
-        tab.setOpaque(false);
-        tab.add(new JLabel(title));
-
-        JButton closeBtn = new JButton("\u00d7");
-        closeBtn.setMargin(new Insets(0, 2, 0, 2));
-        closeBtn.setFont(closeBtn.getFont().deriveFont(11f));
-        closeBtn.setContentAreaFilled(false);
-        closeBtn.setBorderPainted(false);
-        closeBtn.setFocusable(false);
-        closeBtn.setToolTipText("Float");
-        closeBtn.addActionListener(e -> undockAndShow(title));
-        tab.add(closeBtn);
-
-        return tab;
-    }
-
-    // ---- Context menus ----
-
-    private void installTabContextMenu(JTabbedPane tabs, Zone zone) {
-        tabs.addMouseListener(new MouseAdapter() {
-            @Override public void mousePressed(MouseEvent e) { popup(e); }
-            @Override public void mouseReleased(MouseEvent e) { popup(e); }
-
-            private void popup(MouseEvent e) {
-                if (!e.isPopupTrigger()) return;
-                int idx = tabs.indexAtLocation(e.getX(), e.getY());
-                if (idx < 0) return;
-                String title = tabs.getTitleAt(idx);
-
-                JPopupMenu menu = new JPopupMenu();
-
-                JMenuItem floatItem = new JMenuItem("Float");
-                floatItem.addActionListener(ev -> undockAndShow(title));
-                menu.add(floatItem);
-
-                menu.addSeparator();
-
-                for (Zone z : Zone.values()) {
-                    if (z == zone) continue;
-                    String label = "Move to " + zoneName(z);
-                    JMenuItem moveItem = new JMenuItem(label);
-                    moveItem.addActionListener(ev -> {
-                        undock(title);
-                        dock(title, z);
-                    });
-                    menu.add(moveItem);
-                }
-
-                menu.show(tabs, e.getX(), e.getY());
-            }
+        JMenuItem moveCenterItem = new JMenuItem("Move to Center");
+        moveCenterItem.addActionListener(e -> {
+            undock(panelId);
+            dockCenter(panelId);
         });
+        menu.add(moveCenterItem);
+
+        menu.addSeparator();
+
+        // Move to edge as new split (side by side with existing zone)
+        for (Edge edge : Edge.values()) {
+            JMenuItem moveItem = new JMenuItem("Move to " + edgeName(edge) + " (New Split)");
+            moveItem.addActionListener(e -> {
+                undock(panelId);
+                dockAtEdgeNew(panelId, edge);
+            });
+            menu.add(moveItem);
+        }
+
+        menu.show(tabs, x, y);
     }
+
+    // ---- Floating panel title bar context menu ----
 
     private void installTitleBarMenu(EditorPanel panel) {
         try {
@@ -387,44 +588,55 @@ public class DockingManager {
 
                 private void popup(MouseEvent e) {
                     if (!e.isPopupTrigger()) return;
+                    String id = panel.getPanelId();
                     JPopupMenu menu = new JPopupMenu();
-                    for (Zone z : Zone.values()) {
-                        JMenuItem item = new JMenuItem("Dock " + zoneName(z));
-                        item.addActionListener(ev -> dock(panel.getTitle(), z));
+                    for (Edge edge : Edge.values()) {
+                        JMenuItem item = new JMenuItem("Dock " + edgeName(edge));
+                        item.addActionListener(ev -> dockAtEdge(id, edge));
+                        menu.add(item);
+                    }
+                    JMenuItem centerItem = new JMenuItem("Dock Center");
+                    centerItem.addActionListener(ev -> dockCenter(id));
+                    menu.add(centerItem);
+                    menu.addSeparator();
+                    for (Edge edge : Edge.values()) {
+                        JMenuItem item = new JMenuItem("Dock " + edgeName(edge) + " (New Split)");
+                        item.addActionListener(ev -> dockAtEdgeNew(id, edge));
                         menu.add(item);
                     }
                     menu.show(titleBar, e.getX(), e.getY());
                 }
             });
         } catch (ClassCastException ignored) {
-            // Non-basic L&F — skip title bar menu
+            // Non-basic L&F — skip
         }
     }
 
-    private static String zoneName(Zone z) {
-        return z.name().charAt(0) + z.name().substring(1).toLowerCase();
+    private static String edgeName(Edge e) {
+        return e.name().charAt(0) + e.name().substring(1).toLowerCase();
     }
 
-    // ---- Snap overlay (shown during drag-to-dock) ----
+    // ---- Snap overlay ----
 
     private class SnapOverlay extends JComponent {
-        private Zone zone;
+        private Edge edge;
 
-        void setZone(Zone z) {
-            this.zone = z;
-            setVisible(z != null);
+        void setEdge(Edge e) {
+            this.edge = e;
+            setVisible(e != null);
             repaint();
         }
 
         @Override
         protected void paintComponent(Graphics g) {
-            if (zone == null) return;
+            if (edge == null) return;
             Graphics2D g2 = (Graphics2D) g.create();
             int w = getWidth(), h = getHeight();
 
-            Rectangle r = switch (zone) {
+            Rectangle r = switch (edge) {
                 case LEFT -> new Rectangle(0, 0, w / 4, h);
                 case RIGHT -> new Rectangle(w - w / 4, 0, w / 4, h);
+                case TOP -> new Rectangle(0, 0, w, h / 4);
                 case BOTTOM -> new Rectangle(0, h - h / 3, w, h / 3);
             };
 
@@ -451,23 +663,25 @@ public class DockingManager {
         public void dragFrame(JComponent f, int newX, int newY) {
             super.dragFrame(f, newX, newY);
 
-            int dw = desktop.getWidth();
-            int dh = desktop.getHeight();
+            int dw = center.getDesktop().getWidth();
+            int dh = center.getDesktop().getHeight();
             int fw = f.getWidth();
             int fh = f.getHeight();
 
-            Zone snap = null;
+            Edge snap = null;
             if (newX < SNAP_MARGIN) {
-                snap = Zone.LEFT;
+                snap = Edge.LEFT;
             } else if (newX + fw > dw - SNAP_MARGIN) {
-                snap = Zone.RIGHT;
+                snap = Edge.RIGHT;
+            } else if (newY < SNAP_MARGIN) {
+                snap = Edge.TOP;
             } else if (newY + fh > dh - SNAP_MARGIN) {
-                snap = Zone.BOTTOM;
+                snap = Edge.BOTTOM;
             }
 
             if (snap != pendingSnap) {
                 pendingSnap = snap;
-                snapOverlay.setZone(snap);
+                snapOverlay.setEdge(snap);
             }
         }
 
@@ -476,13 +690,13 @@ public class DockingManager {
             super.endDraggingFrame(f);
 
             if (pendingSnap != null && f instanceof EditorPanel panel) {
-                Zone zone = pendingSnap;
+                Edge edge = pendingSnap;
                 pendingSnap = null;
-                snapOverlay.setZone(null);
-                SwingUtilities.invokeLater(() -> dock(panel.getTitle(), zone));
+                snapOverlay.setEdge(null);
+                SwingUtilities.invokeLater(() -> dockAtEdge(panel.getPanelId(), edge));
             } else {
                 pendingSnap = null;
-                snapOverlay.setZone(null);
+                snapOverlay.setEdge(null);
             }
         }
     }

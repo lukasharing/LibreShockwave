@@ -23,7 +23,7 @@ public class StageWindow extends EditorPanel {
     private final StageCanvas canvas;
 
     public StageWindow(EditorContext context) {
-        super("Stage", context, true, true, true, true);
+        super("stage", "Stage", context, true, true, true, true);
         canvas = new StageCanvas();
         setContentPane(canvas);
         setSize(660, 500);

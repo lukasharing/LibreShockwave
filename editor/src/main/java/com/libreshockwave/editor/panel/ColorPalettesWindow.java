@@ -11,7 +11,7 @@ import java.awt.*;
 public class ColorPalettesWindow extends EditorPanel {
 
     public ColorPalettesWindow(EditorContext context) {
-        super("Color Palettes", context, true, true, true, true);
+        super("color-palettes", "Color Palettes", context, true, true, true, true);
 
         JPanel panel = new JPanel(new BorderLayout());
 

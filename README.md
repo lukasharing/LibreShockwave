@@ -51,7 +51,21 @@ The player is available in two forms:
 
 All player functionality is decoupled from the SDK and VM via the `player-core` module, which provides platform-independent playback logic (score traversal, event dispatch, sprite management, bitmap decoding).
 
-![java_m4YLpAnayh](https://github.com/user-attachments/assets/8fe52485-e0b0-4d82-ab66-693d33556bff)
+![](https://i.imgur.com/rlrsHov.gif)
+
+## Editor
+
+The `editor` module is a Swing-based Director MX 2004–style authoring environment. It provides an IDE-like interface with dockable panels for inspecting, editing, and playing back Director movies — bringing back the classic Director workflow as open source software.
+
+Panels include: Stage, Score, Cast, Script Editor, Property Inspector, Behavior Inspector, Color Palettes, Library Palette, Paint, Text/Field Editors, Vector Shape, Markers, Message Window, and a Bytecode Debugger. Layouts are persisted to `~/.libreshockwave/layout.json`.
+
+![](https://cdn.discordapp.com/attachments/1481540357849354272/1482322819680309258/image.png?ex=69b68834&is=69b536b4&hm=78debce49e047fe4e4e2c1ea7ca875cc7174ba95c7f89c873dd34a9438c28f29&)
+
+### Running
+
+```bash
+./gradlew :editor:run
+```
 
 ## Using player-core as a Library
 
@@ -221,14 +235,6 @@ snap.callStack();  // call frames
 | `shutdown()` | Release all resources (thread pools, caches) |
 
 </details>
-
-## Screenshots
-
-### Cast Extractor
-
-A GUI tool for browsing and extracting assets from Director files (available on the releases page).
-
-<img width="1127" height="749" alt="Cast Extractor" src="https://github.com/user-attachments/assets/de4f99d2-87ed-4c78-8422-a84bcf9faeca" />
 
 ## Usage
 
@@ -860,12 +866,6 @@ Repeat with a second unit file for each additional port (e.g. `websockify-mus.se
 
 ## Tools
 
-### Cast Extractor GUI
-
-```bash
-./gradlew :sdk:extractCasts
-```
-
 ### Running Tests
 
 ```bash
@@ -917,9 +917,8 @@ Repeat with a second unit file for each additional port (e.g. `websockify-mus.se
 | `sdk` | Core library for parsing Director/Shockwave files |
 | `vm` | Lingo bytecode virtual machine |
 | `player-core` | Platform-independent playback engine (score, events, rendering data) |
-| `player-swing` | Desktop player with Swing UI and debugger |
 | `player-wasm` | Browser player compiled to WebAssembly via TeaVM |
-| `cast-extractor` | GUI tool for extracting assets from Director files |
+| `editor` | Swing-based Director MX 2004–style authoring environment |
 
 <details>
 <summary>SDK packages</summary>
