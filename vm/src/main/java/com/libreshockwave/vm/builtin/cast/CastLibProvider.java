@@ -248,6 +248,17 @@ public interface CastLibProvider {
         return Datum.VOID;
     }
 
+    /**
+     * Get the palette from a palette cast member.
+     * Used by image() to attach custom palettes to 8-bit images.
+     * @param castLibNumber The cast library number
+     * @param memberNumber The member number
+     * @return The Palette, or null if not a palette member or not found
+     */
+    default com.libreshockwave.bitmap.Palette getMemberPalette(int castLibNumber, int memberNumber) {
+        return null;
+    }
+
     // Thread-local provider for VM access
     ThreadLocal<CastLibProvider> CURRENT = new ThreadLocal<>();
 

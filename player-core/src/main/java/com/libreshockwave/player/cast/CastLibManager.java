@@ -1,6 +1,8 @@
 package com.libreshockwave.player.cast;
 
 import com.libreshockwave.DirectorFile;
+import com.libreshockwave.bitmap.Palette;
+import com.libreshockwave.cast.MemberType;
 import com.libreshockwave.chunks.CastChunk;
 import com.libreshockwave.chunks.CastListChunk;
 import com.libreshockwave.chunks.CastMemberChunk;
@@ -313,6 +315,32 @@ public class CastLibManager implements CastLibProvider {
             return null;
         }
         return castLib.findMemberByNumber(memberNumber);
+    }
+
+    /**
+     * Get the palette from a palette cast member.
+     * Searches by member number within a specific cast lib, then all cast libs.
+     */
+    @Override
+    public Palette getMemberPalette(int castLibNumber, int memberNumber) {
+        // Try specified cast lib first
+        CastLib castLib = getCastLib(castLibNumber);
+        if (castLib != null && castLib.isLoaded()) {
+            CastMemberChunk chunk = castLib.findMemberByNumber(memberNumber);
+            if (chunk != null && chunk.file() != null) {
+                // Use the DirectorFile's palette resolver which handles CLUT chunk lookup
+                return chunk.file().resolvePalette(chunk.id().value());
+            }
+        }
+        // Fallback: search all cast libs
+        for (CastLib cl : castLibs.values()) {
+            if (!cl.isLoaded()) continue;
+            CastMemberChunk chunk = cl.findMemberByNumber(memberNumber);
+            if (chunk != null && chunk.file() != null) {
+                return chunk.file().resolvePalette(chunk.id().value());
+            }
+        }
+        return null;
     }
 
     /**

@@ -1,8 +1,10 @@
 package com.libreshockwave.vm.builtin.media;
 
 import com.libreshockwave.bitmap.Bitmap;
+import com.libreshockwave.bitmap.Palette;
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.LingoVM;
+import com.libreshockwave.vm.builtin.cast.CastLibProvider;
 
 import java.util.List;
 import java.util.Map;
@@ -21,8 +23,9 @@ public final class ImageBuiltins {
     }
 
     /**
-     * image(width, height, bitDepth)
+     * image(width, height, bitDepth [, paletteRef])
      * Creates a new blank image with the specified dimensions and bit depth.
+     * The optional 4th argument is a palette member reference (for 8-bit paletted images).
      * The image is filled with white (0xFFFFFFFF) by default.
      */
     private static Datum image(LingoVM vm, List<Datum> args) {
@@ -40,6 +43,43 @@ public final class ImageBuiltins {
 
         Bitmap bmp = new Bitmap(width, height, bitDepth);
         bmp.fill(0xFFFFFFFF); // White background
+
+        // 4th argument: palette member reference (e.g., member("nav_ui_palette"))
+        // Store the palette on the bitmap so paletteIndex() colors can be resolved correctly.
+        if (args.size() >= 4) {
+            Datum paletteArg = args.get(3);
+            Palette pal = resolvePaletteFromDatum(paletteArg);
+            if (pal != null) {
+                bmp.setImagePalette(pal);
+            }
+            // Also handle #systemMac symbol
+            if (paletteArg instanceof Datum.Symbol sym) {
+                String name = sym.name().toLowerCase();
+                if (name.equals("systemmac")) {
+                    bmp.setImagePalette(Palette.SYSTEM_MAC_PALETTE);
+                } else if (name.equals("systemwin") || name.equals("systemwindows")) {
+                    bmp.setImagePalette(Palette.SYSTEM_WIN_PALETTE);
+                }
+            }
+        }
+
         return new Datum.ImageRef(bmp);
+    }
+
+    /**
+     * Resolve a palette from a Datum (cast member reference, palette index color, etc.)
+     */
+    private static Palette resolvePaletteFromDatum(Datum datum) {
+        CastLibProvider provider = CastLibProvider.getProvider();
+        if (provider == null) return null;
+
+        // Handle member reference — look up the palette cast member
+        if (datum instanceof Datum.CastMemberRef ref) {
+            return provider.getMemberPalette(ref.castLibNum(), ref.memberNum());
+        }
+
+        // Handle member looked up by name — may already be resolved to CastMemberRef
+        // but could also be a generic Datum if member() returned something else
+        return null;
     }
 }

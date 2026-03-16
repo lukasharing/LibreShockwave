@@ -178,6 +178,8 @@ public class Player {
         this.spriteBaker = new SpriteBaker(bitmapCache, castLibManager, this);
         this.inputState = new InputState();
         this.bitmapResolver = new BitmapResolver(file, castLibManager, frameContext);
+        // Register active palette supplier so Datum.datumToArgb() can resolve palette indices
+        com.libreshockwave.vm.datum.Datum.setActivePaletteSupplier(() -> bitmapResolver.getMoviePalette());
         this.cursorManager = new CursorManager(stageRenderer, inputState, castLibManager,
                 bitmapResolver, this::getCurrentFrame);
         this.inputHandler = new InputHandler(inputState, stageRenderer, castLibManager,
@@ -281,6 +283,8 @@ public class Player {
         this.spriteBaker = new SpriteBaker(bitmapCache, castLibManager, this);
         this.inputState = new InputState();
         this.bitmapResolver = new BitmapResolver(file, castLibManager, frameContext);
+        // Register active palette supplier so Datum.datumToArgb() can resolve palette indices
+        com.libreshockwave.vm.datum.Datum.setActivePaletteSupplier(() -> bitmapResolver.getMoviePalette());
         this.cursorManager = new CursorManager(stageRenderer, inputState, castLibManager,
                 bitmapResolver, this::getCurrentFrame);
         this.inputHandler = new InputHandler(inputState, stageRenderer, castLibManager,
