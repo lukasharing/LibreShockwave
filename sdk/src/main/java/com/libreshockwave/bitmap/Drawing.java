@@ -129,6 +129,14 @@ public class Drawing {
 
         switch (ink) {
             case COPY:
+                // "All colors, including white, are opaque unless the image
+                // contains alpha channel effects (transparency)." — Director docs
+                if (srcA == 0) {
+                    return dest;
+                }
+                if (srcA < 255) {
+                    return alphaBlend(src, dest, srcA);
+                }
                 return src;
 
             case TRANSPARENT:

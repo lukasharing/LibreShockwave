@@ -532,7 +532,14 @@ public class CastMember {
         // the text content. Director auto-adjusts the rect height when text is set,
         // so the stored rectBottom may not reflect the actual content height.
         int height = textBoxType == 0 ? 0 : (textRectBottom - textRectTop);
-        return renderTextToImage(width, height, textBgColor);
+        // Text members in Director use Background Transparent behavior when the
+        // background is white (default): white pixels become transparent so text
+        // can be composited over other content without a white rectangle.
+        // Use alpha=0 with white RGB (0x00FFFFFF) so COPY ink skips background
+        // pixels while #color/#bgColor remapping still sees white for colorization.
+        // Non-white backgrounds (e.g., black bg for white text) must stay opaque.
+        int bgColor = (textBgColor == 0xFFFFFFFF) ? 0x00FFFFFF : textBgColor;
+        return renderTextToImage(width, height, bgColor);
     }
 
     /**
