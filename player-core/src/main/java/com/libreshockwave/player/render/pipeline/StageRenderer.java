@@ -105,44 +105,53 @@ public class StageRenderer {
     public List<RenderSprite> getSpritesForFrame(int frame) {
         List<RenderSprite> sprites = new ArrayList<>();
         Set<Integer> renderedChannels = new HashSet<>();
+        collectScoreSprites(frame, sprites, renderedChannels);
+        collectDynamicSprites(sprites, renderedChannels);
+        sortSprites(sprites);
 
-        // 1. Collect Score-based sprites
-        if (file != null) {
-            ScoreChunk score = file.getScoreChunk();
-            if (score != null) {
-                int frameIndex = frame - 1;  // Convert to 0-indexed
+        return sprites;
+    }
 
-                for (ScoreChunk.FrameChannelEntry entry : score.frameData().frameChannelData()) {
-                    if (entry.frameIndex().value() == frameIndex) {
-                        int channel = entry.channelIndex().value();
-                        SpriteState state = spriteRegistry.get(channel);
-
-                        // Check if this channel has a dynamic member override
-                        if (state != null && state.hasDynamicMember()) {
-                            // Apply score base properties (ink, colors) to dynamic sprites.
-                            // In Director, score properties are the base values; behaviors
-                            // override only what they explicitly set.
-                            if (state.isDynamic()) {
-                                state.applyScoreDefaults(entry.data());
-                            }
-                            RenderSprite sprite = createDynamicRenderSprite(state);
-                            if (sprite != null) {
-                                sprites.add(sprite);
-                                renderedChannels.add(channel);
-                            }
-                        } else {
-                            RenderSprite sprite = createRenderSprite(entry.channelIndex().value(), entry.data());
-                            if (sprite != null) {
-                                sprites.add(sprite);
-                                renderedChannels.add(channel);
-                            }
-                        }
-                    }
-                }
-            }
+    public void collectScoreSprites(int frame, List<RenderSprite> sprites, Set<Integer> renderedChannels) {
+        if (file == null) {
+            return;
         }
 
-        // 2. Add dynamically created/puppeted sprites not in the Score
+        ScoreChunk score = file.getScoreChunk();
+        if (score == null) {
+            return;
+        }
+
+        int frameIndex = frame - 1;
+        for (ScoreChunk.FrameChannelEntry entry : score.frameData().frameChannelData()) {
+            if (entry.frameIndex().value() != frameIndex) {
+                continue;
+            }
+
+            int channel = entry.channelIndex().value();
+            SpriteState state = spriteRegistry.get(channel);
+
+            if (state != null && state.hasDynamicMember()) {
+                if (state.isDynamic()) {
+                    state.applyScoreDefaults(entry.data());
+                }
+                RenderSprite sprite = createDynamicRenderSprite(state);
+                if (sprite != null) {
+                    sprites.add(sprite);
+                    renderedChannels.add(channel);
+                }
+                continue;
+            }
+
+            RenderSprite sprite = createRenderSprite(channel, entry.data());
+            if (sprite != null) {
+                sprites.add(sprite);
+                renderedChannels.add(channel);
+            }
+        }
+    }
+
+    public void collectDynamicSprites(List<RenderSprite> sprites, Set<Integer> renderedChannels) {
         List<SpriteState> dynSprites = spriteRegistry.getDynamicSprites();
         for (SpriteState state : dynSprites) {
             int channel = state.getChannel();
@@ -154,14 +163,13 @@ public class StageRenderer {
                 }
             }
         }
+    }
 
-        // Sort by locZ first, then channel (lower values draw first/behind)
+    public void sortSprites(List<RenderSprite> sprites) {
         sprites.sort((a, b) -> {
             int cmp = Integer.compare(a.getLocZ(), b.getLocZ());
             return cmp != 0 ? cmp : Integer.compare(a.getChannel(), b.getChannel());
         });
-
-        return sprites;
     }
 
     /**

@@ -17,7 +17,8 @@ public record FrameSnapshot(
     List<RenderSprite> sprites,
     String debugInfo,
     Bitmap stageImage,
-    int bakeTick
+    int bakeTick,
+    RenderPipelineTrace pipelineTrace
 ) {
     /**
      * Render this snapshot to a Bitmap using pure software compositing.

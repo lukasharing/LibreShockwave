@@ -22,12 +22,14 @@ public class SpriteBaker {
     private final BitmapCache bitmapCache;
     private final CastLibManager castLibManager;
     private final Player player;
+    private final List<SpriteBakeStep> bakeSteps = new ArrayList<>();
     private int tickCounter;
 
     public SpriteBaker(BitmapCache bitmapCache, CastLibManager castLibManager, Player player) {
         this.bitmapCache = bitmapCache;
         this.castLibManager = castLibManager;
         this.player = player;
+        registerDefaultSteps();
     }
 
     public int getTickCounter() {
@@ -50,13 +52,13 @@ public class SpriteBaker {
      * Bake a single sprite: dispatch by type, apply colorization, attach bitmap.
      */
     public RenderSprite bake(RenderSprite sprite) {
-        Bitmap baked = switch (sprite.getType()) {
-            case BITMAP -> bakeBitmap(sprite);
-            case TEXT, BUTTON -> bakeText(sprite);
-            case SHAPE -> bakeShape(sprite);
-            case FILM_LOOP -> bakeFilmLoop(sprite);
-            default -> null;
-        };
+        Bitmap baked = null;
+        for (SpriteBakeStep step : bakeSteps) {
+            if (step.supports(sprite)) {
+                baked = step.bake(sprite);
+                break;
+            }
+        }
 
         // Apply Director's sprite-level foreColor/backColor colorization.
         int ch = sprite.getChannel();
@@ -97,6 +99,84 @@ public class SpriteBaker {
         if (sprite.getDynamicMember() == null) return false;
         Bitmap bmp = sprite.getDynamicMember().getBitmap();
         return bmp != null && bmp.isScriptModified();
+    }
+
+    private void registerDefaultSteps() {
+        registerBakeStep(new BitmapSpriteBakeStep());
+        registerBakeStep(new TextSpriteBakeStep());
+        registerBakeStep(new ShapeSpriteBakeStep());
+        registerBakeStep(new FilmLoopSpriteBakeStep());
+        registerBakeStep(new UnsupportedSpriteBakeStep());
+    }
+
+    public void registerBakeStep(SpriteBakeStep step) {
+        bakeSteps.add(step);
+    }
+
+    public interface SpriteBakeStep {
+        boolean supports(RenderSprite sprite);
+        Bitmap bake(RenderSprite sprite);
+    }
+
+    private final class BitmapSpriteBakeStep implements SpriteBakeStep {
+        @Override
+        public boolean supports(RenderSprite sprite) {
+            return sprite.getType() == RenderSprite.SpriteType.BITMAP;
+        }
+
+        @Override
+        public Bitmap bake(RenderSprite sprite) {
+            return bakeBitmap(sprite);
+        }
+    }
+
+    private final class TextSpriteBakeStep implements SpriteBakeStep {
+        @Override
+        public boolean supports(RenderSprite sprite) {
+            return sprite.getType() == RenderSprite.SpriteType.TEXT
+                    || sprite.getType() == RenderSprite.SpriteType.BUTTON;
+        }
+
+        @Override
+        public Bitmap bake(RenderSprite sprite) {
+            return bakeText(sprite);
+        }
+    }
+
+    private final class ShapeSpriteBakeStep implements SpriteBakeStep {
+        @Override
+        public boolean supports(RenderSprite sprite) {
+            return sprite.getType() == RenderSprite.SpriteType.SHAPE;
+        }
+
+        @Override
+        public Bitmap bake(RenderSprite sprite) {
+            return bakeShape(sprite);
+        }
+    }
+
+    private final class FilmLoopSpriteBakeStep implements SpriteBakeStep {
+        @Override
+        public boolean supports(RenderSprite sprite) {
+            return sprite.getType() == RenderSprite.SpriteType.FILM_LOOP;
+        }
+
+        @Override
+        public Bitmap bake(RenderSprite sprite) {
+            return bakeFilmLoop(sprite);
+        }
+    }
+
+    private static final class UnsupportedSpriteBakeStep implements SpriteBakeStep {
+        @Override
+        public boolean supports(RenderSprite sprite) {
+            return true;
+        }
+
+        @Override
+        public Bitmap bake(RenderSprite sprite) {
+            return null;
+        }
     }
 
     /**

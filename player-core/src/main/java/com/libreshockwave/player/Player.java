@@ -12,8 +12,8 @@ import com.libreshockwave.player.frame.FrameContext;
 import com.libreshockwave.player.input.InputState;
 import com.libreshockwave.player.net.NetManager;
 import com.libreshockwave.player.render.pipeline.BitmapCache;
+import com.libreshockwave.player.render.pipeline.FrameRenderPipeline;
 import com.libreshockwave.player.render.pipeline.FrameSnapshot;
-import com.libreshockwave.player.render.pipeline.RenderSprite;
 import com.libreshockwave.player.render.pipeline.SpriteBaker;
 import com.libreshockwave.player.render.pipeline.StageRenderer;
 import com.libreshockwave.player.score.ScoreNavigator;
@@ -69,6 +69,7 @@ public class Player {
     private final SoundManager soundManager;
     private final BitmapCache bitmapCache;
     private final SpriteBaker spriteBaker;
+    private final FrameRenderPipeline frameRenderPipeline;
     private final InputState inputState;
 
     // Extracted components
@@ -176,6 +177,7 @@ public class Player {
         this.soundManager = new SoundManager(castLibManager);
         this.bitmapCache = new BitmapCache();
         this.spriteBaker = new SpriteBaker(bitmapCache, castLibManager, this);
+        this.frameRenderPipeline = new FrameRenderPipeline(stageRenderer, spriteBaker);
         this.inputState = new InputState();
         this.bitmapResolver = new BitmapResolver(file, castLibManager, frameContext);
         // Register active palette supplier so Datum.datumToArgb() can resolve palette indices
@@ -281,6 +283,7 @@ public class Player {
         this.soundManager = new SoundManager(castLibManager);
         this.bitmapCache = new BitmapCache();
         this.spriteBaker = new SpriteBaker(bitmapCache, castLibManager, this);
+        this.frameRenderPipeline = new FrameRenderPipeline(stageRenderer, spriteBaker);
         this.inputState = new InputState();
         this.bitmapResolver = new BitmapResolver(file, castLibManager, frameContext);
         // Register active palette supplier so Datum.datumToArgb() can resolve palette indices
@@ -562,19 +565,17 @@ public class Player {
      */
     public FrameSnapshot getFrameSnapshot() {
         int frame = getCurrentFrame();
-        List<RenderSprite> sprites = stageRenderer.getSpritesForFrame(frame);
-        List<RenderSprite> baked = spriteBaker.bakeSprites(sprites);
-        stageRenderer.setLastBakedSprites(baked);
-        String debug = String.format("Frame %d | %s", frame, state.name());
+        FrameSnapshot snapshot = frameRenderPipeline.renderFrame(frame);
         return new FrameSnapshot(
-            frame,
-            stageRenderer.getStageWidth(),
-            stageRenderer.getStageHeight(),
-            stageRenderer.getBackgroundColor(),
-            List.copyOf(baked),
-            debug,
-            stageRenderer.hasStageImage() ? stageRenderer.getStageImage() : null,
-            spriteBaker.getTickCounter()
+            snapshot.frameNumber(),
+            snapshot.stageWidth(),
+            snapshot.stageHeight(),
+            snapshot.backgroundColor(),
+            snapshot.sprites(),
+            String.format("Frame %d | %s", frame, state.name()),
+            snapshot.stageImage(),
+            snapshot.bakeTick(),
+            snapshot.pipelineTrace()
         );
     }
 
