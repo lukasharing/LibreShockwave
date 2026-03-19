@@ -527,8 +527,12 @@ public class CastMember {
      * This implements Director's text member .image property.
      */
     public Bitmap renderTextToImage() {
-        return renderTextToImage(textRectRight - textRectLeft,
-                textRectBottom - textRectTop, textBgColor);
+        int width = textRectRight - textRectLeft;
+        // For boxType=adjust (0), let the renderer auto-size the height to fit
+        // the text content. Director auto-adjusts the rect height when text is set,
+        // so the stored rectBottom may not reflect the actual content height.
+        int height = textBoxType == 0 ? 0 : (textRectBottom - textRectTop);
+        return renderTextToImage(width, height, textBgColor);
     }
 
     /**
