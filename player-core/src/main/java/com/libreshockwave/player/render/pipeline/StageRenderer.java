@@ -215,7 +215,7 @@ public class StageRenderer {
             state.hasForeColor() ? state.getForeColor() : data.resolvedForeColor(),
             state.hasBackColor() ? state.getBackColor() : data.resolvedBackColor(),
             state.hasForeColor(), state.hasBackColor(),
-            data.ink(), state.getBlend(),
+            state.getInk(), state.getBlend(),
             state.isFlipH(), state.isFlipV(), null,
             state.hasScriptBehaviors()
         );

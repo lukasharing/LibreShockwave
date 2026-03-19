@@ -107,7 +107,7 @@ public class SpriteProperties implements SpritePropertyProvider {
             case "flipv" -> Datum.of(sprite.isFlipV() ? 1 : 0);
             case "moveable", "moveablesprite" -> Datum.of(0);
             case "editable", "editabletext" -> Datum.of(0);
-            case "trails" -> Datum.of(0);
+            case "trails" -> Datum.of(sprite.getTrails());
             case "cursor" -> Datum.of(sprite.getCursor());
             case "scriptinstancelist" -> new Datum.List(new java.util.ArrayList<>(sprite.getScriptInstanceList()));
             default -> {
@@ -184,6 +184,10 @@ public class SpriteProperties implements SpritePropertyProvider {
             }
             case "stretch" -> {
                 sprite.setStretch(value.toInt());
+                return true;
+            }
+            case "trails" -> {
+                sprite.setTrails(value.toInt());
                 return true;
             }
             case "width" -> {
@@ -304,7 +308,7 @@ public class SpriteProperties implements SpritePropertyProvider {
             }
             // Silently accept but don't do anything special
             case "moveable", "moveablesprite", "editable", "editabletext",
-                 "trails", "tweened", "constraint", "scriptnum", "type", "id" -> {
+                 "tweened", "constraint", "scriptnum", "type", "id" -> {
                 return true;
             }
             default -> {

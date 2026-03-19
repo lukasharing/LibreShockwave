@@ -51,23 +51,12 @@ public class SpriteRegistry {
     }
 
     /**
-     * Update a sprite's position from score data (for new frames).
+     * Update a sprite's score-driven properties for new frames.
      */
     public void updateFromScore(int channel, ScoreChunk.ChannelData data) {
         SpriteState state = sprites.get(channel);
         if (state != null && !state.isPuppet() && !state.hasDynamicMember()) {
-            // Only update from score if the sprite is not puppeted
-            // and has no script-set member override. In Director, once a behavior
-            // modifies a sprite's member, it effectively puppets position control —
-            // the Score position should no longer overwrite the behavior's values.
-            state.setLocH(data.posX());
-            state.setLocV(data.posY());
-            // Also update width/height — Score sprite dimensions can change between
-            // frames (e.g., different keyframes in the Score). Without this, sprites
-            // get stuck with dimensions from the first frame they appeared in.
-            if (!state.hasSizeChanged() && data.width() > 0 && data.height() > 0) {
-                state.applyIntrinsicSize(data.width(), data.height());
-            }
+            state.syncFromScore(data);
         }
     }
 
@@ -95,7 +84,7 @@ public class SpriteRegistry {
     /**
      * Get all dynamic/puppeted sprites that should be rendered.
      * Includes sprites with dynamic members AND puppeted sprites (even without
-     * explicit members). In Director, puppeted sprites are always rendered —
+     * explicit members). In Director, puppeted sprites are always rendered -
      * the window system uses them for both hit testing and visual display
      * (e.g., color swatches with bgColor set).
      */

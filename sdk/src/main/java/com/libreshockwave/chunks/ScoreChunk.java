@@ -89,6 +89,8 @@ public record ScoreChunk(
     public record ChannelData(
         int spriteType,
         int ink,
+        int trails,
+        int stretch,
         int foreColor,
         int backColor,
         int castLib,
@@ -106,7 +108,7 @@ public record ScoreChunk(
         int foreColorB,
         int backColorB
     ) {
-        public static final ChannelData EMPTY = new ChannelData(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        public static final ChannelData EMPTY = new ChannelData(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 
         /** Typed accessor: returns null if castLib is 0 (empty slot). */
         public CastLibId castLibId() {
@@ -127,6 +129,8 @@ public record ScoreChunk(
             // D7: ink is bits 0-5; bit 6 = trails, bit 7 = stretch
             int inkByte = reader.readU8();
             int ink = inkByte & 0x3F;
+            int trails = (inkByte >> 6) & 0x1;
+            int stretch = (inkByte >> 7) & 0x1;
             int foreColor = reader.readU8();
             int backColor = reader.readU8();
             int castLib = reader.readU16();
@@ -161,7 +165,7 @@ public record ScoreChunk(
             }
 
             return new ChannelData(
-                spriteType, ink, foreColor, backColor,
+                spriteType, ink, trails, stretch, foreColor, backColor,
                 castLib, castMember, unk1, unk2,
                 posY, posX, height, width,
                 colorFlag, blendByte, foreColorG, backColorG, foreColorB, backColorB

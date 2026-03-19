@@ -26,6 +26,7 @@ public class SpriteState {
     private boolean puppet = false;
     private InkMode inkMode = InkMode.COPY;
     private int blend = 100;
+    private int trails = 0;
     private int stretch = 0;
     private int foreColor = 0;
     private int backColor = 0xFFFFFF;
@@ -33,6 +34,9 @@ public class SpriteState {
     private boolean hasBackColor = false;
     private boolean hasSizeChanged = false;
     private boolean inkExplicitlySet = false;
+    private boolean blendExplicitlySet = false;
+    private boolean trailsExplicitlySet = false;
+    private boolean stretchExplicitlySet = false;
     private boolean scoreDefaultsApplied = false;
     private boolean flipH = false;
     private boolean flipV = false;
@@ -59,9 +63,11 @@ public class SpriteState {
         this.width = data.width();
         this.height = data.height();
         this.inkMode = InkMode.fromCode(data.ink());
-        // BLEND ink stores blend as 0-255 in score byte 21; convert to 0-100 percent
+        this.trails = data.trails();
+        this.stretch = data.stretch();
+        // Director stores score blend inverted in byte 21: 255 means 0%, 0 means 100%.
         if (this.inkMode == InkMode.BLEND && data.blendByte() > 0) {
-            this.blend = Math.round(data.blendByte() * 100f / 255f);
+            this.blend = Math.round((255 - data.blendByte()) * 100f / 255f);
         }
         this.foreColor = data.resolvedForeColor();
         this.backColor = data.resolvedBackColor();
@@ -88,6 +94,7 @@ public class SpriteState {
     public InkMode getInkMode() { return inkMode; }
     public int getInk() { return inkMode.code(); }
     public int getBlend() { return blend; }
+    public int getTrails() { return trails; }
     public int getStretch() { return stretch; }
     public int getForeColor() { return foreColor; }
     public int getBackColor() { return backColor; }
@@ -103,8 +110,9 @@ public class SpriteState {
     public void setPuppet(boolean puppet) { this.puppet = puppet; }
     public void setInk(int ink) { this.inkMode = InkMode.fromCode(ink); this.inkExplicitlySet = true; }
     public void setInkMode(InkMode ink) { this.inkMode = ink; this.inkExplicitlySet = true; }
-    public void setBlend(int blend) { this.blend = blend; }
-    public void setStretch(int stretch) { this.stretch = stretch; }
+    public void setBlend(int blend) { this.blend = blend; this.blendExplicitlySet = true; }
+    public void setTrails(int trails) { this.trails = trails; this.trailsExplicitlySet = true; }
+    public void setStretch(int stretch) { this.stretch = stretch; this.stretchExplicitlySet = true; }
     public boolean isFlipH() { return flipH; }
     public boolean isFlipV() { return flipV; }
     public void setFlipH(boolean flipH) { this.flipH = flipH; }
@@ -197,9 +205,15 @@ public class SpriteState {
         scoreDefaultsApplied = true;
         if (!inkExplicitlySet) {
             this.inkMode = InkMode.fromCode(data.ink());
-            if (this.inkMode == InkMode.BLEND && data.blendByte() > 0) {
-                this.blend = Math.round(data.blendByte() * 100f / 255f);
-            }
+        }
+        if (!blendExplicitlySet && this.inkMode == InkMode.BLEND && data.blendByte() > 0) {
+            this.blend = Math.round((255 - data.blendByte()) * 100f / 255f);
+        }
+        if (!trailsExplicitlySet) {
+            this.trails = data.trails();
+        }
+        if (!stretchExplicitlySet) {
+            this.stretch = data.stretch();
         }
         if (!hasForeColor) {
             this.foreColor = data.resolvedForeColor();
@@ -208,6 +222,37 @@ public class SpriteState {
         if (!hasBackColor) {
             this.backColor = data.resolvedBackColor();
             this.hasBackColor = true;
+        }
+    }
+
+    /**
+     * Synchronize score-driven properties for a score sprite, preserving Lingo overrides.
+     */
+    public void syncFromScore(ScoreChunk.ChannelData data) {
+        if (data == null) return;
+        this.locH = data.posX();
+        this.locV = data.posY();
+        if (!hasSizeChanged && data.width() > 0 && data.height() > 0) {
+            this.width = data.width();
+            this.height = data.height();
+        }
+        if (!inkExplicitlySet) {
+            this.inkMode = InkMode.fromCode(data.ink());
+        }
+        if (!blendExplicitlySet && InkMode.fromCode(data.ink()) == InkMode.BLEND && data.blendByte() > 0) {
+            this.blend = Math.round((255 - data.blendByte()) * 100f / 255f);
+        }
+        if (!trailsExplicitlySet) {
+            this.trails = data.trails();
+        }
+        if (!stretchExplicitlySet) {
+            this.stretch = data.stretch();
+        }
+        if (!hasForeColor) {
+            this.foreColor = data.resolvedForeColor();
+        }
+        if (!hasBackColor) {
+            this.backColor = data.resolvedBackColor();
         }
     }
 
