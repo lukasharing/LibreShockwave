@@ -34,7 +34,7 @@ public class StageRenderer {
     private Bitmap stageImage;
 
     // Last baked sprites from FrameSnapshot — used for ink-aware hit testing
-    private volatile List<RenderSprite> lastBakedSprites = List.of();
+    private List<RenderSprite> lastBakedSprites = List.of();
 
     public StageRenderer(DirectorFile file) {
         this.file = file;

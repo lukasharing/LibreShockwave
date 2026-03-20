@@ -106,7 +106,7 @@ public class Player {
     private ExecutorService castParserExecutor;
     private Runnable castParserShutdown;  // Shutdown hook, avoids referencing ExecutorService in shutdown()
     private Runnable vmExecutorShutdown;  // Shutdown hook, avoids referencing ExecutorService in shutdown()
-    private volatile boolean vmRunning = false;
+    private boolean vmRunning = false;
 
     // External parameters (Shockwave PARAM tags)
     private final Map<String, String> externalParams = new LinkedHashMap<>();

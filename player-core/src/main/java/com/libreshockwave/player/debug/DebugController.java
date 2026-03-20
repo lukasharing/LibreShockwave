@@ -63,13 +63,13 @@ public class DebugController implements DebugControllerApi {
     private final Object stateLock = new Object();
 
     // State
-    private volatile DebugState state = DebugState.RUNNING;
-    private volatile StepMode stepMode = StepMode.NONE;
-    private volatile int callDepth = 0;
-    private volatile int targetCallDepth = 0;
+    private DebugState state = DebugState.RUNNING;
+    private StepMode stepMode = StepMode.NONE;
+    private int callDepth = 0;
+    private int targetCallDepth = 0;
 
     // Request to pause on next instruction (when Pause button is clicked)
-    private volatile boolean pauseRequested = false;
+    private boolean pauseRequested = false;
 
     // Breakpoint manager (replaces old Map<Integer, Set<Integer>>)
     private final BreakpointManager breakpointManager = new BreakpointManager();
@@ -81,8 +81,8 @@ public class DebugController implements DebugControllerApi {
     private final List<WatchExpression> watchExpressions = new CopyOnWriteArrayList<>();
 
     // Current handler context (for snapshot creation)
-    private volatile HandlerInfo currentHandlerInfo;
-    private volatile InstructionInfo currentInstructionInfo;
+    private HandlerInfo currentHandlerInfo;
+    private InstructionInfo currentInstructionInfo;
 
     // Stack of handler info for restoring context after nested calls
     private final Deque<HandlerInfo> handlerInfoStack = new ArrayDeque<>();
@@ -91,19 +91,19 @@ public class DebugController implements DebugControllerApi {
     private final List<CallFrame> callStack = new ArrayList<>();
 
     // Most recent snapshot (for UI)
-    private volatile DebugSnapshot currentSnapshot;
+    private DebugSnapshot currentSnapshot;
 
     // UI listeners (notified on EDT)
     private final List<DebugStateListener> listeners = new CopyOnWriteArrayList<>();
 
     // Globals accessor (set by Player)
-    private volatile Map<String, Datum> globalsSnapshot = Collections.emptyMap();
+    private Map<String, Datum> globalsSnapshot = Collections.emptyMap();
 
     // Locals accessor (set by Player when pausing)
-    private volatile Map<String, Datum> localsSnapshot = Collections.emptyMap();
+    private Map<String, Datum> localsSnapshot = Collections.emptyMap();
 
     // Delegate trace listener (for UI updates)
-    private volatile TraceListener delegateListener;
+    private TraceListener delegateListener;
 
     public DebugController() {
     }

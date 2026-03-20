@@ -27,8 +27,8 @@ public class SocketMultiuserBridge implements MultiuserNetBridge {
         Socket socket;
         InputStream in;
         OutputStream out;
-        volatile boolean connected;
-        volatile boolean connecting;
+        boolean connected;
+        boolean connecting;
         final byte[] readBuf = new byte[8192];
     }
 

@@ -132,7 +132,7 @@ public class MacFontBundle {
         TTF_DATA.put("EspySerifBold-16", com.libreshockwave.fonts.mac.EspySerifBold_16::getData);
     }
 
-    private static volatile boolean initialized = false;
+    private static boolean initialized = false;
 
     /** Cache: "fontkey:size:bold" -> rasterized BitmapFont */
     private static final Map<String, BitmapFont> cache = new HashMap<>();

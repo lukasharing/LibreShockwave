@@ -15,7 +15,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class SpriteRegistry {
 
     private final Map<Integer, SpriteState> sprites = new ConcurrentHashMap<>();
-    private volatile int revision;
+    private int revision;
 
     /**
      * Get or create a sprite state for a channel from Score data.

@@ -21,23 +21,13 @@ import java.util.function.Supplier;
  */
 public sealed interface Datum {
 
-    /**
-     * Global palette supplier for resolving palette index colors.
-     * Set by the Player at startup so that datumToArgb() and other color
-     * resolution paths can look up palette indices without parameter threading.
-     * Returns the movie's active palette, or null to use the default (System Win).
-     */
-    Supplier<Palette> activePaletteSupplier = new Supplier<>() {
-        private volatile Supplier<Palette> delegate;
-        @Override public Palette get() { return delegate != null ? delegate.get() : null; }
-        // Setter accessed via Datum.setActivePaletteSupplier()
-    };
-
     /** Package-private mutable holder for the active palette supplier. */
     // Using a simple static field since interfaces can't have mutable static fields directly.
     // We use a holder class instead.
+    // Note: no volatile — WASM is single-threaded, and TeaVM implements volatile via
+    // monitorEnterSync which throws IllegalStateException in the WASM backend.
     final class PaletteHolder {
-        static volatile Supplier<Palette> supplier;
+        static Supplier<Palette> supplier;
     }
 
     /**

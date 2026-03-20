@@ -25,7 +25,7 @@ public class FontRegistry {
     private static final ConcurrentHashMap<String, BitmapFont> rasterizedCache = new ConcurrentHashMap<>();
 
     /** First registered PFR font name — used as last-resort fallback */
-    private static volatile String firstRegisteredFont;
+    private static String firstRegisteredFont;
 
     /** Canonical font name -> member key (lowercase) for fuzzy matching */
     private static final ConcurrentHashMap<String, String> canonicalIndex = new ConcurrentHashMap<>();

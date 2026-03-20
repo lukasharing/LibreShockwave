@@ -37,7 +37,7 @@ public class NetManager implements NetBuiltins.NetProvider {
     private HttpClient httpClient;
 
     private int nextTaskId = 1;
-    private volatile int lastTaskId = 0;  // Track the most recent task for netDone() with no args
+    private int lastTaskId = 0;  // Track the most recent task for netDone() with no args
     private String basePath;
     private String localHttpRoot;  // For resolving localhost HTTP URLs to local filesystem
 

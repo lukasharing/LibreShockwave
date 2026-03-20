@@ -22,7 +22,7 @@ import java.util.List;
  * Follows Director's event propagation: sprite behaviors → frame behaviors → movie scripts.
  */
 public class EventDispatcher {
-    public static volatile String lastDispatchInfo = "";
+    public static String lastDispatchInfo = "";
 
     private final DirectorFile file;
     private final LingoVM vm;

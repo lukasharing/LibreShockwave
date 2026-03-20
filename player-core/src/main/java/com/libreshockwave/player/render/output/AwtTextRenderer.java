@@ -21,7 +21,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class AwtTextRenderer implements TextRenderer {
 
     /** Cache of available system font names (lowercase -> actual name) */
-    private static volatile Map<String, String> systemFontCache;
+    private static Map<String, String> systemFontCache;
 
     /** Cache of AWT fonts created from PFR1-derived TTF data */
     private static final ConcurrentHashMap<String, Font> pfrAwtFontCache = new ConcurrentHashMap<>();

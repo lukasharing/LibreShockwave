@@ -64,7 +64,7 @@ public final class StackOpcodes {
             Datum value = switch (lit.type()) {
                 case 1 -> Datum.of((String) lit.value());
                 case 4 -> Datum.of((Integer) lit.value());
-                case 9 -> Datum.of((Double) lit.value());
+                case 9 -> Datum.of(lit.numericValue());
                 default -> Datum.VOID;
             };
 

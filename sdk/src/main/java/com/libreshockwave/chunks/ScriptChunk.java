@@ -95,8 +95,14 @@ public record ScriptChunk(
     public record LiteralEntry(
         int type,
         int offset,
-        Object value
-    ) {}
+        Object value,
+        double numericValue
+    ) {
+        /** Convenience constructor for non-float literal types. */
+        public LiteralEntry(int type, int offset, Object value) {
+            this(type, offset, value, 0.0);
+        }
+    }
 
     public record PropertyEntry(
         int nameId
@@ -345,6 +351,7 @@ public record ScriptChunk(
                 reader.setPosition(literalDataOffset + offset);
                 int dataLen = reader.readI32();
 
+                double numericValue = 0.0;
                 switch (type) {
                     case 1 -> { // String (dataLen includes null terminator)
                         String s = reader.readStringMacRoman(dataLen);
@@ -357,15 +364,16 @@ public record ScriptChunk(
                     case 4 -> { // Int
                         value = dataLen; // Actually the value
                     }
-                    case 9 -> { // Float
-                        value = (double) Float.intBitsToFloat(reader.readI32());
+                    case 9 -> { // Float — store as primitive double to avoid boxed Double (TeaVM WASM bug)
+                        numericValue = (double) Float.intBitsToFloat(reader.readI32());
+                        value = String.valueOf(numericValue);
                     }
                     default -> {
                         value = reader.readBytes(dataLen);
                     }
                 }
 
-                literals.add(new LiteralEntry(type, offset, value));
+                literals.add(new LiteralEntry(type, offset, value, numericValue));
             }
         }
 

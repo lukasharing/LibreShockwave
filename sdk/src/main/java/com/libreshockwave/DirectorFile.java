@@ -27,7 +27,7 @@ import java.util.*;
 public class DirectorFile {
 
     // Global parse deadline for WASM safety (0 = no deadline)
-    static volatile long parseDeadline = 0;
+    static long parseDeadline = 0;
 
     /** Check if the parse deadline has expired. Call from hot loops. */
     public static boolean isParseTimedOut() {
@@ -78,7 +78,7 @@ public class DirectorFile {
         Bitmap decode(byte[] jpegData);
     }
 
-    private static volatile JpegDecoder jpegDecoder;
+    private static JpegDecoder jpegDecoder;
 
     public static void setJpegDecoder(JpegDecoder decoder) {
         jpegDecoder = decoder;

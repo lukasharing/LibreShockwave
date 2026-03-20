@@ -6,42 +6,42 @@ import java.util.Queue;
 /**
  * Tracks mouse and keyboard input state for the Director player.
  * Updated by the UI thread (Swing EDT or browser JS), read by the VM thread.
- * All fields are volatile for safe cross-thread reads.
+ * Fields are non-volatile: WASM/TeaVM target is single-threaded.
  */
 public class InputState {
 
     // Mouse position (stage coordinates)
-    private volatile int mouseH;
-    private volatile int mouseV;
+    private int mouseH;
+    private int mouseV;
 
     // Mouse button state
-    private volatile boolean mouseDown;
-    private volatile boolean rightMouseDown;
+    private boolean mouseDown;
+    private boolean rightMouseDown;
 
     // Last click info
-    private volatile int clickOnSprite;  // sprite channel of last click
-    private volatile int clickLocH;
-    private volatile int clickLocV;
+    private int clickOnSprite;  // sprite channel of last click
+    private int clickLocH;
+    private int clickLocV;
 
     // Rollover tracking
-    private volatile int rolloverSprite;  // sprite channel mouse is currently over
+    private int rolloverSprite;  // sprite channel mouse is currently over
 
     // Keyboard state
-    private volatile String lastKey = "";     // character of last key pressed
-    private volatile int lastKeyCode;         // Director Mac keycode
-    private volatile boolean shiftDown;
-    private volatile boolean controlDown;     // Ctrl on Windows = command on Mac
-    private volatile boolean altDown;         // Alt on Windows = option on Mac
+    private String lastKey = "";     // character of last key pressed
+    private int lastKeyCode;         // Director Mac keycode
+    private boolean shiftDown;
+    private boolean controlDown;     // Ctrl on Windows = command on Mac
+    private boolean altDown;         // Alt on Windows = option on Mac
 
     // Keyboard focus
-    private volatile int keyboardFocusSprite;
+    private int keyboardFocusSprite;
 
     // Selection state (for text fields)
-    private volatile int selStart;
-    private volatile int selEnd;
+    private int selStart;
+    private int selEnd;
 
     // Caret blink counter (incremented each tick when a field is focused)
-    private volatile int caretBlinkCounter;
+    private int caretBlinkCounter;
 
     // Event queue — input events queued by UI thread, processed by VM thread during tick.
     // Using LinkedList instead of ConcurrentLinkedQueue for TeaVM WASM compatibility.
@@ -112,7 +112,7 @@ public class InputState {
 
     // --- Caret blink ---
 
-    private volatile int caretBlinkRate = 8; // ticks per half-cycle (~530ms at 15fps)
+    private int caretBlinkRate = 8; // ticks per half-cycle (~530ms at 15fps)
     public void incrementCaretBlink() { caretBlinkCounter++; }
     public void resetCaretBlink() { caretBlinkCounter = 0; }
     /** Update blink rate based on movie tempo (fps). Targets ~530ms per half-cycle. */
