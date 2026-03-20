@@ -343,11 +343,17 @@ public class TtfBitmapRasterizer {
             int glyphIndex = entry.getValue();
 
             int advancePx = Math.round(ttf.advanceWidths[glyphIndex] * scale);
-
             TtfGlyph glyph = parseGlyph(ttf, glyphIndex);
+            int tightAdvancePx = advancePx;
+            int glyphOffsetX = 0;
+            if (glyph != null) {
+                int glyphWidthPx = Math.max(1, Math.round((glyph.xMax - glyph.xMin) * scale));
+                tightAdvancePx = Math.max(1, Math.min(advancePx, glyphWidthPx + 1));
+                glyphOffsetX = -Math.round(glyph.xMin * scale);
+            }
 
             if (charCode < BitmapFont.NUM_CHARS) {
-                charWidths[charCode] = advancePx;
+                charWidths[charCode] = tightAdvancePx;
 
                 if (glyph != null && !glyph.contours.isEmpty()) {
                     int col = charCode % BitmapFont.GRID_COLUMNS;
@@ -356,15 +362,15 @@ public class TtfBitmapRasterizer {
                     int cellY = row * cellHeight;
 
                     rasterizeContours(glyph.contours, argb, bitmapWidth, bitmapHeight,
-                            cellX, cellY, cellWidth, cellHeight, scale, ascPx);
+                            cellX + glyphOffsetX, cellY, cellWidth, cellHeight, scale, ascPx);
                 }
             } else {
-                overflowWidths.put(charCode, advancePx);
+                overflowWidths.put(charCode, tightAdvancePx);
 
                 if (glyph != null && !glyph.contours.isEmpty()) {
                     int[] cellBuf = new int[cellWidth * cellHeight];
                     rasterizeContours(glyph.contours, cellBuf, cellWidth, cellHeight,
-                            0, 0, cellWidth, cellHeight, scale, ascPx);
+                            glyphOffsetX, 0, cellWidth, cellHeight, scale, ascPx);
                     overflowGlyphs.put(charCode, cellBuf);
                 }
             }
