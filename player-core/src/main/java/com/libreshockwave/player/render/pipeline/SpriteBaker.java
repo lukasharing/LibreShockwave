@@ -190,9 +190,10 @@ public class SpriteBaker {
         if (sprite.getDynamicMember() != null) {
             Bitmap liveBmp = sprite.getDynamicMember().getBitmap();
             if (liveBmp != null && liveBmp.isScriptModified()) {
-                if (sprite.getInkMode() == com.libreshockwave.id.InkMode.BACKGROUND_TRANSPARENT
+                boolean skipBgTransparent = sprite.getInkMode() == com.libreshockwave.id.InkMode.BACKGROUND_TRANSPARENT
                         && liveBmp.getBitDepth() == 32
-                        && !hasBorderColor(liveBmp, sprite.getBackColor() & 0xFFFFFF)) {
+                        && !hasBorderColor(liveBmp, sprite.getBackColor() & 0xFFFFFF);
+                if (skipBgTransparent) {
                     return liveBmp;
                 }
                 if (InkProcessor.shouldProcessInk(sprite.getInk())) {
@@ -450,15 +451,6 @@ public class SpriteBaker {
         if (renderer == null) return null;
 
         String styleStr = styledText.fontStyleString();
-
-        // Debug: log font requests
-        if (com.libreshockwave.vm.DebugConfig.isDebugPlaybackEnabled()) {
-            System.out.printf("XMED TEXT: font='%s' size=%d style='%s' align='%s' dims=%dx%d text='%s' color=0x%06X aa=%s\n",
-                    styledText.fontName(), styledText.fontSize(), styleStr,
-                    styledText.alignment(), width, height,
-                    styledText.text().length() > 40 ? styledText.text().substring(0, 40) + "..." : styledText.text(),
-                    textColor & 0xFFFFFF, styledText.antialias());
-        }
 
         return renderer.renderXmedText(styledText, width, height, textColor, bgColor);
     }

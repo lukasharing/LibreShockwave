@@ -494,16 +494,21 @@ public class Drawing {
 
     private static int resolveMatteColor(int[] pixels, int topLeftRgb) {
         int firstOpaque = -1;
+        boolean hasWhite = false;
         for (int pixel : pixels) {
             if (((pixel >>> 24) & 0xFF) == 0) {
                 continue;
             }
             int rgb = pixel & 0xFFFFFF;
+            if (rgb == 0xFFFFFF) {
+                hasWhite = true;
+            }
             if (firstOpaque < 0) {
                 firstOpaque = rgb;
-            } else if (rgb != firstOpaque) {
-                return topLeftRgb;
             }
+        }
+        if (hasWhite && topLeftRgb != 0xFFFFFF) {
+            return topLeftRgb;
         }
         return 0xFFFFFF;
     }

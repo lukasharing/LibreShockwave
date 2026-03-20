@@ -166,16 +166,22 @@ public final class InkProcessor {
     private static int resolve32BitMatteColor(Bitmap src) {
         int[] pixels = src.getPixels();
         int firstOpaque = -1;
+        boolean hasWhite = false;
         for (int pixel : pixels) {
             if (((pixel >>> 24) & 0xFF) == 0) {
                 continue;
             }
             int rgb = pixel & 0xFFFFFF;
+            if (rgb == 0xFFFFFF) {
+                hasWhite = true;
+            }
             if (firstOpaque < 0) {
                 firstOpaque = rgb;
-            } else if (rgb != firstOpaque) {
-                return src.getPixel(0, 0) & 0xFFFFFF;
             }
+        }
+        int topLeft = src.getPixel(0, 0) & 0xFFFFFF;
+        if (hasWhite && topLeft != 0xFFFFFF) {
+            return topLeft;
         }
         return 0xFFFFFF;
     }
@@ -246,23 +252,29 @@ public final class InkProcessor {
                 continue;
             }
 
-            // 32-bit text and UI buffers often arrive as fully opaque RGB that was
+            // 32-bit text buffers often arrive as fully opaque grayscale RGB that was
             // anti-aliased against the background color. Recover proper alpha by
-            // unblending from that background so faint gray/orange fringes don't stay
-            // as opaque pixels behind the glyphs.
+            // unblending those near-gray pixels from that background so faint halos
+            // don't stay as opaque pixels behind glyphs.
+            //
+            // Already-colored UI pixels are typically authored as real opaque colors,
+            // not grayscale anti-aliased blends. Preserving them as opaque avoids
+            // washing solid row strips and panel parts into translucent bars.
             if (src.getBitDepth() == 32) {
                 int r = (pixel >> 16) & 0xFF;
                 int g = (pixel >> 8) & 0xFF;
                 int b = pixel & 0xFF;
-                int recoveredAlpha = Math.max(Math.abs(r - bgR),
-                        Math.max(Math.abs(g - bgG), Math.abs(b - bgB)));
+                if (isApproximatelyGray(r, g, b)) {
+                    int recoveredAlpha = Math.max(Math.abs(r - bgR),
+                            Math.max(Math.abs(g - bgG), Math.abs(b - bgB)));
 
-                if (recoveredAlpha > 0 && recoveredAlpha < 255) {
-                    int fgR = unblendChannel(r, bgR, recoveredAlpha);
-                    int fgG = unblendChannel(g, bgG, recoveredAlpha);
-                    int fgB = unblendChannel(b, bgB, recoveredAlpha);
-                    result[i] = (recoveredAlpha << 24) | (fgR << 16) | (fgG << 8) | fgB;
-                    continue;
+                    if (recoveredAlpha > 0 && recoveredAlpha < 255) {
+                        int fgR = unblendChannel(r, bgR, recoveredAlpha);
+                        int fgG = unblendChannel(g, bgG, recoveredAlpha);
+                        int fgB = unblendChannel(b, bgB, recoveredAlpha);
+                        result[i] = (recoveredAlpha << 24) | (fgR << 16) | (fgG << 8) | fgB;
+                        continue;
+                    }
                 }
 
                 result[i] = 0xFF000000 | rgb;
@@ -281,6 +293,10 @@ public final class InkProcessor {
         if (value < 0) return 0;
         if (value > 255) return 255;
         return value;
+    }
+
+    private static boolean isApproximatelyGray(int r, int g, int b) {
+        return Math.abs(r - g) <= 2 && Math.abs(g - b) <= 2 && Math.abs(r - b) <= 2;
     }
 
     /**

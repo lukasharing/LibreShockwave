@@ -316,8 +316,8 @@ public final class ImageMethodDispatcher {
             // Sample source pixels to check if they're grayscale (safe to remap)
             boolean isGrayscale = true;
             boolean hasTransparency = false;
-            int sampleStep = Math.max(1, (srcW * srcH) / 64);
-            for (int i = 0; i < srcW * srcH && isGrayscale; i += sampleStep) {
+                int sampleStep = Math.max(1, (srcW * srcH) / 64);
+                for (int i = 0; i < srcW * srcH && isGrayscale; i += sampleStep) {
                 int sx = srcRect.left() + (i % srcW);
                 int sy = srcRect.top() + (i / srcW);
                 int p = src.getPixel(sx, sy);
