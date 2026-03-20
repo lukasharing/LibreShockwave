@@ -284,7 +284,7 @@ public record ScriptChunk(
         }
 
         // Debug output for script type investigation
-        boolean debugScriptType = Boolean.getBoolean("libreshockwave.debug.scriptType");
+        boolean debugScriptType = "true".equals(System.getProperty("libreshockwave.debug.scriptType"));
         if (debugScriptType) {
             System.out.println("[ScriptChunk] id=" + id + " scriptNumber=" + scriptNumber +
                 " behaviorFlags=0x" + Integer.toHexString(behaviorFlags) +
