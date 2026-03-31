@@ -502,6 +502,24 @@ public class CastMember {
     public int getTextFontSize() { return textFontSize; }
     public String getTextFontStyle() { return textFontStyle; }
     public int getTextFixedLineSpace() { return textFixedLineSpace; }
+    public int getTextLineHeight() {
+        if (textFixedLineSpace > 0) {
+            return textFixedLineSpace;
+        }
+        if (textRenderer != null) {
+            int measured = textRenderer.getLineHeight(textFont, textFontSize, textFontStyle, 0);
+            if (measured > 0) {
+                return measured;
+            }
+        }
+        return textFontSize;
+    }
+
+    private void setTextLineSpacing(int lineSpacing) {
+        this.textFixedLineSpace = lineSpacing;
+        textImageDirty = true;
+        notifyMemberVisualChanged();
+    }
 
     /**
      * Convert a local pixel coordinate to a character index in the text.
@@ -788,6 +806,7 @@ public class CastMember {
             case "antialias" -> Datum.of(textAntialias ? 1 : 0);
             case "boxtype" -> Datum.of(textBoxType);
             case "fixedlinespace" -> Datum.of(textFixedLineSpace);
+            case "lineheight" -> Datum.of(getTextLineHeight());
             case "topspacing" -> Datum.of(textTopSpacing);
             case "editable" -> Datum.of(editable ? 1 : 0);
             case "charposttoloc" -> Datum.VOID; // handled as method, not property
@@ -1154,9 +1173,11 @@ public class CastMember {
                 return true;
             }
             case "fixedlinespace" -> {
-                this.textFixedLineSpace = value.toInt();
-                textImageDirty = true;
-                notifyMemberVisualChanged();
+                setTextLineSpacing(value.toInt());
+                return true;
+            }
+            case "lineheight" -> {
+                setTextLineSpacing(value.toInt());
                 return true;
             }
             case "topspacing" -> {

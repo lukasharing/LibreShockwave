@@ -246,9 +246,9 @@ public final class InkProcessor {
                 continue;
             }
 
-            // Director uses exact-match keying here. Anti-aliased near-colors remain
-            // opaque and can create halos unless the source uses real alpha.
-            result[i] = pixel | 0xFF000000;
+            // Director uses exact-match keying here. Non-key pixels keep whatever
+            // opacity they already had instead of being hardened back to fully opaque.
+            result[i] = pixel;
         }
 
         return newDerivedBitmap(src, result);

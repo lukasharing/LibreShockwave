@@ -71,6 +71,19 @@ class InkProcessorTest {
     }
 
     @Test
+    void backgroundTransparentPreservesExistingSoftAlphaOnNonKeyPixels() {
+        Bitmap src = new Bitmap(2, 1, 32, new int[] {
+            0xFFFFFFFF,
+            0x807B9498
+        });
+
+        Bitmap result = InkProcessor.applyBackgroundTransparent(src, 0xFFFFFF);
+
+        assertEquals(0x00000000, result.getPixel(0, 0));
+        assertEquals(0x807B9498, result.getPixel(1, 0));
+    }
+
+    @Test
     void backgroundTransparentUsesWhiteKeyColorFor32BitBitmapWithoutNativeAlpha() {
         Bitmap src = new Bitmap(3, 1, 32, new int[] {
             0xFF000000,

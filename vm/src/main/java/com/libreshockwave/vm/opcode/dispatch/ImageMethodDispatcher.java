@@ -324,6 +324,8 @@ public final class ImageMethodDispatcher {
         int colorRemap = -1;   // #color param: remap BLACK (foreground) pixels to this color
         int bgColorRemap = -1; // #bgColor param: remap WHITE (background) pixels to this color
         Bitmap mask = null;    // #maskImage param: matte mask for transparency
+        int maskOffsetX = 0;
+        int maskOffsetY = 0;
 
         if (args.size() >= 4 && args.get(3) instanceof Datum.PropList pl) {
             // Check for #ink property
@@ -356,6 +358,11 @@ public final class ImageMethodDispatcher {
             Datum maskDatum = getPropIgnoreCase(pl, "maskImage", "maskimage", "MaskImage");
             if (maskDatum instanceof Datum.ImageRef maskRef) {
                 mask = maskRef.bitmap();
+            }
+            Datum maskOffsetDatum = getPropIgnoreCase(pl, "maskOffset", "maskoffset", "MaskOffset");
+            if (maskOffsetDatum instanceof Datum.Point maskOffset) {
+                maskOffsetX = maskOffset.x();
+                maskOffsetY = maskOffset.y();
             }
         }
 
@@ -456,7 +463,7 @@ public final class ImageMethodDispatcher {
             Drawing.copyPixels(dest, effectiveSrc,
                     destRect.left(), destRect.top(),
                     effectiveSrcX, effectiveSrcY,
-                    srcW, srcH, effectiveInk, blend, mask, backgroundKeyRgb);
+                    srcW, srcH, effectiveInk, blend, mask, maskOffsetX, maskOffsetY, backgroundKeyRgb);
             preservePaletteIndicesOnCopy(dest, effectiveSrc,
                     destRect.left(), destRect.top(),
                     effectiveSrcX, effectiveSrcY,
@@ -470,17 +477,17 @@ public final class ImageMethodDispatcher {
                 int sy = effectiveSrcY + (y * srcH / destH);
                 for (int x = 0; x < destW; x++) {
                     int sx = effectiveSrcX + (x * srcW / destW);
-                    // Check mask at original source coordinates during scaling
+                    int pixel = effectiveSrc.getPixel(sx, sy);
                     if (mask != null) {
-                        int origSx = srcRect.left() + (x * srcW / destW);
-                        int origSy = srcRect.top() + (y * srcH / destH);
-                        if (origSx < 0 || origSx >= mask.getWidth()
-                                || origSy < 0 || origSy >= mask.getHeight()
-                                || (mask.getPixel(origSx, origSy) >>> 24) == 0) {
+                        int origSx = srcRect.left() + (x * srcW / destW) - maskOffsetX;
+                        int origSy = srcRect.top() + (y * srcH / destH) - maskOffsetY;
+                        int maskOpacity = resolveMaskImageOpacity(mask, origSx, origSy);
+                        if (maskOpacity == 0) {
                             continue; // Leave as transparent (default 0)
                         }
+                        pixel = Drawing.modulatePixelAlpha(pixel, maskOpacity);
                     }
-                    scaled.setPixel(x, y, effectiveSrc.getPixel(sx, sy));
+                    scaled.setPixel(x, y, pixel);
                 }
             }
             // Mask already applied during scaling, so pass null to Drawing
@@ -536,6 +543,9 @@ public final class ImageMethodDispatcher {
         // Parse optional ink/blend from propList (4th argument)
         Palette.InkMode ink = Palette.InkMode.COPY;
         int blend = 255;
+        Bitmap mask = null;
+        int maskOffsetX = 0;
+        int maskOffsetY = 0;
         if (args.size() > 3 && args.get(3) instanceof Datum.PropList pl) {
             Datum inkDatum = getPropIgnoreCase(pl, "ink", "Ink");
             Palette.InkMode parsedInk = inkFromDatum(inkDatum);
@@ -546,6 +556,19 @@ public final class ImageMethodDispatcher {
             if (!blendDatum.isVoid()) {
                 blend = (int) (blendDatum.toDouble() * 255.0 / 100.0);
             }
+            Datum maskDatum = getPropIgnoreCase(pl, "maskImage", "maskimage", "MaskImage");
+            if (maskDatum instanceof Datum.ImageRef maskRef) {
+                mask = maskRef.bitmap();
+            }
+            Datum maskOffsetDatum = getPropIgnoreCase(pl, "maskOffset", "maskoffset", "MaskOffset");
+            if (maskOffsetDatum instanceof Datum.Point maskOffset) {
+                maskOffsetX = maskOffset.x();
+                maskOffsetY = maskOffset.y();
+            }
+        }
+
+        if (src.getBitDepth() == 32 && src.isNativeAlpha()) {
+            mask = null;
         }
 
         // Map Director's quad orientation back into source-space coordinates.
@@ -581,7 +604,16 @@ public final class ImageMethodDispatcher {
                     int srcX = srcRect.left() + clamp((int) Math.floor(srcU * srcW), 0, srcW - 1);
                     int srcY = srcRect.top() + clamp((int) Math.floor(srcV * srcH), 0, srcH - 1);
                     if (srcX >= 0 && srcX < src.getWidth() && srcY >= 0 && srcY < src.getHeight()) {
-                        transformed.setPixel(x, y, src.getPixel(srcX, srcY));
+                        int pixel = src.getPixel(srcX, srcY);
+                        if (mask != null) {
+                            int maskOpacity = resolveMaskImageOpacity(mask,
+                                    srcX - maskOffsetX, srcY - maskOffsetY);
+                            if (maskOpacity == 0) {
+                                continue;
+                            }
+                            pixel = Drawing.modulatePixelAlpha(pixel, maskOpacity);
+                        }
+                        transformed.setPixel(x, y, pixel);
                         if (transformedIndices != null) {
                             transformedIndices[y * destW + x] = srcPaletteIndices[srcY * src.getWidth() + srcX];
                         }
@@ -600,7 +632,16 @@ public final class ImageMethodDispatcher {
                     srcX += srcRect.left();
                     srcY += srcRect.top();
                     if (srcX >= 0 && srcX < src.getWidth() && srcY >= 0 && srcY < src.getHeight()) {
-                        transformed.setPixel(x, y, src.getPixel(srcX, srcY));
+                        int pixel = src.getPixel(srcX, srcY);
+                        if (mask != null) {
+                            int maskOpacity = resolveMaskImageOpacity(mask,
+                                    srcX - maskOffsetX, srcY - maskOffsetY);
+                            if (maskOpacity == 0) {
+                                continue;
+                            }
+                            pixel = Drawing.modulatePixelAlpha(pixel, maskOpacity);
+                        }
+                        transformed.setPixel(x, y, pixel);
                         if (transformedIndices != null) {
                             transformedIndices[y * destW + x] = srcPaletteIndices[srcY * src.getWidth() + srcX];
                         }
@@ -685,6 +726,13 @@ public final class ImageMethodDispatcher {
                 && mask == null
                 && colorRemap < 0
                 && bgColorRemap < 0;
+    }
+
+    private static int resolveMaskImageOpacity(Bitmap mask, int x, int y) {
+        if (mask == null || x < 0 || x >= mask.getWidth() || y < 0 || y >= mask.getHeight()) {
+            return 0;
+        }
+        return Drawing.maskImageOpacityFromPixel(mask.getPixel(x, y));
     }
 
     private static int clamp(int value, int min, int max) {

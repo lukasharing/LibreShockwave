@@ -35,7 +35,7 @@ public class Drawing {
                                    int srcX, int srcY,
                                    int width, int height,
                                    InkMode ink, int blend) {
-        copyPixels(dest, src, destX, destY, srcX, srcY, width, height, ink, blend, null, null);
+        copyPixels(dest, src, destX, destY, srcX, srcY, width, height, ink, blend, null, 0, 0, null);
     }
 
     /**
@@ -59,7 +59,7 @@ public class Drawing {
                                    int width, int height,
                                    InkMode ink, int blend,
                                    Bitmap mask) {
-        copyPixels(dest, src, destX, destY, srcX, srcY, width, height, ink, blend, mask, null);
+        copyPixels(dest, src, destX, destY, srcX, srcY, width, height, ink, blend, mask, 0, 0, null);
     }
 
     public static void copyPixels(Bitmap dest, Bitmap src,
@@ -68,6 +68,28 @@ public class Drawing {
                                    int width, int height,
                                    InkMode ink, int blend,
                                    Bitmap mask,
+                                   int maskOffsetX, int maskOffsetY) {
+        copyPixels(dest, src, destX, destY, srcX, srcY, width, height, ink, blend, mask,
+                maskOffsetX, maskOffsetY, null);
+    }
+
+    public static void copyPixels(Bitmap dest, Bitmap src,
+                                   int destX, int destY,
+                                   int srcX, int srcY,
+                                   int width, int height,
+                                   InkMode ink, int blend,
+                                   Bitmap mask,
+                                   Integer backgroundKeyRgb) {
+        copyPixels(dest, src, destX, destY, srcX, srcY, width, height, ink, blend, mask, 0, 0, backgroundKeyRgb);
+    }
+
+    public static void copyPixels(Bitmap dest, Bitmap src,
+                                   int destX, int destY,
+                                   int srcX, int srcY,
+                                   int width, int height,
+                                   InkMode ink, int blend,
+                                   Bitmap mask,
+                                   int maskOffsetX, int maskOffsetY,
                                    Integer backgroundKeyRgb) {
         if (width <= 0 || height <= 0) return;
         // For MATTE ink, pre-process the FULL source image with flood-fill matte.
@@ -99,17 +121,16 @@ public class Drawing {
                     continue;
                 }
 
-                // Check mask at source coordinates (mask has same dimensions as source)
+                int srcPixel = effectiveSrc.getPixel(sx, sy);
                 if (mask != null) {
-                    int mx = srcX + x;
-                    int my = srcY + y;
-                    if (mx < 0 || mx >= mask.getWidth() || my < 0 || my >= mask.getHeight()
-                            || (mask.getPixel(mx, my) >>> 24) == 0) {
+                    int mx = srcX + x - maskOffsetX;
+                    int my = srcY + y - maskOffsetY;
+                    int maskOpacity = resolveMaskImageOpacity(mask, mx, my);
+                    if (maskOpacity == 0) {
                         continue;
                     }
+                    srcPixel = modulatePixelAlpha(srcPixel, maskOpacity);
                 }
-
-                int srcPixel = effectiveSrc.getPixel(sx, sy);
                 int destPixel = dest.getPixel(dx, dy);
 
                 int resultPixel = applyInk(srcPixel, destPixel, ink, blend, backgroundKeyRgb);
@@ -140,6 +161,20 @@ public class Drawing {
         int g = (pixel >> 8) & 0xFF;
         int b = pixel & 0xFF;
         return ((77 * r) + (150 * g) + (29 * b) + 128) >> 8;
+    }
+
+    /**
+     * Director's #maskImage parameter uses the mask image alpha channel as the
+     * coverage source. createMatte() produces white pixels with the desired alpha,
+     * and scripts may also pass partially-transparent mask images directly.
+     */
+    public static int maskImageOpacityFromPixel(int pixel) {
+        return (pixel >>> 24) & 0xFF;
+    }
+
+    public static int modulatePixelAlpha(int pixel, int extraAlpha) {
+        int combinedAlpha = combineAlpha((pixel >>> 24) & 0xFF, extraAlpha);
+        return (combinedAlpha << 24) | (pixel & 0x00FFFFFF);
     }
 
     /**
@@ -328,23 +363,29 @@ public class Drawing {
      */
     private static int alphaBlend(int fg, int bg, int alpha) {
         if (alpha == 0) return bg;
-        if (alpha == 255) return fg;
+        if (alpha == 255) return (0xFF << 24) | (fg & 0x00FFFFFF);
 
         int fgR = (fg >> 16) & 0xFF;
         int fgG = (fg >> 8) & 0xFF;
         int fgB = fg & 0xFF;
 
+        int bgA = (bg >>> 24) & 0xFF;
         int bgR = (bg >> 16) & 0xFF;
         int bgG = (bg >> 8) & 0xFF;
         int bgB = bg & 0xFF;
 
         int invAlpha = 255 - alpha;
+        int bgContribution = (bgA * invAlpha + 127) / 255;
+        int outA = alpha + bgContribution;
+        if (outA == 0) {
+            return 0;
+        }
 
-        int r = (fgR * alpha + bgR * invAlpha) / 255;
-        int g = (fgG * alpha + bgG * invAlpha) / 255;
-        int b = (fgB * alpha + bgB * invAlpha) / 255;
+        int r = (fgR * alpha + bgR * bgContribution + (outA / 2)) / outA;
+        int g = (fgG * alpha + bgG * bgContribution + (outA / 2)) / outA;
+        int b = (fgB * alpha + bgB * bgContribution + (outA / 2)) / outA;
 
-        return packOpaqueRgb(r, g, b);
+        return (outA << 24) | (r << 16) | (g << 8) | b;
     }
 
     private static int combineAlpha(int srcAlpha, int blendAlpha) {
@@ -358,6 +399,13 @@ public class Drawing {
             return srcAlpha;
         }
         return (srcAlpha * blendAlpha) / 255;
+    }
+
+    private static int resolveMaskImageOpacity(Bitmap mask, int x, int y) {
+        if (x < 0 || x >= mask.getWidth() || y < 0 || y >= mask.getHeight()) {
+            return 0;
+        }
+        return maskImageOpacityFromPixel(mask.getPixel(x, y));
     }
 
     /**

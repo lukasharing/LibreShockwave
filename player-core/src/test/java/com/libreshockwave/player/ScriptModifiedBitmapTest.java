@@ -366,6 +366,46 @@ public class ScriptModifiedBitmapTest {
     }
 
     @Test
+    void copyPixelsMaskOffsetSamplesShiftedMaskCoordinates() {
+        Bitmap dest = new Bitmap(1, 1, 32);
+        dest.fill(0xFFFFFFFF);
+
+        Bitmap src = new Bitmap(1, 1, 32, new int[] { 0xFF000000 });
+        Bitmap mask = new Bitmap(1, 2, 32, new int[] {
+                0x00FFFFFF,
+                0xFFFFFFFF
+        });
+
+        Datum.PropList props = new Datum.PropList();
+        props.add("maskImage", new Datum.ImageRef(mask), true);
+        props.add("maskOffset", new Datum.Point(0, -1), true);
+
+        ImageMethodDispatcher.dispatch(new Datum.ImageRef(dest), "copyPixels",
+                List.of(new Datum.ImageRef(src), new Datum.Rect(0, 0, 1, 1),
+                        new Datum.Rect(0, 0, 1, 1), props));
+
+        assertEquals(0xFF000000, dest.getPixel(0, 0),
+                "#maskOffset must shift mask sampling into the requested mask row");
+    }
+
+    @Test
+    void copyPixelsMaskImagePreservesSoftAlpha() {
+        Bitmap dest = new Bitmap(1, 1, 32, new int[] { 0x00000000 });
+        Bitmap src = new Bitmap(1, 1, 32, new int[] { 0xFF000000 });
+        Bitmap mask = new Bitmap(1, 1, 32, new int[] { 0x80FFFFFF });
+
+        Datum.PropList props = new Datum.PropList();
+        props.add("maskImage", new Datum.ImageRef(mask), true);
+
+        ImageMethodDispatcher.dispatch(new Datum.ImageRef(dest), "copyPixels",
+                List.of(new Datum.ImageRef(src), new Datum.Rect(0, 0, 1, 1),
+                        new Datum.Rect(0, 0, 1, 1), props));
+
+        assertEquals(0x80000000, dest.getPixel(0, 0),
+                "#maskImage alpha should modulate the copied pixel instead of acting as binary on/off");
+    }
+
+    @Test
     void darkenCopyPixelsUsesBgColorAsTintInsteadOfMinAgainstDestination() {
         Bitmap dest = new Bitmap(1, 1, 32, new int[] { 0xFF202020 });
         Bitmap src = new Bitmap(1, 1, 32, new int[] { 0xFFC0C0C0 });
@@ -469,6 +509,22 @@ public class ScriptModifiedBitmapTest {
 
         assertEquals(0xFFC0C0C0, dest.getPixel(0, 0),
                 "copyPixels blend should scale, not replace, the source alpha");
+    }
+
+    @Test
+    void copyPixelsBlendOverTransparentBufferKeepsResultAlpha() {
+        Bitmap dest = new Bitmap(1, 1, 32, new int[] { 0x00000000 });
+        Bitmap src = new Bitmap(1, 1, 32, new int[] { 0xFF000000 });
+
+        Datum.PropList props = new Datum.PropList();
+        props.add("blend", Datum.of(50), true);
+
+        ImageMethodDispatcher.dispatch(new Datum.ImageRef(dest), "copyPixels",
+                List.of(new Datum.ImageRef(src), new Datum.Rect(0, 0, 1, 1),
+                        new Datum.Rect(0, 0, 1, 1), props));
+
+        assertEquals(0x7F000000, dest.getPixel(0, 0),
+                "Blending into a transparent 32-bit buffer must keep the partial output alpha");
     }
 
     @Test
