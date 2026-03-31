@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>LibreShockwave Web Player</title>
     <link rel="stylesheet" href="libreshockwave.css">
 </head>
@@ -17,41 +17,54 @@
                     <span class="header-build" id="build-info"><!--BUILD_VERSION--></span>
                 </div>
 
-                <!-- Toolbar -->
-                <div class="toolbar">
-                    <span class="toolbar-sep">URL:</span>
-                    <input type="text" id="url-input" class="url-input" value="https://sandbox.h4bbo.net/dcr/14.1_b8/habbo.dcr">
-                    <button id="load-url-btn" class="btn">Go</button>
-                    <button id="params-btn" class="btn">Params...</button>
-                    <label class="toolbar-checkbox"><input type="checkbox" id="debug-playback-cb" checked> Debug Log</label>
-                    <span class="toolbar-sep">Trace:</span>
-                    <input type="text" id="trace-input" class="url-input" style="width:160px;" placeholder="handler1, handler2">
-                    <button id="trace-apply-btn" class="btn">Apply</button>
-                </div>
+                <div id="control-overlay-shell" class="control-overlay-shell">
+                    <div id="control-overlay-backdrop" class="control-overlay-backdrop"></div>
+                    <div class="control-overlay-panel">
+                        <div class="control-overlay-header">
+                            <span>Player Controls</span>
+                            <button id="mobile-ui-close" class="modal-close-btn" type="button" aria-label="Close controls">X</button>
+                        </div>
 
-                <!-- Stage -->
-                <div class="stage-panel">
-                    <div class="stage-inset">
-                        <canvas id="stage" width="640" height="480"></canvas>
+                        <!-- Toolbar -->
+                        <div class="toolbar">
+                            <span class="toolbar-sep">URL:</span>
+                            <input type="text" id="url-input" class="url-input" value="https://sandbox.h4bbo.net/dcr/14.1_b8/habbo.dcr">
+                            <button id="load-url-btn" class="btn">Go</button>
+                            <button id="params-btn" class="btn">Params...</button>
+                            <label class="toolbar-checkbox"><input type="checkbox" id="debug-playback-cb" checked> Debug Log</label>
+                            <span class="toolbar-sep">Trace:</span>
+                            <input type="text" id="trace-input" class="url-input" style="width:160px;" placeholder="handler1, handler2">
+                            <button id="trace-apply-btn" class="btn">Apply</button>
+                        </div>
+
+                        <!-- Transport -->
+                        <div class="transport">
+                            <button id="play-btn" class="btn transport-btn" disabled>&#9654; Play</button>
+                            <button id="pause-btn" class="btn transport-btn" disabled>&#9646;&#9646; Pause</button>
+                            <button id="stop-btn" class="btn transport-btn" disabled>&#9632; Stop</button>
+                            <label class="transport-tempo-label" for="tempo-input">Tempo</label>
+                            <input type="number" id="tempo-input" class="tempo-input" min="0" step="1" value="15">
+                            <span id="frame-info" class="frame-info"></span>
+                        </div>
+
+                        <!-- Status bar -->
+                        <div class="statusbar">
+                            <span id="status">Ready</span>
+                            <button id="clear-cache-btn" class="btn btn-sm btn-clear-cache">
+                                <span class="icon-reload">&#10227;</span> Clean cache
+                            </button>
+                        </div>
                     </div>
                 </div>
 
-                <!-- Transport -->
-                <div class="transport">
-                    <button id="play-btn" class="btn transport-btn" disabled>&#9654; Play</button>
-                    <button id="pause-btn" class="btn transport-btn" disabled>&#9646;&#9646; Pause</button>
-                    <button id="stop-btn" class="btn transport-btn" disabled>&#9632; Stop</button>
-                    <label class="transport-tempo-label" for="tempo-input">Tempo</label>
-                    <input type="number" id="tempo-input" class="tempo-input" min="0" step="1" value="15">
-                    <span id="frame-info" class="frame-info"></span>
-                </div>
-
-                <!-- Status bar -->
-                <div class="statusbar">
-                    <span id="status">Ready</span>
-                    <button id="clear-cache-btn" class="btn btn-sm btn-clear-cache">
-                        <span class="icon-reload">&#10227;</span> Clean cache
-                    </button>
+                <!-- Stage -->
+                <div class="stage-panel" id="stage-panel">
+                    <button id="mobile-ui-toggle" class="btn mobile-ui-btn" type="button" aria-label="Open controls" aria-expanded="false">Menu</button>
+                    <div class="mobile-stage-title">LibreShockwave Web Player</div>
+                    <button id="fullscreen-btn" class="btn btn-icon stage-fullscreen-btn" type="button" aria-label="Enter fullscreen" aria-pressed="false" title="Enter fullscreen">&#9974;</button>
+                    <div class="stage-inset">
+                        <canvas id="stage" width="640" height="480"></canvas>
+                    </div>
                 </div>
 
                 <!-- Footer -->
@@ -93,6 +106,21 @@
         </div>
     </div>
 
+    <div id="rotation-guard" class="rotation-guard" hidden>
+        <div class="rotation-guard-window">
+            <div class="modal-titlebar">
+                <span>Landscape Recommended</span>
+            </div>
+            <div class="modal-body">
+                <p>This mobile layout is designed for landscape use.</p>
+                <p>Rotate your device to landscape. If your browser supports it, the button below will also try to switch to fullscreen landscape.</p>
+                <div class="modal-buttons">
+                    <button id="rotation-fullscreen-btn" class="btn btn-primary" type="button">Use landscape fullscreen</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="libreshockwave.js"></script>
     <script>
         // Default Habbo params
@@ -121,6 +149,7 @@
                 status.textContent = 'Loaded (' + info.width + 'x' + info.height + ', ' + info.frameCount + ' frames)';
                 document.getElementById('tempo-input').value = player._tempoOverride > 0 ? player._tempoOverride : (info.tempo || 15);
                 enableControls();
+                syncStageFullscreenLayout();
             },
             onError: function(msg) {
                 status.textContent = 'Error: ' + msg;
@@ -158,6 +187,14 @@
         var urlInput = document.getElementById('url-input');
         var frameInfo = document.getElementById('frame-info');
         var tempoInput = document.getElementById('tempo-input');
+        var stagePanel = document.getElementById('stage-panel');
+        var stageCanvas = document.getElementById('stage');
+        var fullscreenBtn = document.getElementById('fullscreen-btn');
+        var mobileUiToggle = document.getElementById('mobile-ui-toggle');
+        var mobileUiClose = document.getElementById('mobile-ui-close');
+        var controlOverlayBackdrop = document.getElementById('control-overlay-backdrop');
+        var rotationGuard = document.getElementById('rotation-guard');
+        var rotationFullscreenBtn = document.getElementById('rotation-fullscreen-btn');
 
         // Restore saved URL
         try { var s = localStorage.getItem('ls_urlInput'); if (s) urlInput.value = s; } catch(e) {}
@@ -171,6 +208,90 @@
             ['play-btn','pause-btn','stop-btn']
                 .forEach(function(id) { document.getElementById(id).disabled = true; });
             frameInfo.textContent = '';
+        }
+
+        function isStageFullscreen() {
+            return document.fullscreenElement === stagePanel || document.webkitFullscreenElement === stagePanel;
+        }
+
+        function isMobileViewport() {
+            return window.matchMedia('(max-width: 1024px), (pointer: coarse)').matches;
+        }
+
+        function isPortraitViewport() {
+            return window.matchMedia('(orientation: portrait)').matches;
+        }
+
+        function setMobileControlsOpen(open) {
+            var shouldOpen = isMobileViewport() && !!open;
+            document.body.classList.toggle('mobile-controls-open', shouldOpen);
+            mobileUiToggle.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+        }
+
+        function tryLockLandscape() {
+            if (!isMobileViewport() || !screen.orientation || !screen.orientation.lock) {
+                return Promise.resolve(false);
+            }
+            return screen.orientation.lock('landscape').then(function() {
+                return true;
+            }).catch(function() {
+                return false;
+            });
+        }
+
+        function syncMobileViewportState() {
+            var mobile = isMobileViewport();
+            document.body.classList.toggle('mobile-shell', mobile);
+            if (!mobile) {
+                setMobileControlsOpen(false);
+            }
+            rotationGuard.hidden = !(mobile && isPortraitViewport());
+        }
+
+        function syncStageFullscreenLayout() {
+            var fullscreen = isStageFullscreen();
+            fullscreenBtn.setAttribute('aria-pressed', fullscreen ? 'true' : 'false');
+            fullscreenBtn.setAttribute('aria-label', fullscreen ? 'Exit fullscreen' : 'Enter fullscreen');
+            fullscreenBtn.title = fullscreen ? 'Exit fullscreen' : 'Enter fullscreen';
+
+            if (!fullscreen) {
+                stageCanvas.style.width = '';
+                stageCanvas.style.height = '';
+                return;
+            }
+
+            var availableWidth = Math.max(1, stagePanel.clientWidth - 48);
+            var availableHeight = Math.max(1, stagePanel.clientHeight - 48);
+            var scale = Math.min(availableWidth / stageCanvas.width, availableHeight / stageCanvas.height);
+            stageCanvas.style.width = Math.max(1, Math.floor(stageCanvas.width * scale)) + 'px';
+            stageCanvas.style.height = Math.max(1, Math.floor(stageCanvas.height * scale)) + 'px';
+        }
+
+        function requestStageFullscreen() {
+            var request = stagePanel.requestFullscreen || stagePanel.webkitRequestFullscreen;
+            if (!request) {
+                status.textContent = 'Fullscreen is not available in this browser';
+                return Promise.resolve();
+            }
+            try {
+                var result = request.call(stagePanel);
+                return result && typeof result.then === 'function' ? result : Promise.resolve();
+            } catch (e) {
+                status.textContent = 'Fullscreen could not be enabled';
+                return Promise.reject(e);
+            }
+        }
+
+        function exitStageFullscreen() {
+            var exit = document.exitFullscreen || document.webkitExitFullscreen;
+            if (!exit) return Promise.resolve();
+            try {
+                var result = exit.call(document);
+                return result && typeof result.then === 'function' ? result : Promise.resolve();
+            } catch (e) {
+                status.textContent = 'Fullscreen could not be disabled';
+                return Promise.reject(e);
+            }
         }
 
         // URL load — full reset (terminate worker, fresh WASM instance)
@@ -202,6 +323,67 @@
             }
             player.setTempo(tempo);
             status.textContent = tempo > 0 ? ('Tempo set to ' + tempo + ' fps') : 'Tempo reset to movie/score';
+        });
+
+        fullscreenBtn.addEventListener('click', function() {
+            var action = isStageFullscreen() ? exitStageFullscreen() : requestStageFullscreen();
+            action.then(function() {
+                syncMobileViewportState();
+                if (isStageFullscreen()) {
+                    tryLockLandscape().then(function() {
+                        stageCanvas.focus();
+                    });
+                }
+            }).catch(function() {});
+        });
+
+        mobileUiToggle.addEventListener('click', function() {
+            setMobileControlsOpen(!document.body.classList.contains('mobile-controls-open'));
+        });
+        mobileUiClose.addEventListener('click', function() {
+            setMobileControlsOpen(false);
+        });
+        controlOverlayBackdrop.addEventListener('click', function() {
+            setMobileControlsOpen(false);
+        });
+
+        document.addEventListener('fullscreenchange', function() {
+            syncMobileViewportState();
+            syncStageFullscreenLayout();
+            if (isStageFullscreen()) {
+                stageCanvas.focus();
+            }
+        });
+        document.addEventListener('webkitfullscreenchange', function() {
+            syncMobileViewportState();
+            syncStageFullscreenLayout();
+            if (isStageFullscreen()) {
+                stageCanvas.focus();
+            }
+        });
+        window.addEventListener('resize', function() {
+            syncMobileViewportState();
+            syncStageFullscreenLayout();
+        });
+        window.addEventListener('orientationchange', function() {
+            syncMobileViewportState();
+            syncStageFullscreenLayout();
+        });
+        if (screen.orientation && screen.orientation.addEventListener) {
+            screen.orientation.addEventListener('change', function() {
+                syncMobileViewportState();
+                syncStageFullscreenLayout();
+            });
+        }
+
+        rotationFullscreenBtn.addEventListener('click', function() {
+            requestStageFullscreen()
+                .then(function() { return tryLockLandscape(); })
+                .then(function() {
+                    syncMobileViewportState();
+                    syncStageFullscreenLayout();
+                })
+                .catch(function() {});
         });
 
         // === External Params Dialog ===
@@ -370,6 +552,8 @@
         traceInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') applyTraceHandlers(); });
 
         // Auto-load the URL on page open
+        syncMobileViewportState();
+        syncStageFullscreenLayout();
         var autoUrl = urlInput.value.trim();
         if (autoUrl) {
             status.textContent = 'Fetching...';
