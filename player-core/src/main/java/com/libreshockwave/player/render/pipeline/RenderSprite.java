@@ -30,6 +30,7 @@ public final class RenderSprite {
     private final int blend;
     private final boolean flipH;
     private final boolean flipV;
+    private final boolean directorMemberMirror;
     private final double rotation;
     private final double skew;
     private final Bitmap bakedBitmap;
@@ -44,7 +45,8 @@ public final class RenderSprite {
             CastMemberChunk castMember,
             int foreColor, int backColor, int ink, int blend) {
         this(channel, x, y, width, height, 0, visible, type, castMember, null,
-             foreColor, backColor, false, false, ink, blend, false, false, null, false);
+             foreColor, backColor, false, false, ink, blend, false, false,
+             false, 0.0, 0.0, null, false);
     }
 
     public RenderSprite(
@@ -64,7 +66,7 @@ public final class RenderSprite {
             boolean hasBehaviors) {
         this(channel, x, y, width, height, locZ, visible, type, castMember, dynamicMember,
                 foreColor, backColor, hasForeColor, hasBackColor, ink, blend,
-                flipH, flipV, 0.0, 0.0, bakedBitmap, hasBehaviors);
+                flipH, flipV, false, 0.0, 0.0, bakedBitmap, hasBehaviors);
     }
 
     public RenderSprite(
@@ -80,6 +82,7 @@ public final class RenderSprite {
             boolean hasForeColor, boolean hasBackColor,
             int ink, int blend,
             boolean flipH, boolean flipV,
+            boolean directorMemberMirror,
             double rotation, double skew,
             Bitmap bakedBitmap,
             boolean hasBehaviors) {
@@ -101,6 +104,7 @@ public final class RenderSprite {
         this.blend = blend;
         this.flipH = flipH;
         this.flipV = flipV;
+        this.directorMemberMirror = directorMemberMirror;
         this.rotation = rotation;
         this.skew = skew;
         this.bakedBitmap = bakedBitmap;
@@ -127,6 +131,7 @@ public final class RenderSprite {
     public int getBlend() { return blend; }
     public boolean isFlipH() { return flipH; }
     public boolean isFlipV() { return flipV; }
+    public boolean hasDirectorMemberMirror() { return directorMemberMirror; }
     public double getRotation() { return rotation; }
     public double getSkew() { return skew; }
     public Bitmap getBakedBitmap() { return bakedBitmap; }
@@ -148,7 +153,7 @@ public final class RenderSprite {
     public RenderSprite withBakedBitmap(Bitmap baked) {
         return new RenderSprite(channelId.value(), x, y, width, height, locZ, visible, type,
             castMember, dynamicMember, foreColor, backColor, hasForeColor, hasBackColor,
-            inkMode.code(), blend, flipH, flipV, rotation, skew, baked, hasBehaviors);
+            inkMode.code(), blend, flipH, flipV, directorMemberMirror, rotation, skew, baked, hasBehaviors);
     }
 
     /**
@@ -159,7 +164,7 @@ public final class RenderSprite {
     public RenderSprite withBakedBitmapAndSize(Bitmap baked, int newWidth, int newHeight) {
         return new RenderSprite(channelId.value(), x, y, newWidth, newHeight, locZ, visible, type,
             castMember, dynamicMember, foreColor, backColor, hasForeColor, hasBackColor,
-            inkMode.code(), blend, flipH, flipV, rotation, skew, baked, hasBehaviors);
+            inkMode.code(), blend, flipH, flipV, directorMemberMirror, rotation, skew, baked, hasBehaviors);
     }
 
     private static int normalizeTransformAngle(double angle) {

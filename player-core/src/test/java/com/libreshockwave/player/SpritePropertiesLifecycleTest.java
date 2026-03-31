@@ -2,6 +2,7 @@ package com.libreshockwave.player;
 
 import com.libreshockwave.bitmap.Bitmap;
 import com.libreshockwave.chunks.ScoreChunk;
+import com.libreshockwave.id.SlotId;
 import com.libreshockwave.player.cast.CastLib;
 import com.libreshockwave.player.cast.CastLibManager;
 import com.libreshockwave.player.cast.CastMember;
@@ -18,6 +19,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -77,6 +79,28 @@ class SpritePropertiesLifecycleTest {
 
         assertTrue(state.hasDynamicMember());
         assertEquals(0, state.getEffectiveCastMember());
+    }
+
+    @Test
+    void negativeDirectorMemberRefPreservesMirrorAndGetterRoundTrip() {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteProperties props = new SpriteProperties(registry);
+
+        int mirroredRef = -SlotId.of(7, 42).value();
+        assertTrue(props.setSpriteProp(12, "castNum", Datum.of(mirroredRef)));
+
+        SpriteState state = registry.get(12);
+        assertTrue(state.hasDynamicMember());
+        assertEquals(7, state.getEffectiveCastLib());
+        assertEquals(42, state.getEffectiveCastMember());
+        assertTrue(state.hasDirectorAssignedMirror());
+        assertEquals(mirroredRef, props.getSpriteProp(12, "castNum").toInt());
+
+        Datum member = props.getSpriteProp(12, "member");
+        assertInstanceOf(Datum.CastMemberRef.class, member);
+        Datum.CastMemberRef ref = (Datum.CastMemberRef) member;
+        assertEquals(7, ref.castLibNum());
+        assertEquals(42, ref.memberNum());
     }
 
     @Test

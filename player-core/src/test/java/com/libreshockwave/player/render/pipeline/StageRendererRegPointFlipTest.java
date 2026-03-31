@@ -5,6 +5,7 @@ import com.libreshockwave.cast.MemberType;
 import com.libreshockwave.chunks.CastMemberChunk;
 import com.libreshockwave.format.ChunkType;
 import com.libreshockwave.id.ChunkId;
+import com.libreshockwave.id.SlotId;
 import com.libreshockwave.player.sprite.SpriteState;
 import org.junit.jupiter.api.Test;
 
@@ -50,6 +51,18 @@ class StageRendererRegPointFlipTest {
         SpriteState state = new SpriteState(7);
         state.setRotation(180);
         state.setSkew(180);
+
+        Method method = StageRenderer.class.getDeclaredMethod("effectiveFlipH", SpriteState.class);
+        method.setAccessible(true);
+
+        assertTrue((boolean) method.invoke(renderer, state));
+    }
+
+    @Test
+    void signedDirectorMemberMirrorIsTreatedAsEffectiveFlipForRegPointMath() throws Exception {
+        StageRenderer renderer = new StageRenderer(newEmptyDirectorFile());
+        SpriteState state = new SpriteState(7);
+        state.setDynamicMember(3, 21, -SlotId.of(3, 21).value());
 
         Method method = StageRenderer.class.getDeclaredMethod("effectiveFlipH", SpriteState.class);
         method.setAccessible(true);

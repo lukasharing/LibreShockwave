@@ -125,6 +125,7 @@ public class StageRenderer {
     public void resetVisualState() {
         backgroundColor = defaultBackgroundColor;
         stageImage = null;
+        lastBakedSprites = List.of();
     }
 
     /** Store baked sprites from last rendered frame for hit testing. */
@@ -394,7 +395,7 @@ public class StageRenderer {
             state.getForeColor(), state.getBackColor(),
             state.hasForeColor(), state.hasBackColor(),
             state.getInk(), state.getBlend(),
-            state.isFlipH(), state.isFlipV(),
+            state.isFlipH(), state.isFlipV(), state.hasDirectorAssignedMirror(),
             state.getRotation(), state.getSkew(),
             null,
             state.hasScriptBehaviors()
@@ -503,7 +504,9 @@ public class StageRenderer {
     }
 
     private boolean effectiveFlipH(SpriteState state) {
-        return state.isFlipH() ^ hasDirectorHorizontalMirror(state.getRotation(), state.getSkew());
+        return state.isFlipH()
+                ^ state.hasDirectorAssignedMirror()
+                ^ hasDirectorHorizontalMirror(state.getRotation(), state.getSkew());
     }
 
     private static boolean hasDirectorHorizontalMirror(double rotation, double skew) {

@@ -465,17 +465,7 @@ public class CastLib {
         if (!isLoaded()) {
             load();
         }
-
-        CastMemberChunk direct = findMemberChunkByNameExact(name);
-        if (direct != null) {
-            return direct;
-        }
-
-        String sourcePrefixedName = sourcePrefixedLookupName(name);
-        if (sourcePrefixedName != null) {
-            return findMemberChunkByNameExact(sourcePrefixedName);
-        }
-        return null;
+        return findMemberChunkByNameExact(name);
     }
 
     /**
@@ -486,17 +476,7 @@ public class CastLib {
         if (!isLoaded()) {
             load();
         }
-
-        CastMember direct = findMemberByNameExact(name);
-        if (direct != null) {
-            return direct;
-        }
-
-        String sourcePrefixedName = sourcePrefixedLookupName(name);
-        if (sourcePrefixedName != null) {
-            return findMemberByNameExact(sourcePrefixedName);
-        }
-        return null;
+        return findMemberByNameExact(name);
     }
 
     CastMemberChunk findMemberChunkByNameExact(String name) {
@@ -532,13 +512,6 @@ public class CastLib {
 
     boolean hasMemberNamedExact(String name) {
         return findMemberChunkByNameExact(name) != null || findMemberByNameExact(name) != null;
-    }
-
-    private static String sourcePrefixedLookupName(String requestedName) {
-        if (requestedName == null || requestedName.isEmpty()) {
-            return null;
-        }
-        return requestedName.regionMatches(true, 0, "s_", 0, 2) ? null : "s_" + requestedName;
     }
 
     /**

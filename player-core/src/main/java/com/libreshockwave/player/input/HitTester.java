@@ -153,7 +153,7 @@ public final class HitTester {
         int srcX = (localX * baked.getWidth()) / spriteWidth;
         int srcY = (localY * baked.getHeight()) / spriteHeight;
 
-        if (sprite.isFlipH() ^ sprite.hasDirectorHorizontalMirror()) {
+        if (sprite.isFlipH() ^ sprite.hasDirectorMemberMirror() ^ sprite.hasDirectorHorizontalMirror()) {
             srcX = baked.getWidth() - 1 - srcX;
         }
         if (sprite.isFlipV()) {

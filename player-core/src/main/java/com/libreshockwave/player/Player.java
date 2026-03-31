@@ -458,8 +458,8 @@ public class Player implements UpdateProvider {
 
     /**
      * Called when a network fetch completes. If the fetched URL is a cast file
-     * (.cct/.cst), caches the raw data in CastLibManager and parses it into
-     * the matching cast library so members are available immediately.
+     * (.cct/.cst), caches the raw data so the movie can bind or load it through
+     * its authored Director flow.
      */
     public void onNetFetchComplete(String url, byte[] data) {
         if (url == null || data == null) return;
@@ -1289,18 +1289,6 @@ public class Player implements UpdateProvider {
 
     private void handleExternalCastFetch(String url, byte[] data) {
         castLibManager.cacheExternalData(url, data);
-        try {
-            java.util.List<Integer> requestedCastNums = castLibManager.getRequestedExternalCastSlots(url);
-            if (requestedCastNums.isEmpty()) {
-                return;
-            }
-            for (Integer castNum : requestedCastNums) {
-                loadExternalCastFromCachedData(castNum, data);
-            }
-        } catch (Throwable e) {
-            System.err.println("[Player] External cast load failed for " + url + ": "
-                    + e.getClass().getName() + ": " + e.getMessage());
-        }
     }
 
     private void handleCastDataRequest(int castLibNum, String fileName, java.util.function.BiConsumer<Integer, String> fallbackCallback) {

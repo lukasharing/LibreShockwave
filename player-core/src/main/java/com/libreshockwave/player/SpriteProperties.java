@@ -92,7 +92,7 @@ public class SpriteProperties implements SpritePropertyProvider {
             );
             case "spritenum" -> Datum.of(spriteNum);
             case "type" -> Datum.of(1);  // 1 = bitmap default
-            case "castnum", "membernum" -> Datum.of(sprite.getEffectiveCastMember());
+            case "castnum", "membernum" -> Datum.of(sprite.getEffectiveDirectorMemberRef());
             case "castlibnum" -> Datum.of(sprite.getEffectiveCastLib());
             case "member" -> {
                 int cl = sprite.getEffectiveCastLib();
@@ -261,22 +261,13 @@ public class SpriteProperties implements SpritePropertyProvider {
             }
             case "castnum", "membernum" -> {
                 int num = value.toInt();
-                if (num <= 0) {
+                if (num == 0) {
                     applyEmptyMemberOverride(sprite);
                     return true;
                 }
-                // Decode encoded slot numbers: (castLib << 16) | memberNum
-                // These come from preIndexMembers → member.number in Director
-                int encodedCast = (num >> 16) & 0xFFFF;
-                int encodedMember = num & 0xFFFF;
-                if (encodedCast > 0 && encodedMember > 0) {
-                    sprite.setDynamicMember(encodedCast, encodedMember);
-                    autoSizeSprite(sprite, encodedCast, encodedMember, false);
-                } else {
-                    int cl = sprite.getEffectiveCastLib();
-                    sprite.setDynamicMember(cl, num);
-                    autoSizeSprite(sprite, cl, num, false);
-                }
+                AssignedMember assigned = decodeAssignedMemberRef(num, sprite.getEffectiveCastLib());
+                sprite.setDynamicMember(assigned.castLib(), assigned.memberNum(), assigned.directorRef());
+                autoSizeSprite(sprite, assigned.castLib(), assigned.memberNum(), false);
                 return true;
             }
             case "color" -> {
@@ -363,7 +354,7 @@ public class SpriteProperties implements SpritePropertyProvider {
     }
 
     private static void applyEmptyMemberOverride(SpriteState sprite) {
-        sprite.setDynamicMember(0, 0);
+        sprite.setDynamicMember(0, 0, 0);
         sprite.resetReleasedSpriteTransforms();
     }
 
@@ -418,20 +409,14 @@ public class SpriteProperties implements SpritePropertyProvider {
         }
 
         int memberNum = value.toInt();
-        if (memberNum <= 0) {
+        if (memberNum == 0) {
             applyEmptyMemberOverride(sprite);
             return true;
         }
 
-        int encodedCast = (memberNum >> 16) & 0xFFFF;
-        int encodedMember = memberNum & 0xFFFF;
-        if (encodedCast > 0 && encodedMember > 0) {
-            sprite.setDynamicMember(encodedCast, encodedMember);
-            autoSizeSprite(sprite, encodedCast, encodedMember, viaSetMemberMethod);
-        } else {
-            sprite.setDynamicMember(0, memberNum);
-            autoSizeSprite(sprite, 0, memberNum, viaSetMemberMethod);
-        }
+        AssignedMember assigned = decodeAssignedMemberRef(memberNum, 0);
+        sprite.setDynamicMember(assigned.castLib(), assigned.memberNum(), assigned.directorRef());
+        autoSizeSprite(sprite, assigned.castLib(), assigned.memberNum(), viaSetMemberMethod);
         return true;
     }
 
@@ -501,4 +486,22 @@ public class SpriteProperties implements SpritePropertyProvider {
         }
         return value.toInt();
     }
+
+    private static AssignedMember decodeAssignedMemberRef(int directorRef, int fallbackCastLib) {
+        int absoluteRef = Math.abs(directorRef);
+        if (absoluteRef == 0) {
+            return new AssignedMember(0, 0, 0);
+        }
+
+        int encodedCast = (absoluteRef >> 16) & 0xFFFF;
+        int encodedMember = absoluteRef & 0xFFFF;
+        if (absoluteRef > 0xFFFF && encodedCast > 0 && encodedMember > 0) {
+            return new AssignedMember(encodedCast, encodedMember, directorRef);
+        }
+
+        int castLib = fallbackCastLib > 0 ? fallbackCastLib : 0;
+        return new AssignedMember(castLib, absoluteRef, directorRef);
+    }
+
+    private record AssignedMember(int castLib, int memberNum, int directorRef) {}
 }

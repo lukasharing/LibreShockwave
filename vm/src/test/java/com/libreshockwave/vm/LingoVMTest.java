@@ -170,6 +170,27 @@ class LingoVMTest {
     }
 
     @Test
+    void testMemberBuiltinResolvesNegativeSlotNumbersToUnderlyingMember() {
+        LingoVM vm = new LingoVM(null);
+        RecordingCastProvider provider = new RecordingCastProvider();
+        CastLibProvider.setProvider(provider);
+        try {
+            int mirroredSlot = -((11 << 16) | 7);
+
+            Datum result = vm.callHandler("member", List.of(Datum.of(mirroredSlot)));
+
+            assertInstanceOf(Datum.CastMemberRef.class, result);
+            Datum.CastMemberRef ref = (Datum.CastMemberRef) result;
+            assertEquals(11, ref.castLibNum());
+            assertEquals(7, ref.memberNum());
+            assertEquals(11, provider.lastGetMemberCastLibNumber);
+            assertEquals(7, provider.lastGetMemberNumber);
+        } finally {
+            CastLibProvider.clearProvider();
+        }
+    }
+
+    @Test
     void testFieldBuiltinResolvesCastLibNameArgument() {
         LingoVM vm = new LingoVM(null);
         RecordingCastProvider provider = new RecordingCastProvider();

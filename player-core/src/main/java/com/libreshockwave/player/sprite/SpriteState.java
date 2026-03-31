@@ -3,6 +3,7 @@ package com.libreshockwave.player.sprite;
 import com.libreshockwave.chunks.ScoreChunk;
 import com.libreshockwave.id.ChannelId;
 import com.libreshockwave.id.InkMode;
+import com.libreshockwave.id.SlotId;
 import com.libreshockwave.vm.datum.Datum;
 
 import java.util.ArrayList;
@@ -53,6 +54,7 @@ public class SpriteState {
     // explicit empty override with member 0)
     private int dynamicCastLib = -1;
     private int dynamicCastMember = -1;
+    private int dynamicDirectorMemberRef = -1;
     private boolean hasDynamicMember = false;
 
     /**
@@ -149,8 +151,17 @@ public class SpriteState {
      * explicit empty channel and must not fall back to Score data.
      */
     public void setDynamicMember(int castLib, int member) {
+        setDynamicMember(castLib, member, defaultDirectorMemberRef(castLib, member));
+    }
+
+    /**
+     * Set a dynamic cast member override while preserving the Director-visible
+     * member ref that scripts assigned (including mirrored negative refs).
+     */
+    public void setDynamicMember(int castLib, int member, int directorMemberRef) {
         this.dynamicCastLib = castLib;
         this.dynamicCastMember = member;
+        this.dynamicDirectorMemberRef = directorMemberRef;
         this.hasDynamicMember = true;
     }
 
@@ -160,6 +171,7 @@ public class SpriteState {
     public void clearDynamicMember() {
         this.dynamicCastLib = -1;
         this.dynamicCastMember = -1;
+        this.dynamicDirectorMemberRef = -1;
         this.hasDynamicMember = false;
     }
 
@@ -194,6 +206,32 @@ public class SpriteState {
             return dynamicCastMember;
         }
         return scoreData != null ? scoreData.castMember() : 0;
+    }
+
+    /**
+     * Get the Director-visible member ref for this sprite.
+     * Director scripts compare sprite.castNum/memberNum against getmemnum()
+     * and member.number values, so this must preserve encoded slot refs and
+     * mirrored negative aliases instead of exposing only the raw member slot.
+     */
+    public int getEffectiveDirectorMemberRef() {
+        if (hasDynamicMember) {
+            if (dynamicDirectorMemberRef != -1) {
+                return dynamicDirectorMemberRef;
+            }
+            return defaultDirectorMemberRef(dynamicCastLib, dynamicCastMember);
+        }
+        if (scoreData == null) {
+            return 0;
+        }
+        if (scoreData.castLib() > 0 && scoreData.castMember() > 0) {
+            return SlotId.of(scoreData.castLib(), scoreData.castMember()).value();
+        }
+        return scoreData.castMember();
+    }
+
+    public boolean hasDirectorAssignedMirror() {
+        return hasDynamicMember && dynamicDirectorMemberRef < 0;
     }
 
     public boolean hasDynamicMember() { return hasDynamicMember; }
@@ -337,6 +375,7 @@ public class SpriteState {
         this.scriptInstanceList = new ArrayList<>();
         this.dynamicCastLib = -1;
         this.dynamicCastMember = -1;
+        this.dynamicDirectorMemberRef = -1;
         this.hasDynamicMember = false;
     }
 
@@ -353,4 +392,14 @@ public class SpriteState {
     }
 
     public ScoreChunk.ChannelData getInitialData() { return scoreData; }
+
+    private static int defaultDirectorMemberRef(int castLib, int member) {
+        if (member == 0) {
+            return 0;
+        }
+        if (castLib > 0 && member > 0) {
+            return SlotId.of(castLib, member).value();
+        }
+        return member;
+    }
 }

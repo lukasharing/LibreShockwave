@@ -31,6 +31,7 @@ class SoftwareFrameRendererTransformTest {
                 false, false,
                 0, 100,
                 false, false,
+                false,
                 180.0, 180.0,
                 src,
                 false
@@ -68,6 +69,7 @@ class SoftwareFrameRendererTransformTest {
                 false, false,
                 0, 100,
                 true, false,
+                false,
                 180.0, 180.0,
                 src,
                 false

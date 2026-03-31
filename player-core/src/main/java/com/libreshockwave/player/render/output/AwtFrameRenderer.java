@@ -94,7 +94,9 @@ public final class AwtFrameRenderer {
         BufferedImage img = baked.toBufferedImage();
         int w = sprite.getWidth() > 0 ? sprite.getWidth() : img.getWidth();
         int h = sprite.getHeight() > 0 ? sprite.getHeight() : img.getHeight();
-        boolean flipH = sprite.isFlipH() ^ sprite.hasDirectorHorizontalMirror();
+        boolean flipH = sprite.isFlipH()
+                ^ sprite.hasDirectorMemberMirror()
+                ^ sprite.hasDirectorHorizontalMirror();
         boolean flipV = sprite.isFlipV();
         if (flipH || flipV) {
             int dx1 = sprite.getX();

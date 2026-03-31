@@ -160,7 +160,7 @@ public final class TypeBuiltins {
             // If the number is a slot number (high bits set), decode it
             // Slot number format: (castLib << 16) | (memberNum & 0xFFFF)
             if (provider != null) {
-                int value = num.value();
+                int value = Math.abs(num.value());
                 int castLib, memberNum;
                 if (value > 65535) {
                     // This is a slot number - decode it

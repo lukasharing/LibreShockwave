@@ -77,7 +77,7 @@ public final class CastLibBuiltins {
         CastLibProvider provider = CastLibProvider.getProvider();
         if (provider == null) {
             // Return a placeholder CastMemberRef
-            return Datum.CastMemberRef.of(1, args.get(0).toInt());
+            return Datum.CastMemberRef.of(1, Math.abs(args.get(0).toInt()));
         }
 
         Datum memberArg = args.get(0);
@@ -87,7 +87,7 @@ public final class CastLibBuiltins {
 
         // Get member by number or name
         if (memberArg.isInt() || memberArg.isFloat()) {
-            int memberNumber = memberArg.toInt();
+            int memberNumber = Math.abs(memberArg.toInt());
             if (castLibNumber > 0) {
                 return provider.getMember(castLibNumber, memberNumber);
             }
@@ -96,10 +96,10 @@ public final class CastLibBuiltins {
             int encodedCast = (memberNumber >> 16) & 0xFFFF;
             int encodedMember = memberNumber & 0xFFFF;
             if (encodedCast > 0 && encodedMember > 0) {
-                // Decode slot number: direct lookup in the encoded cast lib
-                if (provider.memberExists(encodedCast, encodedMember)) {
-                    return provider.getMember(encodedCast, encodedMember);
-                }
+                // Decode slot number directly. Director accepts signed/unsigned
+                // member.number values here even when callers have not already
+                // proved slot liveness through memberExists().
+                return provider.getMember(encodedCast, encodedMember);
             }
 
             // No cast lib specified — search all casts for the member
@@ -144,7 +144,7 @@ public final class CastLibBuiltins {
         castId = resolveCastLibArg(provider, args.size() > 1 ? args.get(1) : Datum.VOID);
 
         Object identifier = fieldArg instanceof Datum.Str s ? s.value()
-                : fieldArg instanceof Datum.Int i ? i.value()
+                : fieldArg instanceof Datum.Int i ? Math.abs(i.value())
                 : fieldArg.toStr();
 
         return provider.getFieldDatum(identifier, castId);

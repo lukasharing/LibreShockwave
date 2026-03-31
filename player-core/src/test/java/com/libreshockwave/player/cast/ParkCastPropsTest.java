@@ -41,7 +41,7 @@ class ParkCastPropsTest {
     }
 
     @Test
-    void standaloneParkCanonicalLookupFallsBackToSourcePrefixedMembers() throws Exception {
+    void standaloneParkCanonicalAndSourceMembersRemainDistinctAuthoredMembers() throws Exception {
         if (!Files.isRegularFile(PARK_CAST)) {
             return;
         }
@@ -54,7 +54,7 @@ class ParkCastPropsTest {
         assertTrue(castLib.getMemberByName("s_queue_tile2_a_0_1_1_2_0") != null,
                 "expected source-prefixed park member to exist");
         assertTrue(castLib.getMemberByName("queue_tile2_a_0_1_1_2_0") != null,
-                "canonical park lookup should fall back to s_-prefixed source member");
+                "expected canonical park member to exist");
     }
 
     @Test
@@ -120,7 +120,7 @@ class ParkCastPropsTest {
     }
 
     @Test
-    void habboHostMovieParkQueueAliasesResolveAgainstSourcePrefixedTargets() throws Exception {
+    void habboHostMovieParkQueueAliasesResolveAsMirroredDirectorMemberRefs() throws Exception {
         if (!Files.isRegularFile(HABBO_MOVIE) || !Files.isRegularFile(PARK_COMPRESSED_CAST)) {
             return;
         }
@@ -142,20 +142,22 @@ class ParkCastPropsTest {
                     java.util.List.of(Datum.of("queue_tile2_a_0_1_1_4_0")));
             Datum aliasExists = vm.callHandler("memberExists",
                     java.util.List.of(Datum.of("queue_tile2_a_0_1_1_4_0")));
+            Datum mirroredMember = vm.callHandler("member", java.util.List.of(mirroredAlias));
 
             assertTrue(sourcePrefixed.toInt() > 0, "expected prefixed queue tile member to resolve");
-            assertEquals(sourcePrefixed.toInt(), canonicalTarget.toInt(),
-                    "canonical queue tile lookup should resolve to the prefixed source member");
+            assertTrue(canonicalTarget.toInt() > 0, "expected canonical queue tile member to resolve");
             assertEquals(-sourcePrefixed.toInt(), mirroredAlias.toInt(),
                     "park alias index should publish mirrored queue tile aliases");
             assertEquals(1, aliasExists.toInt(), "mirrored queue tile alias should be visible to memberExists");
+            assertTrue(mirroredMember instanceof Datum.CastMemberRef,
+                    "member(negative getmemnum()) should resolve to the underlying cast member");
         } finally {
             player.shutdown();
         }
     }
 
     @Test
-    void habboHostMovieParkAliasFieldIsRewrittenForScriptedPreIndexMembers() throws Exception {
+    void habboHostMovieParkAliasFieldRetainsAuthoredCanonicalTargets() throws Exception {
         if (!Files.isRegularFile(HABBO_MOVIE) || !Files.isRegularFile(PARK_COMPRESSED_CAST)) {
             return;
         }
@@ -168,8 +170,8 @@ class ParkCastPropsTest {
             assertTrue(player.getCastLibManager().setExternalCastData(parkCastSlot, Files.readAllBytes(PARK_COMPRESSED_CAST)));
 
             String aliasText = player.getCastLibManager().getFieldValue("memberalias.index", parkCastSlot);
-            assertTrue(aliasText.contains("queue_tile2_a_0_1_1_4_0=s_queue_tile2_a_0_1_1_2_0*"),
-                    "memberalias.index should target source-prefixed queue tile members, got: " + aliasText);
+            assertTrue(aliasText.contains("queue_tile2_a_0_1_1_4_0=queue_tile2_a_0_1_1_2_0*"),
+                    "memberalias.index should preserve authored canonical queue tile targets, got: " + aliasText);
 
             CastLib parkCast = player.getCastLibManager().getCastLib(parkCastSlot);
             assertTrue(parkCast != null && parkCast.isLoaded(), "park cast should be loaded");
@@ -203,7 +205,7 @@ class ParkCastPropsTest {
             }
 
             int expectedSourceMember = (parkCastSlot << 16) | parkCast.getMemberNumber(
-                    parkCast.findMemberChunkByNameExact("s_queue_tile2_a_0_1_1_2_0"));
+                    parkCast.findMemberChunkByNameExact("queue_tile2_a_0_1_1_2_0"));
             assertEquals(expectedSourceMember, scriptedRegistry.get("queue_tile2_a_0_1_1_2_0"));
             assertEquals(-expectedSourceMember, scriptedRegistry.get("queue_tile2_a_0_1_1_4_0"));
         } finally {
