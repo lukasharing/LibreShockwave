@@ -295,8 +295,8 @@ public class BitmapDecoder {
 
     /**
      * Decode a 32-bit bitmap (true color).
-     * D4+ format: channels stored separately PER SCANLINE as [A][R][G][B].
-     * D3 and earlier: interleaved ARGB per pixel.
+     * D4+ RLE format: channels stored separately PER SCANLINE as [A][R][G][B].
+     * Uncompressed rows, and D3 and earlier, are interleaved ARGB per pixel.
      */
     public static Bitmap decode32Bit(byte[] data, int width, int height, int scanWidth,
                                       boolean channelsSeparated) {
@@ -449,7 +449,7 @@ public class BitmapDecoder {
             case 8 -> decode8Bit(decompressed, width, height, scanWidth, palette);
             case 16 -> decode16Bit(decompressed, width, height, scanWidth, skipCompression);
             case 32 -> decode32Bit(decompressed, width, height, scanWidth,
-                directorVersion >= 1000); // D4+ uses separated channels
+                directorVersion >= 1000 && !skipCompression); // D4+ RLE uses separated channels
             default -> decode8Bit(decompressed, width, height, scanWidth, palette);
         };
     }
