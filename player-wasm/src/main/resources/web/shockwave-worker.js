@@ -36,6 +36,22 @@ function _musDebug(msg) {
     }
 }
 
+function _musPacketDebug(msg) {
+    if (_debugLogsEnabled && _musTracePackets) {
+        self.postMessage({ type: 'debugLog', msg: '[MUS] ' + msg });
+    }
+}
+
+function _buildLookupSet(values) {
+    var set = Object.create(null);
+    if (!Array.isArray(values)) return set;
+    for (var i = 0; i < values.length; i++) {
+        var key = String(values[i] || '').trim().toLowerCase();
+        if (key) set[key] = true;
+    }
+    return set;
+}
+
 function _musPreview(data) {
     if (!_debugLogsEnabled || data == null) return '';
     var bytes = data instanceof Uint8Array ? data : _binaryStringToBytes(String(data));
@@ -87,20 +103,53 @@ var _e = null;          // WasmEngine instance
 var _isTicking = false; // guard against overlapping ticks
 var _pageProtocol = ''; // page protocol from main thread (e.g. 'https:')
 var _debugLogsEnabled = false;
+var _musTracePackets = false;
+var _musWebSocketUrl = ''; // optional browser WebSocket URL override for Multiuser Xtra
+var _musSecureHosts = Object.create(null); // optional host allow-list for default wss:// Multiuser sockets
 // --- Multiuser Xtra WebSocket connections ---
 var _musSockets = {};      // instanceId -> WebSocket
 var _musInbound = {};      // instanceId -> [Uint8Array] (raw MUS TCP chunks)
+var _musPendingSends = {}; // instanceId -> [Uint8Array] waiting for WebSocket.OPEN
 
 var _musConnected = {};    // instanceId -> true (pending connect notifications)
 var _musDisconnected = {}; // instanceId -> true (pending disconnect notifications)
 var _musErrors = {};       // instanceId -> errorCode
 
+function _musClearInstanceState(instId) {
+    delete _musConnected[instId];
+    delete _musDisconnected[instId];
+    delete _musErrors[instId];
+    delete _musInbound[instId];
+    delete _musPendingSends[instId];
+}
+
+function _musCloseAllSockets() {
+    for (var instId in _musSockets) {
+        var ws = _musSockets[instId];
+        if (!ws) continue;
+        try {
+            ws.onopen = null;
+            ws.onmessage = null;
+            ws.onerror = null;
+            ws.onclose = null;
+            ws.close();
+        } catch(e) {}
+    }
+    _musSockets = {};
+    _musInbound = {};
+    _musPendingSends = {};
+    _musConnected = {};
+    _musDisconnected = {};
+    _musErrors = {};
+}
+
 // --- Non-blocking fetch delivery queue ---
 var _fetchQueue = [];   // [{taskId, data: ArrayBuffer}] or [{taskId, error: number}]
+var _fetchInFlight = 0;
+var _fetchInFlightByKey = {};
 var _jpegDecodeQueue = []; // [{id, width, height, data: Uint8Array}]
 var _jpegDecodeInFlight = {}; // id -> true
 var _jpegDecodeSeq = 0; // increments per movie load to ignore stale async decodes
-var _loadStartTime = 0; // timestamp when loading began (for perf logging)
 var _networkSeq = 0;    // increments per movie load to ignore stale async fetches
 var _sharedFrameBytes = null;
 var _sharedFrameControl = null;
@@ -726,30 +775,31 @@ WasmEngine.prototype.pumpMusRequests = function() {
         if (type === 0) {
             // CONNECT
             var hostLen = this.exports.getMusPendingHost(i); this._clearEx();
+            var strAddr = this.exports.getStringBufferAddress(); this._clearEx();
             var host = this._readString(strAddr, hostLen);
             var port = this.exports.getMusPendingPort(i); this._clearEx();
 
             var wsUrl = _buildMusWebSocketUrl(host, port);
+            _musClearInstanceState(instId);
             _musDebug('connect request instance=' + instId + ' target=' + host + ':' + port + ' url=' + wsUrl);
             this._musConnect(instId, wsUrl);
 
         } else if (type === 1) {
             // SEND — raw content bytes (must be binary frame for websockify)
             var dataLen = this.exports.getMusPendingSendData(i); this._clearEx();
+            var strAddr = this.exports.getStringBufferAddress(); this._clearEx();
             var data = this._readBytes(strAddr, dataLen);
-            var ws = _musSockets[instId];
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                _musDebug('send instance=' + instId + ' bytes=' + dataLen + _musPreview(data));
-                ws.send(data.buffer);
-            } else {
-                _musDebug('send dropped instance=' + instId + ' readyState=' + (ws ? ws.readyState : 'missing') + ' bytes=' + dataLen + _musPreview(data));
-            }
+            _musSendOrQueue(instId, data, dataLen);
 
         } else if (type === 2) {
             // DISCONNECT
+            _musClearInstanceState(instId);
             var ws2 = _musSockets[instId];
             if (ws2) {
                 _musDebug('disconnect request instance=' + instId);
+                ws2.onopen = null;
+                ws2.onmessage = null;
+                ws2.onerror = null;
                 ws2.onclose = null; // prevent double-notification
                 ws2.close();
                 delete _musSockets[instId];
@@ -760,9 +810,79 @@ WasmEngine.prototype.pumpMusRequests = function() {
     this.exports.drainMusPending(); this._clearEx();
 };
 
+function _musSendOrQueue(instId, data, dataLen) {
+    var ws = _musSockets[instId];
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        _musPacketDebug('send instance=' + instId + ' bytes=' + dataLen + _musPreview(data));
+        ws.send(data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
+            ? data.buffer
+            : data.slice().buffer);
+        return;
+    }
+
+    if (!ws || ws.readyState !== WebSocket.CONNECTING) {
+        _musDebug('send dropped instance=' + instId
+            + ' readyState=' + (ws ? ws.readyState : 'missing')
+            + ' bytes=' + dataLen);
+        if (_musErrors[instId] === undefined) {
+            _musErrors[instId] = -2;
+        }
+        return;
+    }
+
+    var queue = _musPendingSends[instId];
+    if (!queue) {
+        queue = [];
+        _musPendingSends[instId] = queue;
+    }
+    if (queue.length >= 64) {
+        queue.shift();
+    }
+    queue.push(data.slice ? data.slice() : new Uint8Array(data));
+    _musDebug('send queued instance=' + instId
+        + ' readyState=' + (ws ? ws.readyState : 'missing')
+        + ' queued=' + queue.length
+        + ' bytes=' + dataLen);
+}
+
+function _musFlushQueuedSends(instId) {
+    var ws = _musSockets[instId];
+    var queue = _musPendingSends[instId];
+    if (!ws || ws.readyState !== WebSocket.OPEN || !queue || queue.length === 0) {
+        return;
+    }
+    _musDebug('flush queued sends instance=' + instId + ' count=' + queue.length);
+    while (queue.length > 0 && ws.readyState === WebSocket.OPEN) {
+        var data = queue.shift();
+        _musPacketDebug('send instance=' + instId + ' bytes=' + data.length + _musPreview(data));
+        ws.send(data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
+            ? data.buffer
+            : data.slice().buffer);
+    }
+    if (queue.length === 0) {
+        delete _musPendingSends[instId];
+    }
+}
+
 function _buildMusWebSocketUrl(host, port) {
+    var hostString = String(host || '').trim();
+    var portString = String(port || '').trim();
+    if (_musWebSocketUrl) {
+        return _musWebSocketUrl
+            .replace(/\{host\}/g, encodeURIComponent(hostString))
+            .replace(/\{port\}/g, encodeURIComponent(portString));
+    }
+    if (/^wss?:\/\//i.test(hostString)) {
+        try {
+            var url = new URL(hostString);
+            if (!url.port && port) url.port = String(port);
+            return url.href;
+        } catch(e) {
+            return hostString;
+        }
+    }
     var protocol = _shouldUseSecureMusWebSocket(host, port) ? 'wss' : 'ws';
-    return protocol + '://' + host + ':' + port;
+    return protocol + '://' + hostString + ':' + portString;
 }
 
 function _shouldUseSecureMusWebSocket(host, port) {
@@ -771,8 +891,7 @@ function _shouldUseSecureMusWebSocket(host, port) {
     if (_pageProtocol === 'https:' || normalizedPort === '443') {
         return true;
     }
-    return normalizedHost === 'verysecret.classichabbo.com'
-        && (normalizedPort === '30100' || normalizedPort === '39101');
+    return !!_musSecureHosts[normalizedHost];
 }
 
 /**
@@ -782,8 +901,12 @@ function _shouldUseSecureMusWebSocket(host, port) {
 WasmEngine.prototype._musConnect = function(instId, wsUrl) {
     // Close any existing connection for this instance
     if (_musSockets[instId]) {
-        _musSockets[instId].onclose = null;
-        _musSockets[instId].close();
+        var oldSocket = _musSockets[instId];
+        oldSocket.onopen = null;
+        oldSocket.onmessage = null;
+        oldSocket.onerror = null;
+        oldSocket.onclose = null;
+        oldSocket.close();
     }
 
     var ws;
@@ -800,6 +923,7 @@ WasmEngine.prototype._musConnect = function(instId, wsUrl) {
     ws.onopen = function() {
         _musDebug('open instance=' + instId + ' url=' + wsUrl);
         _musConnected[instId] = true;
+        _musFlushQueuedSends(instId);
     };
 
     ws.onmessage = function(evt) {
@@ -811,7 +935,7 @@ WasmEngine.prototype._musConnect = function(instId, wsUrl) {
         } else {
             data = new Uint8Array(evt.data);
         }
-        _musDebug('message instance=' + instId + ' bytes=' + data.length + _musPreview(data));
+        _musPacketDebug('message instance=' + instId + ' bytes=' + data.length + _musPreview(data));
         _musInbound[instId].push(data);
     };
 
@@ -819,6 +943,7 @@ WasmEngine.prototype._musConnect = function(instId, wsUrl) {
         _musDebug('close instance=' + instId + ' code=' + (evt && evt.code) + ' reason=' + (evt && evt.reason ? evt.reason : '') + ' wasClean=' + (evt && evt.wasClean));
         _musDisconnected[instId] = true;
         delete _musSockets[instId];
+        delete _musPendingSends[instId];
     };
 
     ws.onerror = function() {
@@ -880,15 +1005,16 @@ WasmEngine.prototype.pumpAudioCommands = function() {
 };
 
 /**
- * Deliver queued MUS events (connected/messages/disconnected/errors) to WASM.
- * Called at the start of each tick, before WASM tick().
+ * Deliver queued MUS events to WASM.
+ *
+ * WebSocket error/close events can be posted after the final data frame for the
+ * same TCP stream. Director scripts expect to process that data before seeing a
+ * terminal network condition, because handling the data may intentionally close
+ * or replace the connection. Keep terminal events behind same-instance inbound
+ * data for one tick so authored cleanup can run first.
  */
 WasmEngine.prototype.deliverMusEvents = function() {
     if (this._wasmDead) return;
-    var strAddr;
-    try {
-        strAddr = this.exports.getStringBufferAddress(); this._clearEx();
-    } catch(e) { return; }
 
     // Deliver connect notifications
     for (var id in _musConnected) {
@@ -898,38 +1024,67 @@ WasmEngine.prototype.deliverMusEvents = function() {
     }
     _musConnected = {};
 
-    // Deliver error notifications
-    for (var eid in _musErrors) {
-        try {
-            this.exports.musDeliverError(parseInt(eid), _musErrors[eid]); this._clearEx();
-        } catch(e) {}
-    }
-    _musErrors = {};
-
     // Deliver messages
+    var deliveredInboundFor = {};
     for (var mid in _musInbound) {
         var msgs = _musInbound[mid];
         var iid = parseInt(mid);
         for (var i = 0; i < msgs.length; i++) {
             var msgBytes = msgs[i];
-            var len = Math.min(msgBytes.length, 4096);
-            new Uint8Array(this._mem(), strAddr, len).set(msgBytes.subarray(0, len));
+            var len = msgBytes.length;
+            var strAddr;
+            try {
+                if (this.exports.ensureStringBufferCapacity) {
+                    strAddr = this.exports.ensureStringBufferCapacity(len); this._clearEx();
+                } else {
+                    strAddr = this.exports.getStringBufferAddress(); this._clearEx();
+                }
+            } catch(e) { return; }
+            new Uint8Array(this._mem(), strAddr, len).set(msgBytes);
             try {
                 this.exports.musDeliverMessage(iid, len); this._clearEx();
             } catch(e) {
                 self.postMessage({type:'error', msg:'[MUS] musDeliverMessage error: ' + e});
             }
         }
+        if (msgs.length > 0) {
+            deliveredInboundFor[mid] = true;
+        }
     }
     _musInbound = {};
 
+    // Deliver error notifications after data. Defer terminal events for
+    // instances that delivered data this tick; pumpMusRequests() may clear them
+    // if the script closes/reconnects while handling that data.
+    var remainingErrors = {};
+    var terminalDeliveredFor = {};
+    for (var eid in _musErrors) {
+        if (deliveredInboundFor[eid]) {
+            remainingErrors[eid] = _musErrors[eid];
+            continue;
+        }
+        try {
+            this.exports.musDeliverError(parseInt(eid), _musErrors[eid]); this._clearEx();
+            terminalDeliveredFor[eid] = true;
+        } catch(e) {}
+    }
+    _musErrors = remainingErrors;
+
     // Deliver disconnect notifications
+    var remainingDisconnected = {};
     for (var did in _musDisconnected) {
+        if (deliveredInboundFor[did]) {
+            remainingDisconnected[did] = true;
+            continue;
+        }
+        if (terminalDeliveredFor[did]) {
+            continue;
+        }
         try {
             this.exports.musDeliverDisconnected(parseInt(did)); this._clearEx();
         } catch(e) {}
     }
-    _musDisconnected = {};
+    _musDisconnected = remainingDisconnected;
 };
 
 // ============================================================
@@ -964,6 +1119,12 @@ self.onmessage = async function(e) {
                     _sharedFrameControl = new Int32Array(msg.sharedFrameControl);
                     _sharedFrameCapacity = msg.sharedFrameCapacity || _sharedFrameBytes.length;
                 }
+                _musWebSocketUrl = msg.musWebSocketUrl ? String(msg.musWebSocketUrl) : '';
+                _musSecureHosts = _buildLookupSet(msg.musSecureHosts);
+                _musTracePackets = !!msg.traceMusPackets;
+                var cacheBustSuffix = msg.cacheBust
+                    ? '?v=' + encodeURIComponent(String(msg.cacheBust))
+                    : '';
                 // Fallback: detect protocol from worker's own location
                 // (e.g. blob:https://... when loaded as a blob URL worker)
                 if (!_pageProtocol && self.location && self.location.href) {
@@ -984,6 +1145,9 @@ self.onmessage = async function(e) {
                 _tickNum = 0;
                 _networkSeq++;
                 _fetchQueue = [];
+                _fetchInFlight = 0;
+                _fetchInFlightByKey = {};
+                _musCloseAllSockets();
                 _jpegDecodeSeq++;
                 _jpegDecodeQueue = [];
                 _jpegDecodeInFlight = {};

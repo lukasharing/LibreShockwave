@@ -10,7 +10,7 @@ import java.util.Map;
 
 /**
  * Implementation of the Director Multiuser Xtra.
- * Provides network messaging for Lingo scripts (used by Habbo Hotel's MUS connection).
+ * Provides network messaging for Lingo scripts through Director's Multiuser Xtra API.
  *
  * Lingo usage:
  *   pXtra = new(xtra("Multiuser"))
@@ -22,6 +22,8 @@ import java.util.Map;
  *   tMsg = pXtra.getNetMessage()  -- inside callback
  */
 public class MultiuserXtra implements Xtra {
+
+    private static final int MAX_AUTOMATIC_CALLBACKS_PER_TICK = 1024;
 
     private final MultiuserNetBridge netBridge;
     private final ScriptCallback scriptCallback;
@@ -107,8 +109,15 @@ public class MultiuserXtra implements Xtra {
             List<MultiuserNetBridge.NetMessage> messages = netBridge.pollMessages(instanceId);
             state.messageQueue.addAll(messages);
 
-            // Process all pending messages
-            while (!state.messageQueue.isEmpty()) {
+            // Drain a whole network burst in this movie tick. Room state packets
+            // describe one simulation step; spreading them over frames serializes
+            // movements that the client expects to apply together.
+            for (int processed = 0;
+                 !state.messageQueue.isEmpty()
+                         && processed < MAX_AUTOMATIC_CALLBACKS_PER_TICK
+                         && state.callbackHandler != null
+                         && state.callbackTarget != null;
+                 processed++) {
                 state.currentMessage = state.messageQueue.remove(0);
                 try {
                     scriptCallback.invoke(state.callbackTarget, state.callbackHandler, List.of());
@@ -137,7 +146,9 @@ public class MultiuserXtra implements Xtra {
             Datum targetArg = args.get(1);
 
             if (handlerArg.isVoid() || targetArg.isVoid()) {
-                // Clear the handler (disconnect pattern)
+                // Director lets movies clear the callback without closing the
+                // socket. Connection lifetime is controlled by the Xtra instance
+                // or explicit disconnect/destroy paths, not by handler routing.
                 state.callbackHandler = null;
                 state.callbackTarget = null;
             } else {
@@ -156,6 +167,8 @@ public class MultiuserXtra implements Xtra {
             int port = args.get(3).toInt();
             state.host = host;
             state.port = port;
+            state.currentMessage = null;
+            state.messageQueue.clear();
             netBridge.requestConnect(instanceId, host, port);
         }
         return Datum.ZERO;

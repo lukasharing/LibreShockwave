@@ -1,12 +1,15 @@
 package com.libreshockwave.player.wasm;
 
 import com.libreshockwave.vm.datum.Datum;
+import com.libreshockwave.vm.DebugConfig;
 import com.libreshockwave.vm.xtra.MultiuserNetBridge;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Queue-based MultiuserNetBridge for WASM.
@@ -39,15 +42,15 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
     private final List<PendingRequest> pendingRequests = new ArrayList<>();
     private final Map<Integer, Boolean> connectedMap = new HashMap<>();
     private final Map<Integer, List<NetMessage>> messageQueues = new HashMap<>();
-    // Legacy keepalives can arrive while authored Lingo is still finishing crypto setup.
-    // Echoing that plaintext PONG after the server has enabled crypto closes the socket.
-    private final Map<Integer, Boolean> suppressNextPlaintextPong = new HashMap<>();
-    private static final int LEGACY_PONG_COMMAND = 196;
+    private final Set<Integer> closingInstances = new HashSet<>();
 
     // --- MultiuserNetBridge implementation ---
 
     @Override
     public void requestConnect(int instanceId, String host, int port) {
+        closingInstances.remove(instanceId);
+        connectedMap.remove(instanceId);
+        messageQueues.remove(instanceId);
         PendingRequest req = new PendingRequest(REQ_CONNECT, instanceId);
         req.host = host;
         req.port = port;
@@ -57,10 +60,6 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
     @Override
     public void requestSend(int instanceId, String senderID, String subject, Datum content) {
         String contentString = content.toStr();
-        if (shouldSuppressPlaintextPong(instanceId, contentString)) {
-            return;
-        }
-
         PendingRequest req = new PendingRequest(REQ_SEND, instanceId);
         req.senderID = senderID;
         req.subject = subject;
@@ -70,15 +69,16 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
 
     @Override
     public void requestDisconnect(int instanceId) {
+        closingInstances.add(instanceId);
+        messageQueues.remove(instanceId);
         PendingRequest req = new PendingRequest(REQ_DISCONNECT, instanceId);
         pendingRequests.add(req);
         connectedMap.remove(instanceId);
-        suppressNextPlaintextPong.remove(instanceId);
     }
 
     @Override
     public boolean isConnected(int instanceId) {
-        return connectedMap.getOrDefault(instanceId, false);
+        return Boolean.TRUE.equals(connectedMap.get(instanceId));
     }
 
     @Override
@@ -89,9 +89,9 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
 
     @Override
     public void destroyInstance(int instanceId) {
+        closingInstances.add(instanceId);
         connectedMap.remove(instanceId);
         messageQueues.remove(instanceId);
-        suppressNextPlaintextPong.remove(instanceId);
     }
 
     // --- JS polling API ---
@@ -111,61 +111,70 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
     // --- JS delivery API ---
 
     void notifyConnected(int instanceId) {
+        closingInstances.remove(instanceId);
         connectedMap.put(instanceId, true);
+        debug("connected instance=" + instanceId);
         // Director's Multiuser Xtra reports a successful connection with this
-        // exact system message. Habbo r31 waits for it before sending SSO.
+        // system message before authored scripts begin application traffic.
         queueMessage(instanceId, new NetMessage(0, "System", "ConnectToNetServer", new Datum.Str("")));
     }
 
     void notifyDisconnected(int instanceId) {
         connectedMap.remove(instanceId);
-        suppressNextPlaintextPong.remove(instanceId);
+        if (closingInstances.contains(instanceId)) {
+            debug("disconnected ignored for closing instance=" + instanceId);
+            return;
+        }
+        debug("disconnected instance=" + instanceId);
+        queueMessage(instanceId, new NetMessage(-2, "System", "ConnectionProblem", new Datum.Str("")));
     }
 
     void notifyError(int instanceId, int errorCode) {
+        connectedMap.remove(instanceId);
+        if (closingInstances.contains(instanceId)) {
+            debug("error ignored for closing instance=" + instanceId + " code=" + errorCode);
+            return;
+        }
+        debug("error instance=" + instanceId + " code=" + errorCode);
         queueMessage(instanceId, new NetMessage(errorCode, "System", "ConnectionProblem", new Datum.Str("")));
     }
 
     void deliverMessage(int instanceId, int errorCode, String senderID, String subject, String content) {
-        if (isLegacyPlaintextKeepalive(content)) {
-            suppressNextPlaintextPong.put(instanceId, true);
-        }
+        debug("message instance=" + instanceId + " bytes=" + (content != null ? content.length() : 0)
+                + " content=" + preview(content));
         queueMessage(instanceId, new NetMessage(errorCode, senderID, subject, new Datum.Str(content)));
     }
 
     private void queueMessage(int instanceId, NetMessage msg) {
+        debug("queue instance=" + instanceId + " error=" + msg.errorCode()
+                + " subject=" + msg.subject() + " content=" + preview(msg.content() != null ? msg.content().toStr() : null));
         messageQueues.computeIfAbsent(instanceId, k -> new ArrayList<>()).add(msg);
     }
 
-    private boolean shouldSuppressPlaintextPong(int instanceId, String content) {
-        if (!Boolean.TRUE.equals(suppressNextPlaintextPong.get(instanceId))) {
-            return false;
+    private static void debug(String message) {
+        if (DebugConfig.isDebugPlaybackEnabled()) {
+            System.out.println("[MUSBridge] " + message);
         }
-        if (!isLegacyPlaintextPong(content)) {
-            return false;
+    }
+
+    private static String preview(String content) {
+        if (content == null) return "<null>";
+        StringBuilder sb = new StringBuilder();
+        sb.append('"');
+        int limit = Math.min(content.length(), 32);
+        for (int i = 0; i < limit; i++) {
+            char c = content.charAt(i);
+            if (c >= 32 && c <= 126) {
+                sb.append(c);
+            } else {
+                sb.append("\\x");
+                String hex = Integer.toHexString(c & 0xff).toUpperCase();
+                if (hex.length() == 1) sb.append('0');
+                sb.append(hex);
+            }
         }
-        suppressNextPlaintextPong.remove(instanceId);
-        return true;
-    }
-
-    private static boolean isLegacyPlaintextKeepalive(String content) {
-        return content != null
-                && content.length() == 3
-                && content.charAt(0) == '@'
-                && content.charAt(1) == 'r'
-                && content.charAt(2) == 1;
-    }
-
-    private static boolean isLegacyPlaintextPong(String content) {
-        return content != null
-                && content.length() == 5
-                && content.charAt(0) == '@'
-                && content.charAt(1) == '@'
-                && content.charAt(2) == 'B'
-                && decodeShockwaveCommand(content.charAt(3), content.charAt(4)) == LEGACY_PONG_COMMAND;
-    }
-
-    private static int decodeShockwaveCommand(char high, char low) {
-        return ((high & 63) * 64) | (low & 63);
+        if (content.length() > limit) sb.append("...");
+        sb.append('"');
+        return sb.toString();
     }
 }
