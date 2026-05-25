@@ -755,8 +755,8 @@ WasmEngine.prototype.pumpNetworkFire = function() {
  *   type 1 = send    → send on existing WebSocket
  *   type 2 = disconnect → close WebSocket
  *
- * By default the WebSocket URL is built from the Lingo host/port, using wss://
- * for secure pages and for known TLS-only websocket endpoints.
+ * By default the WebSocket URL is built from the Lingo host/port, but
+ * websocket.mode can force ws:// or wss:// from the player options.
  */
 WasmEngine.prototype.pumpMusRequests = function() {
     if (this._wasmDead) return;
@@ -886,11 +886,18 @@ function _buildMusWebSocketUrl(host, port) {
 }
 
 function _shouldUseSecureMusWebSocket(host, port) {
-    var normalizedHost = String(host || '').toLowerCase();
+    var forcedMode = String((_params && _params['websocket.mode']) || '').toLowerCase();
+    if (forcedMode === 'wss') {
+        return true;
+    }
+    if (forcedMode === 'ws') {
+        return false;
+    }
     var normalizedPort = String(port || '');
     if (_pageProtocol === 'https:' || normalizedPort === '443') {
         return true;
     }
+    var normalizedHost = String(host || '').toLowerCase();
     return !!_musSecureHosts[normalizedHost];
 }
 
