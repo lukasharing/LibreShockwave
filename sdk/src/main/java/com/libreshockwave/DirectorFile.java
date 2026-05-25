@@ -185,6 +185,13 @@ public class DirectorFile {
         return getScriptLookup().getScriptType(script);
     }
 
+    /**
+     * Get the cast member name associated with a script chunk.
+     */
+    public String getScriptName(ScriptChunk script) {
+        return getScriptLookup().getScriptName(script);
+    }
+
     private ScriptLookup getScriptLookup() {
         if (scriptLookup == null) {
             scriptLookup = new ScriptLookup(scripts, allScriptContexts, castMembers);
@@ -260,7 +267,7 @@ public class DirectorFile {
 
 
     public <T extends Chunk> Optional<T> getChunk(ChunkId id, Class<T> type) {
-        Chunk chunk = chunks.get(id);
+        Chunk chunk = getChunk(id);
         if (type.isInstance(chunk)) {
             return Optional.of(type.cast(chunk));
         }

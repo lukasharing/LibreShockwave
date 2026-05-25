@@ -133,20 +133,7 @@ public record ScriptChunk(
      */
     public String getScriptName() {
         if (file == null) return "";
-
-        // Find the cast member that contains this script
-        for (CastMemberChunk member : file.getCastMembers()) {
-            if (member.isScript()) {
-                // Get the script chunk for this member and compare
-                ScriptChunk script = file.getScriptByContextId(member.scriptId());
-                if (script != null && script.id() == this.id) {
-                    String name = member.name();
-                    return name != null ? name : "";
-                }
-            }
-        }
-
-        return "";
+        return file.getScriptName(this);
     }
 
     /**

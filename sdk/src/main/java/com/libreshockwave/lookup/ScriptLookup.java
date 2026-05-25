@@ -3,8 +3,11 @@ package com.libreshockwave.lookup;
 import com.libreshockwave.chunks.CastMemberChunk;
 import com.libreshockwave.chunks.ScriptChunk;
 import com.libreshockwave.chunks.ScriptContextChunk;
+import com.libreshockwave.id.ChunkId;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Provides script lookup functionality.
@@ -15,6 +18,8 @@ public final class ScriptLookup {
     private final List<ScriptChunk> scripts;
     private final List<ScriptContextChunk> scriptContexts;
     private final List<CastMemberChunk> castMembers;
+    private Map<Integer, ScriptChunk> scriptByContextId;
+    private Map<ChunkId, CastMemberChunk> memberByScriptId;
 
     public ScriptLookup(List<ScriptChunk> scripts, List<ScriptContextChunk> scriptContexts,
                         List<CastMemberChunk> castMembers) {
@@ -30,22 +35,9 @@ public final class ScriptLookup {
      * @return The script chunk, or null if not found
      */
     public ScriptChunk getByContextId(int scriptId) {
-        // scriptId from cast members is 1-based, Lctx entries are 0-based
-        int index = scriptId - 1;
-
-        // Search through all script contexts (there can be one per cast library)
-        for (ScriptContextChunk ctx : scriptContexts) {
-            if (index >= 0 && index < ctx.entries().size()) {
-                var entry = ctx.entries().get(index);
-                if (entry.id().value() > 0) {
-                    for (ScriptChunk script : scripts) {
-                        if (script.id().equals(entry.id())) {
-                            return script;
-                        }
-                    }
-                }
-            }
-        }
+        ensureIndex();
+        ScriptChunk cached = scriptByContextId.get(scriptId);
+        if (cached != null) return cached;
 
         // Fallback: try direct match by ID (scriptId is 1-based context index)
         for (ScriptChunk script : scripts) {
@@ -65,27 +57,67 @@ public final class ScriptLookup {
      */
     public ScriptChunk.ScriptType getScriptType(ScriptChunk script) {
         if (script == null) return null;
+        ensureIndex();
 
-        // Find the cast member that references this script
-        // We need to find which Lctx index maps to this script's chunk ID,
-        // then find the cast member with that scriptId
-        for (int ctxIdx = 0; ctxIdx < scriptContexts.size(); ctxIdx++) {
-            ScriptContextChunk ctx = scriptContexts.get(ctxIdx);
+        CastMemberChunk member = memberByScriptId.get(script.id());
+        if (member != null) {
+            return member.getScriptType();
+        }
+
+        return null;
+    }
+
+    /**
+     * Get the cast member name associated with a script chunk.
+     */
+    public String getScriptName(ScriptChunk script) {
+        if (script == null) return "";
+        ensureIndex();
+
+        CastMemberChunk member = memberByScriptId.get(script.id());
+        if (member == null) {
+            return "";
+        }
+        String name = member.name();
+        return name != null ? name : "";
+    }
+
+    private void ensureIndex() {
+        if (scriptByContextId != null && memberByScriptId != null) {
+            return;
+        }
+
+        Map<ChunkId, ScriptChunk> scriptsById = new HashMap<>();
+        for (ScriptChunk script : scripts) {
+            scriptsById.put(script.id(), script);
+        }
+
+        Map<Integer, ScriptChunk> byContext = new HashMap<>();
+        for (ScriptContextChunk ctx : scriptContexts) {
             for (int i = 0; i < ctx.entries().size(); i++) {
-                if (ctx.entries().get(i).id().equals(script.id())) {
-                    // Found the entry - scriptId is 1-based
-                    int scriptId = i + 1;
-
-                    // Find the cast member with this scriptId
-                    for (CastMemberChunk member : castMembers) {
-                        if (member.isScript() && member.scriptId() == scriptId) {
-                            return member.getScriptType();
-                        }
-                    }
+                var entry = ctx.entries().get(i);
+                if (entry.id().value() <= 0) {
+                    continue;
+                }
+                ScriptChunk script = scriptsById.get(entry.id());
+                if (script != null) {
+                    byContext.putIfAbsent(i + 1, script);
                 }
             }
         }
 
-        return null;
+        Map<ChunkId, CastMemberChunk> byScript = new HashMap<>();
+        for (CastMemberChunk member : castMembers) {
+            if (!member.isScript()) {
+                continue;
+            }
+            ScriptChunk script = byContext.get(member.scriptId());
+            if (script != null) {
+                byScript.putIfAbsent(script.id(), member);
+            }
+        }
+
+        scriptByContextId = byContext;
+        memberByScriptId = byScript;
     }
 }
