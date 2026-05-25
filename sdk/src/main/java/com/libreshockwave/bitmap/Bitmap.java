@@ -197,10 +197,10 @@ public class Bitmap {
     }
 
     /**
-     * Director can recolor an existing image by assigning image.paletteRef
-     * after pixels have already been copied into it. Our runtime stores decoded
-     * ARGB pixels, so emulate that by remapping exact old-palette colors to the
-     * corresponding entries in the new palette.
+     * Director can recolor an existing indexed image by assigning image.paletteRef
+     * after pixels have already been copied into it. RGB/32-bit images already
+     * carry their authored colors, so changing paletteRef only updates metadata
+     * unless the image has explicit palette-index provenance.
      *
      * @return number of pixels changed
      */
@@ -231,6 +231,10 @@ public class Bitmap {
                 }
             }
             return changed;
+        }
+
+        if (bitDepth > 8) {
+            return 0;
         }
 
         if (oldPalette == null) {

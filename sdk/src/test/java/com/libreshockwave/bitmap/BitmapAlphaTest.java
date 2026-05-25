@@ -75,4 +75,22 @@ class BitmapAlphaTest {
         assertEquals(0xFFEEEEEE, bitmap.getPixel(0, 0));
         assertEquals(0xFFEEEEEE, bitmap.getPixel(1, 0));
     }
+
+    @Test
+    void remapPaletteOnThirtyTwoBitRgbImageKeepsAuthoredPixels() {
+        Palette oldPalette = new Palette(new int[] {0x000000, 0xFFFFFF}, "old");
+        Palette newPalette = new Palette(new int[] {0xFFFFC8, 0x000000}, "new");
+        Bitmap bitmap = new Bitmap(2, 1, 32, new int[] {
+                0xFF000000,
+                0xFFFFFFFF
+        });
+        bitmap.setImagePalette(oldPalette);
+
+        int changed = bitmap.remapImagePalette(newPalette);
+
+        assertEquals(0, changed);
+        assertSame(newPalette, bitmap.getImagePalette());
+        assertEquals(0xFF000000, bitmap.getPixel(0, 0));
+        assertEquals(0xFFFFFFFF, bitmap.getPixel(1, 0));
+    }
 }
