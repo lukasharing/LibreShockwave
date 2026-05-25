@@ -33,6 +33,40 @@ class PropListMethodDispatcherTest {
     }
 
     @Test
+    void getAtNumericStringDoesNotFallBackToNumericPropertyKey() {
+        Datum.PropList propList = new Datum.PropList();
+        propList.add(Datum.of(42), Datum.of("numeric"));
+
+        Datum result = PropListMethodDispatcher.dispatch(
+                propList, "getAt", List.of(Datum.of("42")));
+
+        assertTrue(result.isVoid());
+    }
+
+    @Test
+    void getAPropNumericKeyFallsBackToStringNumericPropertyKey() {
+        Datum.PropList propList = new Datum.PropList();
+        propList.add("0", Datum.of("hello-listener"), false);
+
+        Datum result = PropListMethodDispatcher.dispatch(
+                propList, "getAProp", List.of(Datum.of(0)));
+
+        assertEquals("hello-listener", result.toStr());
+    }
+
+    @Test
+    void getAtIntegerKeepsPositionalBehaviorWithStringNumericKey() {
+        Datum.PropList propList = new Datum.PropList();
+        propList.add("2", Datum.of("string-key"), false);
+        propList.add("second", Datum.of("positional"), true);
+
+        Datum result = PropListMethodDispatcher.dispatch(
+                propList, "getAt", List.of(Datum.of(2)));
+
+        assertEquals("positional", result.toStr());
+    }
+
+    @Test
     void getAtStringKeyNoFallbackWhenCaseDiffers() {
         // Cross-type fallback requires exact case: "Room_interface" != "room_interface"
         Datum.PropList propList = new Datum.PropList();
@@ -72,6 +106,159 @@ class PropListMethodDispatcherTest {
     }
 
     @Test
+    void getPropAtPreservesStringKeys() {
+        Datum.PropList propList = new Datum.PropList();
+        propList.add("1", Datum.of("Guest Rooms"), false);
+
+        Datum result = PropListMethodDispatcher.dispatch(
+                propList, "getPropAt", List.of(Datum.of(1)));
+
+        assertTrue(result instanceof Datum.Str);
+        assertEquals("1", result.toStr());
+    }
+
+    @Test
+    void getPropAtPreservesSymbolKeys() {
+        Datum.PropList propList = new Datum.PropList();
+        propList.add("category", Datum.of("Guest Rooms"), true);
+
+        Datum result = PropListMethodDispatcher.dispatch(
+                propList, "getPropAt", List.of(Datum.of(1)));
+
+        assertTrue(result instanceof Datum.Symbol);
+        assertEquals("category", result.toKeyName());
+    }
+
+    @Test
+    void setAPropAndGetPropAtPreservePointKeys() {
+        Datum.PropList propList = new Datum.PropList();
+        Datum.Point point = new Datum.Point(147, 69);
+
+        PropListMethodDispatcher.dispatch(
+                propList, "setAProp", List.of(point, Datum.of("prop-image")));
+
+        Datum key = PropListMethodDispatcher.dispatch(
+                propList, "getPropAt", List.of(Datum.of(1)));
+        Datum value = PropListMethodDispatcher.dispatch(
+                propList, "getAt", List.of(Datum.of(1)));
+        Datum keyedValue = PropListMethodDispatcher.dispatch(
+                propList, "getAt", List.of(new Datum.Point(147, 69)));
+
+        assertTrue(key instanceof Datum.Point);
+        assertEquals(point, key);
+        assertEquals("prop-image", value.toStr());
+        assertEquals("prop-image", keyedValue.toStr());
+    }
+
+    @Test
+    void getAtIntegerPrefersPositionOverNumericPropertyKey() {
+        Datum.PropList propList = new Datum.PropList();
+        propList.add("first", Datum.of("positional"), true);
+        propList.add(Datum.of(1), Datum.of("numeric-key"));
+
+        Datum result = PropListMethodDispatcher.dispatch(
+                propList, "getAt", List.of(Datum.of(1)));
+
+        assertEquals("positional", result.toStr());
+    }
+
+    @Test
+    void setAtIntegerOutOfRangeDoesNotCreateNumericPropertyKey() {
+        Datum.PropList propList = new Datum.PropList();
+
+        PropListMethodDispatcher.dispatch(
+                propList, "setAt", List.of(Datum.of(42), Datum.of("roller")));
+
+        assertEquals(0, propList.size());
+        Datum keyedValue = PropListMethodDispatcher.dispatch(
+                propList, "getAt", List.of(Datum.of(42)));
+        assertTrue(keyedValue.isVoid());
+    }
+
+    @Test
+    void setAtIntegerInRangeKeepsPositionalBehaviorWhenNoNumericKeyExists() {
+        Datum.PropList propList = new Datum.PropList();
+        propList.add("first", Datum.of("old"), true);
+
+        PropListMethodDispatcher.dispatch(
+                propList, "setAt", List.of(Datum.of(1), Datum.of("new")));
+
+        assertEquals(1, propList.size());
+        assertEquals("new", propList.getValue(0).toStr());
+        assertTrue(PropListMethodDispatcher.dispatch(
+                propList, "getAt", List.of(Datum.of("1"))).isVoid());
+    }
+
+    @Test
+    void getPropAndFindPosPreservePointKeys() {
+        Datum.PropList propList = new Datum.PropList();
+        Datum.Point point = new Datum.Point(14, 149);
+
+        PropListMethodDispatcher.dispatch(
+                propList, "setAProp", List.of(point, Datum.of("wall-prop")));
+
+        Datum keyedValue = PropListMethodDispatcher.dispatch(
+                propList, "getAProp", List.of(new Datum.Point(14, 149)));
+        Datum pos = PropListMethodDispatcher.dispatch(
+                propList, "findPos", List.of(new Datum.Point(14, 149)));
+
+        assertEquals("wall-prop", keyedValue.toStr());
+        assertEquals(1, pos.toInt());
+    }
+
+    @Test
+    void numericKeysDoNotCorruptPositionalMessageRegistration() {
+        Datum.PropList messageMap = new Datum.PropList();
+        messageMap.add(Datum.of(-1), Datum.symbol("handleDisconnect"));
+        messageMap.add(Datum.of(0), Datum.symbol("handleHello"));
+        messageMap.add(Datum.of(1), Datum.symbol("handleSecretKey"));
+        messageMap.add(Datum.of(2), Datum.symbol("handleRights"));
+
+        Datum.PropList listeners = new Datum.PropList();
+        for (int i = 1; i <= messageMap.size(); i++) {
+            Datum messageId = PropListMethodDispatcher.dispatch(
+                    messageMap, "getPropAt", List.of(Datum.of(i)));
+            Datum method = PropListMethodDispatcher.dispatch(
+                    messageMap, "getAt", List.of(Datum.of(i)));
+            PropListMethodDispatcher.dispatch(
+                    listeners, "setAProp", List.of(messageId, method));
+        }
+
+        assertEquals("handleDisconnect", listeners.getAProp(Datum.of(-1)).toKeyName());
+        assertEquals("handleHello", listeners.getAProp(Datum.of(0)).toKeyName());
+        assertEquals("handleSecretKey", listeners.getAProp(Datum.of(1)).toKeyName());
+        assertEquals("handleRights", listeners.getAProp(Datum.of(2)).toKeyName());
+    }
+
+    @Test
+    void getValueEvaluatesStoredStringByKey() {
+        Datum.PropList propList = new Datum.PropList();
+        propList.add("class.list", Datum.of("[Manager Template Class, Variable Container Class]"), false);
+
+        Datum result = PropListMethodDispatcher.dispatch(
+                propList, "getValue", List.of(Datum.of("class.list")));
+
+        Datum.List list = (Datum.List) result;
+        assertEquals("Manager Template Class", list.items().get(0).toStr());
+        assertEquals("Variable Container Class", list.items().get(1).toStr());
+    }
+
+    @Test
+    void getValueReturnsScalarValuesByKey() {
+        Datum.PropList propList = new Datum.PropList();
+        propList.add("connection.info.id", Datum.symbol("info"), false);
+        propList.add("client.textdata.utf8", Datum.of(1), false);
+
+        Datum symbolResult = PropListMethodDispatcher.dispatch(
+                propList, "getValue", List.of(Datum.of("connection.info.id")));
+        Datum intResult = PropListMethodDispatcher.dispatch(
+                propList, "getValue", List.of(Datum.of("client.textdata.utf8")));
+
+        assertEquals("info", symbolResult.toKeyName());
+        assertEquals(1, intResult.toInt());
+    }
+
+    @Test
     void deletePropRemovesOnlyMatchingKeyType() {
         Datum.PropList propList = new Datum.PropList();
         propList.add("room_interface", Datum.of(1), true);   // symbol #room_interface
@@ -83,5 +270,17 @@ class PropListMethodDispatcherTest {
         assertEquals(1, propList.size());
         assertTrue(propList.entries().getFirst().isSymbolKey());
         assertEquals(1, propList.entries().getFirst().value().toInt());
+    }
+
+    @Test
+    void deletePropNumericStringDoesNotRemoveNumericPropertyKey() {
+        Datum.PropList propList = new Datum.PropList();
+        propList.add(Datum.of(42), Datum.of("numeric"));
+
+        PropListMethodDispatcher.dispatch(
+                propList, "deleteProp", List.of(Datum.of("42")));
+
+        assertEquals(1, propList.size());
+        assertEquals("numeric", propList.getValue(0).toStr());
     }
 }

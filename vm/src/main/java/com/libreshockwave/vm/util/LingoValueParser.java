@@ -5,9 +5,7 @@ import com.libreshockwave.vm.LingoVM;
 import com.libreshockwave.vm.datum.Datum;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Shared parser for Director/Lingo string values interpreted through value(...).
@@ -298,7 +296,7 @@ public final class LingoValueParser {
             return Datum.list();
         }
         if (content.trim().equals(":")) {
-            return Datum.propList(new LinkedHashMap<>());
+            return Datum.propList();
         }
 
         List<String> elements = splitListElements(content);
@@ -309,25 +307,28 @@ public final class LingoValueParser {
         String first = elements.get(0).trim();
         boolean isPropList = isPropListElement(first);
         if (isPropList) {
-            Map<String, Datum> props = new LinkedHashMap<>();
+            Datum.PropList props = new Datum.PropList();
             for (String element : elements) {
                 element = element.trim();
                 int colonIdx = findPropListColon(element);
                 if (colonIdx > 0) {
                     String rawKey = element.substring(0, colonIdx).trim();
                     String key;
+                    boolean symbolKey = false;
                     if (rawKey.startsWith("#")) {
                         key = rawKey.substring(1).trim();
+                        symbolKey = true;
                     } else if (rawKey.startsWith("\"") && rawKey.endsWith("\"") && rawKey.length() >= 2) {
                         key = rawKey.substring(1, rawKey.length() - 1);
                     } else {
                         key = rawKey;
+                        symbolKey = true;
                     }
                     String valueStr = element.substring(colonIdx + 1).trim();
-                    props.put(key, parseWithPartial(valueStr, vm));
+                    props.add(key, parseWithPartial(valueStr, vm), symbolKey);
                 }
             }
-            return Datum.propList(props);
+            return props;
         }
 
         List<Datum> items = new ArrayList<>();
@@ -543,7 +544,23 @@ public final class LingoValueParser {
         if (token.startsWith("#") && token.length() > 1 && isIdentifier(token.substring(1))) {
             return Datum.symbol(token.substring(1));
         }
+        if (isBareStringLiteralToken(token)) {
+            return Datum.of(token);
+        }
         return null;
+    }
+
+    private static boolean isBareStringLiteralToken(String token) {
+        if (token == null || token.isBlank()) {
+            return false;
+        }
+        for (int i = 0; i < token.length(); i++) {
+            char c = token.charAt(i);
+            if (c == '[' || c == ']' || c == ':' || c == '(' || c == ')' || c == '"' || c == ',') {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static boolean isIdentifier(String value) {

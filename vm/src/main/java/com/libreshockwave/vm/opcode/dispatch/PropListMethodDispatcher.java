@@ -1,6 +1,8 @@
 package com.libreshockwave.vm.opcode.dispatch;
 
+import com.libreshockwave.vm.LingoVM;
 import com.libreshockwave.vm.datum.Datum;
+import com.libreshockwave.vm.util.LingoValueParser;
 
 import java.util.List;
 
@@ -29,7 +31,7 @@ public final class PropListMethodDispatcher {
         return switch (methodName.toLowerCase()) {
             case "getprop", "getpropref", "getaprop", "getproperty" -> {
                 if (args.isEmpty()) yield Datum.VOID;
-                Datum value = propList.getOrDefault(args.get(0).toKeyName(), Datum.VOID);
+                Datum value = propList.getAPropOrDefault(args.get(0), Datum.VOID);
                 // getProp(propList, #prop, index) -> propList.prop[index]
                 if (args.size() >= 2 && value instanceof Datum.List subList) {
                     int index = args.get(1).toInt() - 1; // 1-indexed
@@ -43,14 +45,14 @@ public final class PropListMethodDispatcher {
             case "setprop", "setaprop" -> {
                 if (args.size() < 2) yield Datum.VOID;
                 Datum keyDatum = args.get(0);
-                propList.put(keyDatum.toKeyName(), keyDatum instanceof Datum.Symbol, args.get(1));
+                propList.put(keyDatum, args.get(1));
                 yield Datum.VOID;
             }
             case "addprop" -> {
                 if (args.size() < 2) yield Datum.VOID;
                 Datum keyDatum = args.get(0);
                 // addProp always appends -> allows duplicate keys
-                propList.add(keyDatum.toKeyName(), args.get(1), keyDatum instanceof Datum.Symbol);
+                propList.add(keyDatum, args.get(1));
                 yield Datum.VOID;
             }
             case "getat" -> {
@@ -62,23 +64,35 @@ public final class PropListMethodDispatcher {
                 if (keyOrIndex instanceof Datum.Symbol sym) {
                     yield propList.getOrDefault(sym.name(), true, Datum.VOID);
                 }
-                int index = keyOrIndex.toInt() - 1;
-                if (index >= 0 && index < propList.size()) {
-                    yield propList.getValue(index);
+                if (keyOrIndex instanceof Datum.Int || keyOrIndex instanceof Datum.Float) {
+                    int index = keyOrIndex.toInt() - 1;
+                    if (index >= 0 && index < propList.size()) {
+                        yield propList.getValue(index);
+                    }
+                    yield Datum.VOID;
                 }
-                yield Datum.VOID;
+                Datum keyedValue = propList.get(keyOrIndex);
+                yield keyedValue != null ? keyedValue : Datum.VOID;
+            }
+            case "getvalue" -> {
+                if (args.isEmpty()) yield Datum.VOID;
+                Datum value = getPropListValueByKeyOrIndex(propList, args.get(0));
+                if (value == null || value.isVoid()) {
+                    yield Datum.VOID;
+                }
+                yield evaluateStoredValue(value);
             }
             case "setat" -> {
                 if (args.size() < 2) yield Datum.VOID;
                 Datum keyOrIndex = args.get(0);
                 Datum value = args.get(1);
-                if (keyOrIndex instanceof Datum.Int intKey) {
-                    int index = intKey.value() - 1;
+                if (keyOrIndex instanceof Datum.Int || keyOrIndex instanceof Datum.Float) {
+                    int index = keyOrIndex.toInt() - 1;
                     if (index >= 0 && index < propList.size()) {
                         propList.setValue(index, value);
                     }
                 } else {
-                    propList.putTyped(keyOrIndex.toKeyName(), keyOrIndex instanceof Datum.Symbol, value);
+                    propList.putTyped(keyOrIndex, value);
                 }
                 yield Datum.VOID;
             }
@@ -97,19 +111,19 @@ public final class PropListMethodDispatcher {
             case "deleteprop" -> {
                 if (args.isEmpty()) yield Datum.VOID;
                 Datum keyDatum = args.get(0);
-                propList.remove(keyDatum.toKeyName(), keyDatum instanceof Datum.Symbol);
+                propList.remove(keyDatum);
                 yield Datum.VOID;
             }
             case "findpos" -> {
                 if (args.isEmpty()) yield Datum.VOID;
-                int pos = propList.findPos(args.get(0).toKeyName());
+                int pos = propList.findPos(args.get(0));
                 yield pos > 0 ? Datum.of(pos) : Datum.VOID;
             }
             case "getpropat" -> {
                 if (args.isEmpty()) yield Datum.VOID;
                 int index = args.get(0).toInt() - 1;
                 if (index >= 0 && index < propList.size()) {
-                    yield Datum.symbol(propList.getKey(index));
+                    yield propList.getKeyDatum(index);
                 }
                 yield Datum.VOID;
             }
@@ -128,5 +142,33 @@ public final class PropListMethodDispatcher {
                     propList.deepCopy();
             default -> Datum.VOID;
         };
+    }
+
+    private static Datum getPropListValueByKeyOrIndex(Datum.PropList propList, Datum keyOrIndex) {
+        if (keyOrIndex instanceof Datum.Str s) {
+            return propList.getOrDefault(s.value(), false, Datum.VOID);
+        }
+        if (keyOrIndex instanceof Datum.Symbol sym) {
+            return propList.getOrDefault(sym.name(), true, Datum.VOID);
+        }
+        int index = keyOrIndex.toInt() - 1;
+        if (index >= 0 && index < propList.size()) {
+            return propList.getValue(index);
+        }
+        if (!(keyOrIndex instanceof Datum.Int)) {
+            return propList.getOrDefault(keyOrIndex, Datum.VOID);
+        }
+        return Datum.VOID;
+    }
+
+    private static Datum evaluateStoredValue(Datum value) {
+        if (value instanceof Datum.FieldText fieldText) {
+            return LingoValueParser.parseWithPartial(fieldText.value(), LingoVM.getCurrentVM());
+        }
+        if (value.isString()) {
+            Datum parsed = LingoValueParser.parseWithPartial(value.toStr(), LingoVM.getCurrentVM());
+            return parsed != null && !parsed.isVoid() ? parsed : value;
+        }
+        return value;
     }
 }

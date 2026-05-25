@@ -90,6 +90,23 @@ public sealed interface Datum {
         public String toString() { return "\"" + value + "\""; }
     }
 
+    /** Chunk accessor for styled text member ranges such as member.char[1..5]. */
+    record TextMemberChunkAccessor(int castLibNum, int memberNum, String chunkType) implements Datum {
+        @Override
+        public String toString() {
+            return "<text-member-chunk:" + castLibNum + "," + memberNum + "." + chunkType + ">";
+        }
+    }
+
+    /** Styled text range reference used by property assignments on member.char[...] ranges. */
+    record TextMemberRangeRef(int castLibNum, int memberNum, String chunkType, int start, int end) implements Datum {
+        @Override
+        public String toString() {
+            return "<text-member-range:" + castLibNum + "," + memberNum + "." + chunkType
+                    + "[" + start + ".." + end + "]>";
+        }
+    }
+
     /** Symbol value (like #symbol in Lingo) */
     record Symbol(String name) implements Datum {
         @Override
@@ -131,7 +148,35 @@ public sealed interface Datum {
      * {@link PropList#get(String, boolean)} so that symbol-keyed entries don't
      * collide with string-keyed entries.
      */
-    record PropEntry(String key, Datum value, boolean isSymbolKey) {}
+    record PropEntry(Datum keyDatum, String key, Datum value, boolean isSymbolKey) {
+        public PropEntry {
+            keyDatum = copyPropKey(keyDatum);
+            key = key != null ? key : "";
+            value = value != null ? value : Datum.VOID;
+        }
+
+        public PropEntry(String key, Datum value, boolean isSymbolKey) {
+            this(isSymbolKey ? Datum.symbol(key) : Datum.of(key), key, value, isSymbolKey);
+        }
+
+        public PropEntry(Datum keyDatum, Datum value) {
+            this(copyPropKey(keyDatum), keyDatum != null ? keyDatum.toKeyName() : "", value,
+                    keyDatum instanceof Symbol);
+        }
+    }
+
+    private static Datum copyPropKey(Datum key) {
+        if (key == null || key.isVoid()) {
+            return Datum.VOID;
+        }
+        if (key instanceof Point p) {
+            return new Point(p.x(), p.y());
+        }
+        if (key instanceof Rect r) {
+            return new Rect(r.left(), r.top(), r.right(), r.bottom());
+        }
+        return key;
+    }
 
     /**
      * Property list [#a: 1, #b: 2].
@@ -159,28 +204,27 @@ public sealed interface Datum {
          */
         public Datum get(String key) {
             for (PropEntry e : entries) {
-                if (e.key().equalsIgnoreCase(key)) return e.value();
+                if (isStringLikeKey(e) && sameTypeKeysEquivalent(e.key(), key)) return e.value();
             }
-            String alias = textColorAlias(key);
-            return alias != null ? get(alias) : null;
+            return null;
         }
 
         /**
          * Type-aware get with cross-type fallback: prefers same-type match
-         * (case-insensitive), falls back to cross-type match only on exact
-         * case.  Symbols in Director are always lowercase, so a mixed-case
-         * string like "Room_interface" should NOT match symbol "room_interface"
-         * — the case difference signals a different namespace.
+         * (case-insensitive), falls back to cross-type match on exact case or
+         * a hash-prefixed string ID. Symbols in Director are usually lowercase,
+         * so a mixed-case string like "Room_interface" should not match symbol
+         * "room_interface", while launcher/connection IDs like "#info" should
+         * still resolve when authored code later asks for #info.
          */
         public Datum get(String key, boolean isSymbolKey) {
             Datum fallback = null;
             for (PropEntry e : entries) {
-                if (e.key().equalsIgnoreCase(key)) {
+                if (isStringLikeKey(e) && sameTypeKeysEquivalent(e.key(), key)) {
                     if (e.isSymbolKey() == isSymbolKey) {
                         return e.value(); // same-type match — best, return immediately
                     }
-                    // Cross-type fallback only on exact case
-                    if (fallback == null && e.key().equals(key)) {
+                    if (fallback == null && crossTypeKeysEquivalent(e.key(), key)) {
                         fallback = e.value();
                     }
                 }
@@ -188,18 +232,41 @@ public sealed interface Datum {
             if (fallback != null) {
                 return fallback;
             }
-            String alias = textColorAlias(key);
-            return alias != null ? get(alias, isSymbolKey) : null;
+            return null;
         }
 
-        private static String textColorAlias(String key) {
-            if ("txtColor".equalsIgnoreCase(key)) {
-                return "color";
+        /** Get first value matching the typed key. Non-string keys are compared as values. */
+        public Datum get(Datum keyDatum) {
+            if (keyDatum == null) {
+                return null;
             }
-            if ("txtBgColor".equalsIgnoreCase(key)) {
-                return "bgColor";
+            if (keyDatum instanceof Symbol sym) {
+                return get(sym.name(), true);
+            }
+            if (keyDatum instanceof Str str) {
+                return get(str.value(), false);
+            }
+            for (PropEntry e : entries) {
+                if (!(e.keyDatum() instanceof Symbol) && !(e.keyDatum() instanceof Str)
+                        && e.keyDatum().lingoEquals(keyDatum)) {
+                    return e.value();
+                }
             }
             return null;
+        }
+
+        /**
+         * Director's getaProp/setaProp path is property-oriented, not positional.
+         * Some movies encode numeric protocol ids as string keys, then look them up
+         * with numeric message ids. Keep getAt's positional semantics separate, but
+         * allow getaProp(0) to find a property authored as "0".
+         */
+        public Datum getAProp(Datum keyDatum) {
+            Datum value = get(keyDatum);
+            if (value != null) {
+                return value;
+            }
+            return getNumericDatumAsStringKey(keyDatum);
         }
 
         /** Get first value matching key, or default if not found. */
@@ -214,23 +281,33 @@ public sealed interface Datum {
             return v != null ? v : defaultVal;
         }
 
+        /** Typed getOrDefault. */
+        public Datum getOrDefault(Datum keyDatum, Datum defaultVal) {
+            Datum v = get(keyDatum);
+            return v != null ? v : defaultVal;
+        }
+
+        /** Typed getaProp lookup with numeric-string fallback. */
+        public Datum getAPropOrDefault(Datum keyDatum, Datum defaultVal) {
+            Datum v = getAProp(keyDatum);
+            return v != null ? v : defaultVal;
+        }
+
         /**
-         * Type-aware put with cross-type fallback: prefers same-type match
-         * (case-insensitive), falls back to cross-type match only on exact
-         * case, then creates new entry.
-         * Mirrors the fallback behaviour of {@link #get(String, boolean)}.
+         * Type-aware put with cross-type fallback: prefers same-type match,
+         * falls back to cross-type match on exact case or a hash-prefixed
+         * string ID, then creates a new entry. Mirrors {@link #get(String, boolean)}.
          */
         public void put(String key, boolean isSymbolKey, Datum value) {
             int crossTypeIdx = -1;
             for (int i = 0; i < entries.size(); i++) {
-                if (entries.get(i).key().equalsIgnoreCase(key)) {
+                if (isStringLikeKey(entries.get(i)) && sameTypeKeysEquivalent(entries.get(i).key(), key)) {
                     if (entries.get(i).isSymbolKey() == isSymbolKey) {
                         // Same-type match — best, update immediately
-                        entries.set(i, new PropEntry(entries.get(i).key(), value, isSymbolKey));
+                        entries.set(i, new PropEntry(entries.get(i).keyDatum(), entries.get(i).key(), value, isSymbolKey));
                         return;
                     }
-                    // Cross-type fallback only on exact case
-                    if (crossTypeIdx < 0 && entries.get(i).key().equals(key)) {
+                    if (crossTypeIdx < 0 && crossTypeKeysEquivalent(entries.get(i).key(), key)) {
                         crossTypeIdx = i;
                     }
                 }
@@ -238,10 +315,31 @@ public sealed interface Datum {
             if (crossTypeIdx >= 0) {
                 // Cross-type fallback — update existing entry, preserve its type
                 PropEntry old = entries.get(crossTypeIdx);
-                entries.set(crossTypeIdx, new PropEntry(old.key(), value, old.isSymbolKey()));
+                entries.set(crossTypeIdx, new PropEntry(old.keyDatum(), old.key(), value, old.isSymbolKey()));
                 return;
             }
             entries.add(new PropEntry(key, value, isSymbolKey));
+        }
+
+        /** Typed put preserving arbitrary property keys such as point(...) values. */
+        public void put(Datum keyDatum, Datum value) {
+            if (keyDatum instanceof Symbol sym) {
+                put(sym.name(), true, value);
+                return;
+            }
+            if (keyDatum instanceof Str str) {
+                put(str.value(), false, value);
+                return;
+            }
+            for (int i = 0; i < entries.size(); i++) {
+                PropEntry old = entries.get(i);
+                if (!(old.keyDatum() instanceof Symbol) && !(old.keyDatum() instanceof Str)
+                        && old.keyDatum().lingoEquals(keyDatum)) {
+                    entries.set(i, new PropEntry(old.keyDatum(), old.key(), value, old.isSymbolKey()));
+                    return;
+                }
+            }
+            entries.add(new PropEntry(keyDatum, value));
         }
 
         /**
@@ -252,9 +350,10 @@ public sealed interface Datum {
         public void putTyped(String key, boolean isSymbolKey, Datum value) {
             // Same-type match only: #foo and "foo" are different keys in Director
             for (int i = 0; i < entries.size(); i++) {
-                if (entries.get(i).isSymbolKey() == isSymbolKey
-                        && entries.get(i).key().equalsIgnoreCase(key)) {
-                    entries.set(i, new PropEntry(entries.get(i).key(), value, isSymbolKey));
+                if (isStringLikeKey(entries.get(i))
+                        && entries.get(i).isSymbolKey() == isSymbolKey
+                        && sameTypeKeysEquivalent(entries.get(i).key(), key)) {
+                    entries.set(i, new PropEntry(entries.get(i).keyDatum(), entries.get(i).key(), value, isSymbolKey));
                     return;
                 }
             }
@@ -262,49 +361,113 @@ public sealed interface Datum {
             entries.add(new PropEntry(key, value, isSymbolKey));
         }
 
+        /** Typed put with no string/symbol cross-type fallback. */
+        public void putTyped(Datum keyDatum, Datum value) {
+            if (keyDatum instanceof Symbol sym) {
+                putTyped(sym.name(), true, value);
+                return;
+            }
+            if (keyDatum instanceof Str str) {
+                putTyped(str.value(), false, value);
+                return;
+            }
+            for (int i = 0; i < entries.size(); i++) {
+                PropEntry old = entries.get(i);
+                if (!(old.keyDatum() instanceof Symbol) && !(old.keyDatum() instanceof Str)
+                        && old.keyDatum().lingoEquals(keyDatum)) {
+                    entries.set(i, new PropEntry(old.keyDatum(), old.key(), value, old.isSymbolKey()));
+                    return;
+                }
+            }
+            entries.add(new PropEntry(keyDatum, value));
+        }
+
         /** Always append — allows duplicate keys (Director's addProp behavior). */
         public void add(String key, Datum value, boolean isSymbolKey) {
             entries.add(new PropEntry(key, value, isSymbolKey));
         }
 
+        /** Always append a typed key — allows duplicate keys (Director's addProp behavior). */
+        public void add(Datum keyDatum, Datum value) {
+            entries.add(new PropEntry(keyDatum, value));
+        }
+
         /** Remove first entry matching key (case-insensitive, type-unaware). */
         public void remove(String key) {
+            removeStringKey(key, null);
+        }
+
+        /**
+         * Type-aware remove with exact-case/hash-ID cross-type fallback.
+         * Mirrors the lookup rules used by get(String, boolean).
+         */
+        public void remove(String key, boolean isSymbolKey) {
+            removeStringKey(key, isSymbolKey);
+        }
+
+        /** Remove first entry matching the typed key. */
+        public void remove(Datum keyDatum) {
+            if (keyDatum == null) {
+                return;
+            }
+            if (keyDatum instanceof Symbol sym) {
+                remove(sym.name(), true);
+                return;
+            }
+            if (keyDatum instanceof Str str) {
+                remove(str.value(), false);
+                return;
+            }
             for (int i = 0; i < entries.size(); i++) {
-                if (entries.get(i).key().equalsIgnoreCase(key)) {
+                PropEntry old = entries.get(i);
+                if (!(old.keyDatum() instanceof Symbol) && !(old.keyDatum() instanceof Str)
+                        && old.keyDatum().lingoEquals(keyDatum)) {
                     entries.remove(i);
                     return;
                 }
             }
         }
 
-        /**
-         * Type-aware remove with exact-case cross-type fallback.
-         * Mirrors the lookup rules used by get(String, boolean) so callers can
-         * preserve symbol/string namespaces without breaking legacy exact-case
-         * cleanup paths.
-         */
-        public void remove(String key, boolean isSymbolKey) {
+        private boolean removeStringKey(String key, Boolean isSymbolKey) {
             int crossTypeIdx = -1;
             for (int i = 0; i < entries.size(); i++) {
-                if (entries.get(i).key().equalsIgnoreCase(key)) {
-                    if (entries.get(i).isSymbolKey() == isSymbolKey) {
+                if (isStringLikeKey(entries.get(i)) && sameTypeKeysEquivalent(entries.get(i).key(), key)) {
+                    if (isSymbolKey == null || entries.get(i).isSymbolKey() == isSymbolKey) {
                         entries.remove(i);
-                        return;
+                        return true;
                     }
-                    if (crossTypeIdx < 0 && entries.get(i).key().equals(key)) {
+                    if (crossTypeIdx < 0 && crossTypeKeysEquivalent(entries.get(i).key(), key)) {
                         crossTypeIdx = i;
                     }
                 }
             }
             if (crossTypeIdx >= 0) {
                 entries.remove(crossTypeIdx);
+                return true;
+            }
+            return false;
+        }
+
+        private void removeNumericStringKey(String key) {
+            Integer numericKey = parseIntegerKey(key);
+            if (numericKey == null) {
+                return;
+            }
+            Datum numericDatum = Datum.of(numericKey);
+            for (int i = 0; i < entries.size(); i++) {
+                PropEntry e = entries.get(i);
+                if (!(e.keyDatum() instanceof Symbol) && !(e.keyDatum() instanceof Str)
+                        && e.keyDatum().lingoEquals(numericDatum)) {
+                    entries.remove(i);
+                    return;
+                }
             }
         }
 
         /** Check if any entry has this key (case-insensitive). */
         public boolean containsKey(String key) {
             for (PropEntry e : entries) {
-                if (e.key().equalsIgnoreCase(key)) return true;
+                if (isStringLikeKey(e) && sameTypeKeysEquivalent(e.key(), key)) return true;
             }
             return false;
         }
@@ -319,10 +482,16 @@ public sealed interface Datum {
             return entries.get(index).key();
         }
 
+        /** Get key at position (0-based), preserving Director's string/symbol key type. */
+        public Datum getKeyDatum(int index) {
+            PropEntry entry = entries.get(index);
+            return copyPropKey(entry.keyDatum());
+        }
+
         /** Set value at position (0-based), preserving the key. */
         public void setValue(int index, Datum value) {
             PropEntry old = entries.get(index);
-            entries.set(index, new PropEntry(old.key(), value, old.isSymbolKey()));
+            entries.set(index, new PropEntry(old.keyDatum(), old.key(), value, old.isSymbolKey()));
         }
 
         /** Remove entry at position (0-based). */
@@ -333,9 +502,130 @@ public sealed interface Datum {
         /** Find 1-based position of key (case-insensitive), or 0 if not found. */
         public int findPos(String key) {
             for (int i = 0; i < entries.size(); i++) {
-                if (entries.get(i).key().equalsIgnoreCase(key)) return i + 1;
+                if (isStringLikeKey(entries.get(i)) && sameTypeKeysEquivalent(entries.get(i).key(), key)) return i + 1;
             }
             return 0;
+        }
+
+        /** Find 1-based position of a typed key, preserving point/rect keys. */
+        public int findPos(Datum keyDatum) {
+            if (keyDatum instanceof Symbol sym) {
+                return findPos(sym.name(), true);
+            }
+            if (keyDatum instanceof Str str) {
+                return findPos(str.value(), false);
+            }
+            for (int i = 0; i < entries.size(); i++) {
+                PropEntry e = entries.get(i);
+                if (!(e.keyDatum() instanceof Symbol) && !(e.keyDatum() instanceof Str)
+                        && e.keyDatum().lingoEquals(keyDatum)) {
+                    return i + 1;
+                }
+            }
+            return 0;
+        }
+
+        /** Find 1-based position of a string/symbol key with type awareness. */
+        public int findPos(String key, boolean isSymbolKey) {
+            for (int i = 0; i < entries.size(); i++) {
+                PropEntry e = entries.get(i);
+                if (isStringLikeKey(e) && e.isSymbolKey() == isSymbolKey
+                        && sameTypeKeysEquivalent(e.key(), key)) {
+                    return i + 1;
+                }
+            }
+            return 0;
+        }
+
+        private static boolean isStringLikeKey(PropEntry entry) {
+            return entry.keyDatum() instanceof Symbol || entry.keyDatum() instanceof Str;
+        }
+
+        private static boolean sameTypeKeysEquivalent(String left, String right) {
+            if (left == null || right == null) {
+                return left == right;
+            }
+            if (left.equalsIgnoreCase(right)) {
+                return true;
+            }
+            return stripSymbolPrefix(left).equalsIgnoreCase(stripSymbolPrefix(right));
+        }
+
+        private static boolean crossTypeKeysEquivalent(String left, String right) {
+            if (left == null || right == null) {
+                return left == right;
+            }
+            if (left.equals(right)) {
+                return true;
+            }
+            return hasSymbolPrefix(left) || hasSymbolPrefix(right)
+                    ? stripSymbolPrefix(left).equalsIgnoreCase(stripSymbolPrefix(right))
+                    : false;
+        }
+
+        private static boolean hasSymbolPrefix(String key) {
+            return key != null && key.length() > 1 && key.charAt(0) == '#';
+        }
+
+        private static String stripSymbolPrefix(String key) {
+            return hasSymbolPrefix(key)
+                    ? key.substring(1)
+                    : key;
+        }
+
+        private Datum getNumericStringKey(String key) {
+            int pos = findNumericStringKeyPos(key);
+            return pos > 0 ? entries.get(pos - 1).value() : null;
+        }
+
+        private Datum getNumericDatumAsStringKey(Datum keyDatum) {
+            if (!(keyDatum instanceof Int i)) {
+                return null;
+            }
+            String key = String.valueOf(i.value());
+            for (PropEntry e : entries) {
+                if (isStringLikeKey(e) && sameTypeKeysEquivalent(e.key(), key)) {
+                    return e.value();
+                }
+            }
+            return null;
+        }
+
+        private int findNumericStringKeyPos(String key) {
+            Integer numericKey = parseIntegerKey(key);
+            if (numericKey == null) {
+                return 0;
+            }
+            Datum numericDatum = Datum.of(numericKey);
+            for (int i = 0; i < entries.size(); i++) {
+                PropEntry e = entries.get(i);
+                if (!(e.keyDatum() instanceof Symbol) && !(e.keyDatum() instanceof Str)
+                        && e.keyDatum().lingoEquals(numericDatum)) {
+                    return i + 1;
+                }
+            }
+            return 0;
+        }
+
+        private static Integer parseIntegerKey(String key) {
+            if (key == null || key.isEmpty()) {
+                return null;
+            }
+            int start = key.charAt(0) == '-' || key.charAt(0) == '+' ? 1 : 0;
+            if (start == key.length()) {
+                return null;
+            }
+            for (int i = start; i < key.length(); i++) {
+                char c = key.charAt(i);
+                if (c < '0' || c > '9') {
+                    return null;
+                }
+            }
+            try {
+                return Integer.parseInt(key);
+            } catch (NumberFormatException e) {
+                return null;
+            }
         }
 
         @Override
@@ -368,14 +658,18 @@ public sealed interface Datum {
     }
 
     /** Cast member reference */
-    record CastMemberRef(CastLibId castLib, MemberId member) implements Datum {
+    record CastMemberRef(CastLibId castLib, MemberId member, boolean mirrored) implements Datum {
         /** Safe factory: returns VOID only for invalid castLib or negative member numbers. */
         public static Datum of(int castLib, int member) {
+            return of(castLib, member, false);
+        }
+        public static Datum of(int castLib, int member, boolean mirrored) {
             if (castLib < 1 || member < 0) return VOID;
-            return new CastMemberRef(new CastLibId(castLib), new MemberId(member));
+            return new CastMemberRef(new CastLibId(castLib), new MemberId(member), mirrored);
         }
         public int castLibNum() { return castLib.value(); }
         public int memberNum() { return member.value(); }
+        public boolean isMirrored() { return mirrored; }
         @Override
         public String toString() { return "member(" + member.value() + ", " + castLib.value() + ")"; }
     }
@@ -905,6 +1199,8 @@ public sealed interface Datum {
             case Float f -> f;
             case Str s -> s;
             case FieldText ft -> ft;
+            case TextMemberChunkAccessor tmca -> tmca;
+            case TextMemberRangeRef tmrr -> tmrr;
             case Symbol sym -> sym;
             case Point p -> new Point(p.x(), p.y());
             case Rect r -> new Rect(r.left(), r.top(), r.right(), r.bottom());
@@ -937,7 +1233,8 @@ public sealed interface Datum {
             case PropList pl -> {
                 java.util.List<PropEntry> copiedEntries = new ArrayList<>(pl.entries().size());
                 for (PropEntry entry : pl.entries()) {
-                    copiedEntries.add(new PropEntry(entry.key(), entry.value().deepCopy(), entry.isSymbolKey()));
+                    copiedEntries.add(new PropEntry(entry.keyDatum().deepCopy(), entry.key(),
+                            entry.value().deepCopy(), entry.isSymbolKey()));
                 }
                 yield new PropList(copiedEntries);
             }

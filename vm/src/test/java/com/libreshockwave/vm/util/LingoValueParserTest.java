@@ -24,6 +24,22 @@ class LingoValueParserTest {
     }
 
     @Test
+    void parsesFurniturePropsWithQuotedLayerKeysAndSymbolProperties() {
+        Datum parsed = LingoValueParser.parseWithPartial(
+                "[\"a\": [#blend: 80], \"b\": [#ink: 33, #blend:0], \"c\": [#ink: 41], \"d\": [#ink: 36]]",
+                new LingoVM(null));
+
+        assertInstanceOf(Datum.PropList.class, parsed);
+        Datum.PropList props = (Datum.PropList) parsed;
+
+        assertFalse(props.entries().get(0).isSymbolKey(), "quoted layer names remain string keys");
+        Datum.PropList layerB = assertInstanceOf(Datum.PropList.class, props.get("b", false));
+        assertTrue(layerB.entries().get(0).isSymbolKey(), "#ink remains a symbol key");
+        assertEquals(33, layerB.get("ink", true).toInt());
+        assertEquals(0, layerB.get("blend", true).toInt());
+    }
+
+    @Test
     void parsesBareKeyNestedPropListsUsedByDynamicAssetData() {
         String source = "[\r" +
                 "states:[1,2],\r" +
@@ -60,6 +76,19 @@ class LingoValueParserTest {
     void parsesFlatQuotedStringListsUsedBySystemPropsClassVariables() {
         Datum parsed = LingoValueParser.parseWithPartial(
                 "[\"Manager Template Class\",\"Variable Container Class\"]",
+                new LingoVM(null));
+
+        assertInstanceOf(Datum.List.class, parsed);
+        Datum.List list = (Datum.List) parsed;
+        assertEquals(2, list.items().size());
+        assertEquals("Manager Template Class", list.items().get(0).toStr());
+        assertEquals("Variable Container Class", list.items().get(1).toStr());
+    }
+
+    @Test
+    void parsesBareStringListsUsedBySystemPropsClassVariables() {
+        Datum parsed = LingoValueParser.parseWithPartial(
+                "[Manager Template Class, Variable Container Class]",
                 new LingoVM(null));
 
         assertInstanceOf(Datum.List.class, parsed);

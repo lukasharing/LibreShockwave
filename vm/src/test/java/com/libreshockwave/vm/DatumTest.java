@@ -151,13 +151,22 @@ class DatumTest {
     }
 
     @Test
-    void testPropListTextColorAliases() {
+    void testPropListDoesNotAliasWindowTextColors() {
         Datum.PropList pl = new Datum.PropList();
         pl.add("color", Datum.of(0xEEEEEE), true);
         pl.add("bgColor", Datum.of(0x6794A7), true);
 
-        assertEquals(0xEEEEEE, pl.get("txtColor", true).toInt());
-        assertEquals(0x6794A7, pl.get("txtBgColor", true).toInt());
+        assertNull(pl.get("txtColor", true));
+        assertNull(pl.get("txtBgColor", true));
+    }
+
+    @Test
+    void testPropListDoesNotAliasFixedLineSpaceToLineHeight() {
+        Datum.PropList pl = new Datum.PropList();
+        pl.add("lineHeight", Datum.of(10), true);
+
+        assertNull(pl.get("fixedLineSpace"));
+        assertNull(pl.get("fixedLineSpace", true));
     }
 
     @Test
@@ -195,6 +204,24 @@ class DatumTest {
             }
         }
         assertTrue(found, "Symbol #Info should match string \"info\" in list search");
+    }
+
+    @Test
+    void testPropListMatchesHashPrefixedConnectionIds() {
+        Datum.PropList pl = new Datum.PropList();
+        pl.putTyped("#info", false, Datum.of("connection"));
+
+        assertEquals("connection", pl.get("info", true).toStr());
+        assertEquals(1, pl.findPos("info"));
+        assertTrue(pl.containsKey("info"));
+    }
+
+    @Test
+    void testPropListKeepsMixedCaseStringNamespaceSeparateFromSymbols() {
+        Datum.PropList pl = new Datum.PropList();
+        pl.putTyped("Room_interface", false, Datum.of("window"));
+
+        assertNull(pl.get("room_interface", true));
     }
 
     @Test
