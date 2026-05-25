@@ -5,6 +5,8 @@ import com.libreshockwave.id.InkMode;
 import com.libreshockwave.player.render.pipeline.FrameSnapshot;
 import com.libreshockwave.player.render.pipeline.RenderSprite;
 
+import java.util.Arrays;
+
 /**
  * Pure-Java software renderer that composites a FrameSnapshot into an ARGB int[] buffer.
  * No AWT dependency — works in WASM via TeaVM and anywhere else.
@@ -17,12 +19,35 @@ public final class SoftwareFrameRenderer {
      * Render a FrameSnapshot to a Bitmap using pure int[] compositing.
      */
     public static Bitmap renderFrame(FrameSnapshot snapshot, int stageWidth, int stageHeight) {
+        if (stageWidth <= 0 || stageHeight <= 0
+                || (long) stageWidth * (long) stageHeight > Integer.MAX_VALUE) {
+            return new Bitmap(1, 1, 32, new int[]{0xFF000000});
+        }
         int pixelCount = stageWidth * stageHeight;
         int[] argb = new int[pixelCount];
+        renderFrameInto(snapshot, stageWidth, stageHeight, argb);
+        return new Bitmap(stageWidth, stageHeight, 32, argb);
+    }
+
+    /**
+     * Render a FrameSnapshot into a caller-owned ARGB buffer.
+     * This lets the WASM renderer reuse its stage buffer instead of allocating
+     * a full-size temporary bitmap every frame.
+     */
+    public static void renderFrameInto(FrameSnapshot snapshot, int stageWidth, int stageHeight, int[] argb) {
+        if (snapshot == null || argb == null || stageWidth <= 0 || stageHeight <= 0
+                || (long) stageWidth * (long) stageHeight > Integer.MAX_VALUE) {
+            return;
+        }
+        int pixelCount = stageWidth * stageHeight;
+        if (argb.length < pixelCount) {
+            return;
+        }
 
         // Match AwtFrameRenderer behavior: stageImage replaces background, not composited on top
         Bitmap stageImage = snapshot.stageImage();
         if (stageImage != null) {
+            Arrays.fill(argb, 0, pixelCount, 0);
             // Copy stageImage pixels directly (same as AWT drawImage with no bg fill)
             int[] srcPixels = stageImage.getPixels();
             int srcW = stageImage.getWidth();
@@ -30,7 +55,10 @@ public final class SoftwareFrameRenderer {
             if (srcPixels != null) {
                 for (int y = 0; y < Math.min(srcH, stageHeight); y++) {
                     for (int x = 0; x < Math.min(srcW, stageWidth); x++) {
-                        argb[y * stageWidth + x] = srcPixels[y * srcW + x];
+                        int srcIdx = y * srcW + x;
+                        if (srcIdx >= 0 && srcIdx < srcPixels.length) {
+                            argb[y * stageWidth + x] = srcPixels[srcIdx];
+                        }
                     }
                 }
             }
@@ -44,38 +72,49 @@ public final class SoftwareFrameRenderer {
 
         // 3. Composite each visible sprite in order
         for (RenderSprite sprite : snapshot.sprites()) {
-            if (!sprite.isVisible()) continue;
-
-            Bitmap baked = sprite.getBakedBitmap();
-            if (baked == null) continue;
-            if (baked.getWidth() <= 0 || baked.getHeight() <= 0) continue;
-            if (baked.getPixels() == null || baked.getPixels().length == 0) continue;
-
-            int sx = sprite.getX();
-            int sy = sprite.getY();
-            int sw = sprite.getWidth() > 0 ? sprite.getWidth() : baked.getWidth();
-            int sh = sprite.getHeight() > 0 ? sprite.getHeight() : baked.getHeight();
-            int blend = sprite.getBlend();
-            InkMode ink = sprite.getInkMode();
-            boolean flipH = sprite.isFlipH() ^ sprite.hasDirectorHorizontalMirror();
-            boolean flipV = sprite.isFlipV();
-
-            if (sw == baked.getWidth() && sh == baked.getHeight()) {
-                blitBitmap(argb, stageWidth, stageHeight,
-                        baked.getPixels(), baked.getWidth(), baked.getHeight(),
-                        sx, sy, blend, ink, flipH, flipV);
-            } else {
-                blitBitmapScaled(argb, stageWidth, stageHeight,
-                        baked.getPixels(), baked.getWidth(), baked.getHeight(),
-                        sx, sy, sw, sh, blend, ink, flipH, flipV);
+            try {
+                compositeSprite(argb, stageWidth, stageHeight, sprite);
+            } catch (Throwable e) {
+                System.err.println("[SoftwareFrameRenderer] skipped sprite channel="
+                        + sprite.getChannel()
+                        + " member=" + sprite.getMemberName()
+                        + " size=" + sprite.getWidth() + "x" + sprite.getHeight()
+                        + " error=" + e.getClass().getSimpleName()
+                        + (e.getMessage() != null ? ": " + e.getMessage() : ""));
             }
         }
 
         // Stage border disabled: Director Shockwave player in browser does not
         // draw a border around the stage — only the standalone projector does.
         // drawStageBorder(argb, stageWidth, stageHeight, 0xFF000000);
+    }
 
-        return new Bitmap(stageWidth, stageHeight, 32, argb);
+    private static void compositeSprite(int[] argb, int stageWidth, int stageHeight, RenderSprite sprite) {
+        if (!sprite.isVisible()) return;
+
+        Bitmap baked = sprite.getBakedBitmap();
+        if (baked == null) return;
+        if (baked.getWidth() <= 0 || baked.getHeight() <= 0) return;
+        if (baked.getPixels() == null || baked.getPixels().length == 0) return;
+
+        int sx = sprite.getX();
+        int sy = sprite.getY();
+        int sw = sprite.getWidth() > 0 ? sprite.getWidth() : baked.getWidth();
+        int sh = sprite.getHeight() > 0 ? sprite.getHeight() : baked.getHeight();
+        int blend = sprite.getBlend();
+        InkMode ink = sprite.getInkMode();
+        boolean flipH = sprite.isFlipH() ^ sprite.hasDirectorHorizontalMirror();
+        boolean flipV = sprite.isFlipV();
+
+        if (sw == baked.getWidth() && sh == baked.getHeight()) {
+            blitBitmap(argb, stageWidth, stageHeight,
+                    baked.getPixels(), baked.getWidth(), baked.getHeight(),
+                    sx, sy, blend, ink, flipH, flipV);
+        } else {
+            blitBitmapScaled(argb, stageWidth, stageHeight,
+                    baked.getPixels(), baked.getWidth(), baked.getHeight(),
+                    sx, sy, sw, sh, blend, ink, flipH, flipV);
+        }
     }
 
     private static void drawStageBorder(int[] argb, int w, int h, int color) {
@@ -98,7 +137,7 @@ public final class SoftwareFrameRenderer {
                            int dstX, int dstY, int blend, InkMode ink,
                            boolean flipH, boolean flipV) {
         if (srcPixels == null || srcW <= 0 || srcH <= 0) return;
-        if (srcPixels.length < srcW * srcH) return;
+        if ((long) srcPixels.length < (long) srcW * srcH) return;
 
         int sx0 = Math.max(0, -dstX);
         int sy0 = Math.max(0, -dstY);
@@ -147,7 +186,7 @@ public final class SoftwareFrameRenderer {
                                  int dstX, int dstY, int dstW, int dstH, int blend, InkMode ink,
                                  boolean flipH, boolean flipV) {
         if (srcPixels == null || srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) return;
-        if (srcPixels.length < srcW * srcH) return;
+        if ((long) srcPixels.length < (long) srcW * srcH) return;
 
         int dx0 = Math.max(0, dstX);
         int dy0 = Math.max(0, dstY);
