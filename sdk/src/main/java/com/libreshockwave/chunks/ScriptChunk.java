@@ -363,8 +363,17 @@ public record ScriptChunk(
                     case 4 -> { // Int
                         value = dataLen; // Actually the value
                     }
-                    case 9 -> { // Float — store as primitive double to avoid boxed Double (TeaVM WASM bug)
-                        numericValue = (double) Float.intBitsToFloat(reader.readI32());
+                    case 9 -> { // Float literal. Director stores D5+ literal floats as 64-bit doubles.
+                        if (dataLen >= Double.BYTES) {
+                            numericValue = reader.readF64();
+                            if (dataLen > Double.BYTES) {
+                                reader.skip(dataLen - Double.BYTES);
+                            }
+                        } else if (dataLen == Float.BYTES) {
+                            numericValue = (double) reader.readF32();
+                        } else {
+                            reader.skip(dataLen);
+                        }
                         value = String.valueOf(numericValue);
                     }
                     default -> {
@@ -405,7 +414,7 @@ public record ScriptChunk(
 
                 // Read argument names (using unsigned 16-bit per ProjectorRays)
                 List<Integer> argNameIds = new ArrayList<>();
-                if (argCount > 0 && argOffset > 0) {
+                if (argCount > 0 && hasRange(reader, argOffset, argCount * 2L)) {
                     reader.setPosition(argOffset);
                     for (int j = 0; j < argCount; j++) {
                         argNameIds.add(reader.readU16());
@@ -414,7 +423,7 @@ public record ScriptChunk(
 
                 // Read local variable names (using unsigned 16-bit per ProjectorRays)
                 List<Integer> localNameIds = new ArrayList<>();
-                if (localCount > 0 && localOffset > 0) {
+                if (localCount > 0 && hasRange(reader, localOffset, localCount * 2L)) {
                     reader.setPosition(localOffset);
                     for (int j = 0; j < localCount; j++) {
                         localNameIds.add(reader.readU16());
@@ -424,9 +433,9 @@ public record ScriptChunk(
                 // Parse bytecode instructions (matching dirplayer-rs handler.rs)
                 List<Handler.Instruction> instructions = new ArrayList<>();
                 Map<Integer, Integer> bytecodeIndexMap = new HashMap<>();
-                if (bytecodeLen > 0 && bytecodeOffset > 0) {
+                if (bytecodeLen > 0 && hasRange(reader, bytecodeOffset, 1)) {
                     reader.setPosition(bytecodeOffset);
-                    int bytecodeEnd = bytecodeOffset + bytecodeLen;
+                    int bytecodeEnd = (int) Math.min((long) bytecodeOffset + bytecodeLen, reader.length());
 
                     while (reader.getPosition() < bytecodeEnd) {
                         if (com.libreshockwave.DirectorFile.isParseTimedOut()) break;
@@ -438,6 +447,10 @@ public record ScriptChunk(
                         int argument = 0;
 
                         // Argument size is determined by the op byte value, not opcode type
+                        int argBytes = op >= 0xC0 ? 4 : op >= 0x80 ? 2 : op >= 0x40 ? 1 : 0;
+                        if (argBytes > 0 && reader.getPosition() + argBytes > bytecodeEnd) {
+                            break;
+                        }
                         if (op >= 0xC0) {
                             // 4-byte argument
                             argument = reader.readI32();
@@ -499,5 +512,12 @@ public record ScriptChunk(
             globals,
             rawBytecode
         );
+    }
+
+    private static boolean hasRange(BinaryReader reader, int offset, long length) {
+        return offset > 0
+                && length >= 0
+                && offset <= reader.length()
+                && (long) offset + length <= reader.length();
     }
 }
