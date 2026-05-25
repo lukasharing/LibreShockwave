@@ -23,6 +23,7 @@ Thumbs.db
 
 # Logs
 *.log
+.env.local
 /player-wasm/node_modules
 /player-wasm/frames_register_procedure_trace
 /player-wasm/frames_registration
