@@ -53,6 +53,7 @@ public class SpriteState {
     // explicit empty override with member 0)
     private int dynamicCastLib = -1;
     private int dynamicCastMember = -1;
+    private boolean dynamicMemberMirrored = false;
     private boolean hasDynamicMember = false;
 
     /**
@@ -149,8 +150,13 @@ public class SpriteState {
      * explicit empty channel and must not fall back to Score data.
      */
     public void setDynamicMember(int castLib, int member) {
+        setDynamicMember(castLib, member, false);
+    }
+
+    public void setDynamicMember(int castLib, int member, boolean mirrored) {
         this.dynamicCastLib = castLib;
         this.dynamicCastMember = member;
+        this.dynamicMemberMirrored = mirrored;
         this.hasDynamicMember = true;
     }
 
@@ -160,6 +166,7 @@ public class SpriteState {
     public void clearDynamicMember() {
         this.dynamicCastLib = -1;
         this.dynamicCastMember = -1;
+        this.dynamicMemberMirrored = false;
         this.hasDynamicMember = false;
     }
 
@@ -194,6 +201,10 @@ public class SpriteState {
             return dynamicCastMember;
         }
         return scoreData != null ? scoreData.castMember() : 0;
+    }
+
+    public boolean isEffectiveMemberMirrored() {
+        return hasDynamicMember && dynamicMemberMirrored;
     }
 
     public boolean hasDynamicMember() { return hasDynamicMember; }
@@ -247,11 +258,9 @@ public class SpriteState {
         }
         if (!hasForeColor) {
             this.foreColor = data.resolvedForeColor();
-            this.hasForeColor = true;
         }
         if (!hasBackColor) {
             this.backColor = data.resolvedBackColor();
-            this.hasBackColor = true;
         }
     }
 
@@ -337,6 +346,7 @@ public class SpriteState {
         this.scriptInstanceList = new ArrayList<>();
         this.dynamicCastLib = -1;
         this.dynamicCastMember = -1;
+        this.dynamicMemberMirrored = false;
         this.hasDynamicMember = false;
     }
 

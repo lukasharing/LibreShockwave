@@ -35,7 +35,7 @@ public class StageRenderer {
     private Bitmap stageImage;
 
     // Last baked sprites from FrameSnapshot — used for ink-aware hit testing
-    private List<RenderSprite> lastBakedSprites = List.of();
+    private List<RenderSprite> lastBakedSprites = new ArrayList<>();
 
     public StageRenderer(DirectorFile file) {
         this.file = file;
@@ -162,7 +162,13 @@ public class StageRenderer {
         }
 
         int frameIndex = frame - 1;
-        for (ScoreChunk.FrameChannelEntry entry : score.frameData().frameChannelData()) {
+        List<ScoreChunk.FrameChannelEntry> frameChannelData = score.frameData() != null
+                ? score.frameData().frameChannelData()
+                : null;
+        if (frameChannelData == null || frameChannelData.isEmpty()) {
+            return;
+        }
+        for (ScoreChunk.FrameChannelEntry entry : frameChannelData) {
             if (entry.frameIndex().value() != frameIndex) {
                 continue;
             }
@@ -271,7 +277,9 @@ public class StageRenderer {
             state.hasBackColor() ? state.getBackColor() : data.resolvedBackColor(),
             state.hasForeColor(), state.hasBackColor(),
             state.getInk(), state.getBlend(),
-            state.isFlipH(), state.isFlipV(), null,
+            baseFlipH(state), state.isFlipV(),
+            state.getRotation(), state.getSkew(),
+            null,
             state.hasScriptBehaviors()
         );
     }
@@ -338,6 +346,13 @@ public class StageRenderer {
         if (castLibManager != null) {
             dynamicMember = castLibManager.getDynamicMember(castLib, castMember);
         }
+        if (dynamicMember != null && dynamicMember.getMemberType() == MemberType.BITMAP) {
+            Bitmap liveRuntimeBitmap = dynamicMember.getBitmap();
+            if (definesRuntimeSpriteSize(dynamicMember, liveRuntimeBitmap)) {
+                width = liveRuntimeBitmap.getWidth();
+                height = liveRuntimeBitmap.getHeight();
+            }
+        }
 
         RenderSprite.SpriteType type = RenderSprite.SpriteType.UNKNOWN;
         if (member != null) {
@@ -394,11 +409,20 @@ public class StageRenderer {
             state.getForeColor(), state.getBackColor(),
             state.hasForeColor(), state.hasBackColor(),
             state.getInk(), state.getBlend(),
-            state.isFlipH(), state.isFlipV(),
+            state.isFlipH() ^ state.isEffectiveMemberMirrored(), state.isFlipV(),
             state.getRotation(), state.getSkew(),
             null,
             state.hasScriptBehaviors()
         );
+    }
+
+    private static boolean definesRuntimeSpriteSize(CastMember member, Bitmap bitmap) {
+        return member != null
+                && bitmap != null
+                && member.isRuntimeDynamic()
+                && bitmap.isScriptModified()
+                && bitmap.getWidth() > 0
+                && bitmap.getHeight() > 0;
     }
 
     /**
@@ -503,7 +527,13 @@ public class StageRenderer {
     }
 
     private boolean effectiveFlipH(SpriteState state) {
-        return state.isFlipH() ^ hasDirectorHorizontalMirror(state.getRotation(), state.getSkew());
+        return baseFlipH(state)
+                ^ hasDirectorHorizontalMirror(state.getRotation(), state.getSkew());
+    }
+
+    private boolean baseFlipH(SpriteState state) {
+        return state.isFlipH()
+                ^ state.isEffectiveMemberMirrored();
     }
 
     private static boolean hasDirectorHorizontalMirror(double rotation, double skew) {
@@ -544,7 +574,7 @@ public class StageRenderer {
 
     public void reset() {
         spriteRegistry.clear();
-        lastBakedSprites = List.of();
+        lastBakedSprites = new ArrayList<>();
         resetVisualState();
     }
 
@@ -560,7 +590,13 @@ public class StageRenderer {
 
         int frameIndex = frame - 1;
 
-        for (ScoreChunk.FrameChannelEntry entry : score.frameData().frameChannelData()) {
+        List<ScoreChunk.FrameChannelEntry> frameChannelData = score.frameData() != null
+                ? score.frameData().frameChannelData()
+                : null;
+        if (frameChannelData == null || frameChannelData.isEmpty()) {
+            return;
+        }
+        for (ScoreChunk.FrameChannelEntry entry : frameChannelData) {
             if (entry.frameIndex().value() == frameIndex) {
                 int channel = entry.channelIndex().value();
                 if (spriteRegistry.contains(channel)) {

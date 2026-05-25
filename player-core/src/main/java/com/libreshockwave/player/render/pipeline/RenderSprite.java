@@ -134,9 +134,8 @@ public final class RenderSprite {
 
     /**
      * Director's "Mirror Horizontal" keeps the registration point fixed and
-     * inverts the sprite's skew/rotation angles. Habbo room scripts use the
-     * common mirrored state rotation=180, skew=180 for furniture members that
-     * should render as horizontally mirrored variants without using sprite.flipH.
+     * inverts the sprite's skew/rotation angles. Some movies encode mirrored
+     * members as rotation=180, skew=180 instead of using sprite.flipH.
      */
     public boolean hasDirectorHorizontalMirror() {
         return normalizeTransformAngle(rotation) == 180 && normalizeTransformAngle(skew) == 180;

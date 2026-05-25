@@ -43,6 +43,37 @@ class SpritePropertiesLifecycleTest {
     }
 
     @Test
+    void mirroredMemberRefMarksSpriteAsMirrored() {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteProperties props = new SpriteProperties(registry);
+
+        assertTrue(props.setSpriteProp(17, "member", Datum.CastMemberRef.of(3, 42, true)));
+
+        SpriteState state = registry.get(17);
+        assertTrue(state.hasDynamicMember());
+        assertEquals(3, state.getEffectiveCastLib());
+        assertEquals(42, state.getEffectiveCastMember());
+        assertTrue(state.isEffectiveMemberMirrored());
+
+        Datum member = props.getSpriteProp(17, "member");
+        assertTrue(member instanceof Datum.CastMemberRef);
+        assertTrue(((Datum.CastMemberRef) member).isMirrored());
+    }
+
+    @Test
+    void negativeEncodedMemberNumMarksSpriteAsMirrored() {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteProperties props = new SpriteProperties(registry);
+
+        assertTrue(props.setSpriteProp(17, "memberNum", Datum.of(-((11 << 16) | 7))));
+
+        SpriteState state = registry.get(17);
+        assertEquals(11, state.getEffectiveCastLib());
+        assertEquals(7, state.getEffectiveCastMember());
+        assertTrue(state.isEffectiveMemberMirrored());
+    }
+
+    @Test
     void memberZeroResetsReleasedSpriteTransformState() {
         SpriteRegistry registry = new SpriteRegistry();
         SpriteProperties props = new SpriteProperties(registry);
@@ -430,6 +461,73 @@ class SpritePropertiesLifecycleTest {
         assertEquals(100, props.getSpriteProp(41, "right").toInt());
         assertEquals(72, props.getSpriteProp(41, "bottom").toInt());
         assertEquals(new Datum.Rect(79, 50, 100, 72), props.getSpriteProp(41, "rect"));
+    }
+
+    @Test
+    void entryCloudTurnPointUsesRegistrationAdjustedRightEdge() throws Exception {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteProperties props = new SpriteProperties(registry);
+        CastLibManager castLibManager = new CastLibManager(null, (castLib, fileName) -> {});
+        CastLib castLib = new CastLib(7, null, null);
+        injectCastLib(castLibManager, castLib);
+        props.setCastLibManager(castLibManager);
+
+        CastMember cloud = castLib.createDynamicMember("bitmap");
+        Bitmap cloudCanvas = new Bitmap(21, 60, 8);
+        cloudCanvas.setAnchorPoint(10, 30);
+        assertTrue(cloud.setProp("image", new Datum.ImageRef(cloudCanvas)));
+
+        assertTrue(props.setSpriteProp(41, "member",
+                Datum.CastMemberRef.of(7, cloud.getMemberNumber())));
+        assertTrue(props.setSpriteProp(41, "loc", new Datum.Point(319, 120)));
+        assertTrue(props.setSpriteProp(41, "width", Datum.of(21)));
+        assertTrue(props.setSpriteProp(41, "height", Datum.of(60)));
+
+        assertEquals(309, props.getSpriteProp(41, "left").toInt());
+        assertEquals(330, props.getSpriteProp(41, "right").toInt());
+
+        assertTrue(props.setSpriteProp(41, "locH", Datum.of(320)));
+
+        assertEquals(310, props.getSpriteProp(41, "left").toInt());
+        assertEquals(331, props.getSpriteProp(41, "right").toInt());
+    }
+
+    @Test
+    void rectSetterPreservesDirectorRegistrationPointSemantics() throws Exception {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteProperties props = new SpriteProperties(registry);
+        CastLibManager castLibManager = new CastLibManager(null, (castLib, fileName) -> {});
+        CastLib castLib = new CastLib(7, null, null);
+        injectCastLib(castLibManager, castLib);
+        props.setCastLibManager(castLibManager);
+
+        CastMember cloud = castLib.createDynamicMember("bitmap");
+        cloud.setBitmapDirectly(new Bitmap(21, 22, 32));
+        assertTrue(cloud.setProp("regPoint", new Datum.Point(21, 0)));
+
+        assertTrue(props.setSpriteProp(41, "member",
+                Datum.CastMemberRef.of(7, cloud.getMemberNumber())));
+
+        assertTrue(props.setSpriteProp(41, "rect", new Datum.Rect(79, 50, 100, 72)));
+
+        assertEquals(100, props.getSpriteProp(41, "locH").toInt());
+        assertEquals(50, props.getSpriteProp(41, "locV").toInt());
+        assertEquals(21, props.getSpriteProp(41, "width").toInt());
+        assertEquals(22, props.getSpriteProp(41, "height").toInt());
+        assertEquals(new Datum.Rect(79, 50, 100, 72), props.getSpriteProp(41, "rect"));
+    }
+
+    @Test
+    void locSetterAcceptsDirectorPointLists() {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteProperties props = new SpriteProperties(registry);
+
+        assertTrue(props.setSpriteProp(7, "loc",
+                Datum.list(List.of(Datum.of(123), Datum.of(45)))));
+
+        assertEquals(123, props.getSpriteProp(7, "locH").toInt());
+        assertEquals(45, props.getSpriteProp(7, "locV").toInt());
+        assertEquals(new Datum.Point(123, 45), props.getSpriteProp(7, "loc"));
     }
 
     @SuppressWarnings("unchecked")

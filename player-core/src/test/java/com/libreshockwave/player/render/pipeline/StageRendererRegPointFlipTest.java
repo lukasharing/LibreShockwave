@@ -1,11 +1,15 @@
 package com.libreshockwave.player.render.pipeline;
 
 import com.libreshockwave.DirectorFile;
+import com.libreshockwave.bitmap.Bitmap;
 import com.libreshockwave.cast.MemberType;
 import com.libreshockwave.chunks.CastMemberChunk;
 import com.libreshockwave.format.ChunkType;
 import com.libreshockwave.id.ChunkId;
+import com.libreshockwave.player.cast.CastLibManager;
+import com.libreshockwave.player.cast.CastMember;
 import com.libreshockwave.player.sprite.SpriteState;
+import com.libreshockwave.vm.datum.Datum;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Constructor;
@@ -14,6 +18,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class StageRendererRegPointFlipTest {
@@ -45,7 +50,7 @@ class StageRendererRegPointFlipTest {
     }
 
     @Test
-    void directorHorizontalMirrorIsTreatedAsEffectiveFlipForRegPointMath() throws Exception {
+    void directorHorizontalMirrorMirrorsRegistrationPointForStageRendering() throws Exception {
         StageRenderer renderer = new StageRenderer(newEmptyDirectorFile());
         SpriteState state = new SpriteState(7);
         state.setRotation(180);
@@ -55,6 +60,64 @@ class StageRendererRegPointFlipTest {
         method.setAccessible(true);
 
         assertTrue((boolean) method.invoke(renderer, state));
+    }
+
+    @Test
+    void directorHorizontalMirrorUsesMirroredRegPointButKeepsTransformOnRenderSprite() throws Exception {
+        CastMember dynamicMember = new CastMember(1, 10000, MemberType.BITMAP);
+        Bitmap liveBitmap = new Bitmap(20, 20, 32);
+        liveBitmap.setAnchorPoint(6, 5);
+        liveBitmap.markScriptModified();
+        dynamicMember.setProp("image", new Datum.ImageRef(liveBitmap));
+
+        StageRenderer renderer = new StageRenderer(newEmptyDirectorFile());
+        renderer.setCastLibManager(new StubCastLibManager(dynamicMember));
+
+        SpriteState state = new SpriteState(9);
+        state.setDynamicMember(1, 10000);
+        state.setLocH(100);
+        state.setLocV(80);
+        state.setWidth(20);
+        state.setHeight(20);
+        state.setRotation(180);
+        state.setSkew(180);
+
+        Method method = StageRenderer.class.getDeclaredMethod("createDynamicRenderSprite", SpriteState.class);
+        method.setAccessible(true);
+        RenderSprite sprite = (RenderSprite) method.invoke(renderer, state);
+
+        assertEquals(86, sprite.getX());
+        assertEquals(75, sprite.getY());
+        assertFalse(sprite.isFlipH());
+        assertTrue(sprite.hasDirectorHorizontalMirror());
+    }
+
+    @Test
+    void scriptModifiedRuntimeBitmapDefinesSpriteSizeBeforeRegPointMath() throws Exception {
+        CastMember dynamicMember = new CastMember(1, 10000, MemberType.BITMAP);
+        Bitmap liveBitmap = new Bitmap(6, 60, 32);
+        liveBitmap.setAnchorPoint(3, 30);
+        liveBitmap.markScriptModified();
+        dynamicMember.setProp("image", new Datum.ImageRef(liveBitmap));
+
+        StageRenderer renderer = new StageRenderer(newEmptyDirectorFile());
+        renderer.setCastLibManager(new StubCastLibManager(dynamicMember));
+
+        SpriteState state = new SpriteState(9);
+        state.setDynamicMember(1, 10000);
+        state.setLocH(100);
+        state.setLocV(80);
+        state.setWidth(42);
+        state.setHeight(60);
+
+        Method method = StageRenderer.class.getDeclaredMethod("createDynamicRenderSprite", SpriteState.class);
+        method.setAccessible(true);
+        RenderSprite sprite = (RenderSprite) method.invoke(renderer, state);
+
+        assertEquals(6, sprite.getWidth());
+        assertEquals(60, sprite.getHeight());
+        assertEquals(97, sprite.getX());
+        assertEquals(50, sprite.getY());
     }
 
     private static Object invokeScaledRegPoint(StageRenderer renderer, CastMemberChunk member,
@@ -108,5 +171,24 @@ class StageRendererRegPointFlipTest {
                 ByteOrder.class, boolean.class, int.class, ChunkType.class);
         ctor.setAccessible(true);
         return ctor.newInstance(ByteOrder.BIG_ENDIAN, false, 0, ChunkType.RIFX);
+    }
+
+    private static final class StubCastLibManager extends CastLibManager {
+        private final CastMember dynamicMember;
+
+        private StubCastLibManager(CastMember dynamicMember) {
+            super(null, null);
+            this.dynamicMember = dynamicMember;
+        }
+
+        @Override
+        public CastMemberChunk getCastMember(int castLibNumber, int memberNumber) {
+            return null;
+        }
+
+        @Override
+        public CastMember getDynamicMember(int castLibNumber, int memberNumber) {
+            return castLibNumber == 1 && memberNumber == 10000 ? dynamicMember : null;
+        }
     }
 }

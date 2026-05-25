@@ -107,7 +107,7 @@ public class SpriteProperties implements SpritePropertyProvider {
             case "member" -> {
                 int cl = sprite.getEffectiveCastLib();
                 int cm = sprite.getEffectiveCastMember();
-                yield cm > 0 ? Datum.CastMemberRef.of(cl, cm) : Datum.VOID;
+                yield cm > 0 ? Datum.CastMemberRef.of(cl, cm, sprite.isEffectiveMemberMirrored()) : Datum.VOID;
             }
             case "image" -> {
                 // Director's sprite(n).image returns the sprite's member's image.
@@ -145,11 +145,20 @@ public class SpriteProperties implements SpritePropertyProvider {
         };
     }
 
+    private record RegistrationPoint(int x, int y) {}
     private record SpriteBounds(int left, int top, int right, int bottom) {}
 
     private SpriteBounds resolveSpriteBounds(SpriteState sprite) {
         int width = sprite.getWidth();
         int height = sprite.getHeight();
+        RegistrationPoint reg = resolveRegistrationPoint(sprite, width, height);
+
+        int left = sprite.getLocH() - reg.x();
+        int top = sprite.getLocV() - reg.y();
+        return new SpriteBounds(left, top, left + width, top + height);
+    }
+
+    private RegistrationPoint resolveRegistrationPoint(SpriteState sprite, int width, int height) {
         int regX = 0;
         int regY = 0;
 
@@ -190,9 +199,7 @@ public class SpriteProperties implements SpritePropertyProvider {
             }
         }
 
-        int left = sprite.getLocH() - regX;
-        int top = sprite.getLocV() - regY;
-        return new SpriteBounds(left, top, left + width, top + height);
+        return new RegistrationPoint(regX, regY);
     }
 
     private int mirrorOffset(int reg, int span, boolean flipped) {
@@ -203,7 +210,9 @@ public class SpriteProperties implements SpritePropertyProvider {
     }
 
     private boolean effectiveFlipH(SpriteState sprite) {
-        return sprite.isFlipH() ^ hasDirectorHorizontalMirror(sprite.getRotation(), sprite.getSkew());
+        return sprite.isFlipH()
+                ^ sprite.isEffectiveMemberMirrored()
+                ^ hasDirectorHorizontalMirror(sprite.getRotation(), sprite.getSkew());
     }
 
     private static boolean hasDirectorHorizontalMirror(double rotation, double skew) {
@@ -240,19 +249,23 @@ public class SpriteProperties implements SpritePropertyProvider {
                 return true;
             }
             case "loc" -> {
-                if (value instanceof Datum.Point p) {
-                    sprite.setLocH(p.x());
-                    sprite.setLocV(p.y());
+                Datum.Point point = coercePoint(value);
+                if (point != null) {
+                    sprite.setLocH(point.x());
+                    sprite.setLocV(point.y());
                     return true;
                 }
                 return false;
             }
             case "rect" -> {
                 if (value instanceof Datum.Rect r) {
-                    sprite.setLocH(r.left());
-                    sprite.setLocV(r.top());
-                    sprite.setWidth(r.right() - r.left());
-                    sprite.setHeight(r.bottom() - r.top());
+                    int width = r.right() - r.left();
+                    int height = r.bottom() - r.top();
+                    RegistrationPoint reg = resolveRegistrationPoint(sprite, width, height);
+                    sprite.setLocH(r.left() + reg.x());
+                    sprite.setLocV(r.top() + reg.y());
+                    sprite.setWidth(width);
+                    sprite.setHeight(height);
                     return true;
                 }
                 return false;
@@ -343,21 +356,23 @@ public class SpriteProperties implements SpritePropertyProvider {
                 return assignMember(sprite, value, false);
             }
             case "castnum", "membernum" -> {
-                int num = value.toInt();
+                int rawNum = value.toInt();
+                boolean mirrored = rawNum < 0;
+                int num = Math.abs(rawNum);
                 if (num <= 0) {
                     applyEmptyMemberOverride(sprite);
                     return true;
                 }
                 // Decode encoded slot numbers: (castLib << 16) | memberNum
-                // These come from preIndexMembers → member.number in Director
+                // These are encoded cast member slots: member.number in Director.
                 int encodedCast = (num >> 16) & 0xFFFF;
                 int encodedMember = num & 0xFFFF;
                 if (encodedCast > 0 && encodedMember > 0) {
-                    sprite.setDynamicMember(encodedCast, encodedMember);
+                    sprite.setDynamicMember(encodedCast, encodedMember, mirrored);
                     autoSizeSprite(sprite, encodedCast, encodedMember, false);
                 } else {
                     int cl = sprite.getEffectiveCastLib();
-                    sprite.setDynamicMember(cl, num);
+                    sprite.setDynamicMember(cl, num, mirrored);
                     autoSizeSprite(sprite, cl, num, false);
                 }
                 return true;
@@ -428,6 +443,16 @@ public class SpriteProperties implements SpritePropertyProvider {
         }
     }
 
+    private static Datum.Point coercePoint(Datum value) {
+        if (value instanceof Datum.Point p) {
+            return p;
+        }
+        if (value instanceof Datum.List list && list.items().size() >= 2) {
+            return new Datum.Point(list.items().get(0).toInt(), list.items().get(1).toInt());
+        }
+        return null;
+    }
+
     @Override
     public boolean setSpriteMember(int spriteNum, Datum value) {
         SpriteState sprite = registry.getOrCreateDynamic(spriteNum);
@@ -466,11 +491,11 @@ public class SpriteProperties implements SpritePropertyProvider {
         }
         java.util.List<Datum> retained = new java.util.ArrayList<>();
         for (Datum script : scriptInstances) {
-            if (script instanceof Datum.ScriptInstance instance
-                    && instance.properties().getOrDefault(
-                            SpriteEventBrokerSupport.SYNTHETIC_BROKER_FLAG,
-                            Datum.FALSE).isTruthy()) {
-                retained.add(instance);
+            if (script instanceof Datum.ScriptInstance instance) {
+                Datum synthetic = instance.properties().get(SpriteEventBrokerSupport.SYNTHETIC_BROKER_FLAG);
+                if (synthetic != null && synthetic.isTruthy()) {
+                    retained.add(instance);
+                }
             }
         }
         return retained;
@@ -481,7 +506,7 @@ public class SpriteProperties implements SpritePropertyProvider {
             if (cmr.memberNum() <= 0) {
                 applyEmptyMemberOverride(sprite);
             } else {
-                sprite.setDynamicMember(cmr.castLibNum(), cmr.memberNum());
+                sprite.setDynamicMember(cmr.castLibNum(), cmr.memberNum(), cmr.isMirrored());
                 autoSizeSprite(sprite, cmr.castLibNum(), cmr.memberNum(), viaSetMemberMethod);
             }
             return true;
@@ -493,14 +518,16 @@ public class SpriteProperties implements SpritePropertyProvider {
                 if (cmr.memberNum() <= 0) {
                     applyEmptyMemberOverride(sprite);
                 } else {
-                    sprite.setDynamicMember(cmr.castLibNum(), cmr.memberNum());
+                    sprite.setDynamicMember(cmr.castLibNum(), cmr.memberNum(), cmr.isMirrored());
                     autoSizeSprite(sprite, cmr.castLibNum(), cmr.memberNum(), viaSetMemberMethod);
                 }
             }
             return true;
         }
 
-        int memberNum = value.toInt();
+        int rawMemberNum = value.toInt();
+        boolean mirrored = rawMemberNum < 0;
+        int memberNum = Math.abs(rawMemberNum);
         if (memberNum <= 0) {
             applyEmptyMemberOverride(sprite);
             return true;
@@ -509,10 +536,10 @@ public class SpriteProperties implements SpritePropertyProvider {
         int encodedCast = (memberNum >> 16) & 0xFFFF;
         int encodedMember = memberNum & 0xFFFF;
         if (encodedCast > 0 && encodedMember > 0) {
-            sprite.setDynamicMember(encodedCast, encodedMember);
+            sprite.setDynamicMember(encodedCast, encodedMember, mirrored);
             autoSizeSprite(sprite, encodedCast, encodedMember, viaSetMemberMethod);
         } else {
-            sprite.setDynamicMember(0, memberNum);
+            sprite.setDynamicMember(0, memberNum, mirrored);
             autoSizeSprite(sprite, 0, memberNum, viaSetMemberMethod);
         }
         return true;
