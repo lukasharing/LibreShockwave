@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CastLibManagerExternalLoadTest {
@@ -62,7 +63,7 @@ class CastLibManagerExternalLoadTest {
     }
 
     @Test
-    void cacheExternalDataMarksMatchingExternalCastsAsFetched() throws Exception {
+    void cacheExternalDataDoesNotMarkUnrequestedExternalCastsAsFetched() throws Exception {
         CastLibManager manager = new CastLibManager(null, (castLibNumber, fileName) -> {});
         CastLib castLib = new CastLib(2, null, null);
         castLib.setFileName(EXTERNAL_CAST_URL);
@@ -70,11 +71,43 @@ class CastLibManagerExternalLoadTest {
 
         manager.cacheExternalData(EXTERNAL_CAST_URL, new byte[]{7, 8, 9});
 
-        assertTrue(castLib.isFetched());
+        assertFalse(castLib.isFetched());
     }
 
     @Test
-    void getRequestedExternalCastSlotsFindsAuthoredExternalSlotWithoutPendingRuntimeRequest() throws Exception {
+    void cacheExternalDataMarksRequestedExternalCastAsFetched() throws Exception {
+        RecordingCastLibManager manager = new RecordingCastLibManager();
+        CastLib requested = new CastLib(2, null, new CastListChunk.CastListEntry(
+                "External Widget",
+                EXTERNAL_CAST_URL,
+                2,
+                1,
+                1,
+                0,
+                0));
+        CastLib unrequested = new CastLib(3, null, new CastListChunk.CastListEntry(
+                "External Widget Copy",
+                EXTERNAL_CAST_URL,
+                2,
+                1,
+                1,
+                0,
+                0));
+        installCastLib(manager, requested);
+        installCastLib(manager, unrequested);
+
+        manager.setCastLibProp(2, "fileName", Datum.of(EXTERNAL_CAST_URL));
+        manager.cacheExternalData(EXTERNAL_CAST_URL, new byte[]{7, 8, 9});
+
+        List<Integer> slots = manager.getRequestedExternalCastSlots(EXTERNAL_CAST_URL);
+
+        assertEquals(List.of(2), slots);
+        assertTrue(requested.isFetched());
+        assertFalse(unrequested.isFetched());
+    }
+
+    @Test
+    void getRequestedExternalCastSlotsIgnoresAuthoredExternalSlotWithoutRuntimeRequest() throws Exception {
         RecordingCastLibManager manager = new RecordingCastLibManager();
         CastLib authored = new CastLib(2, null, new CastListChunk.CastListEntry(
                 "External Widget",
@@ -90,7 +123,7 @@ class CastLibManagerExternalLoadTest {
 
         List<Integer> slots = manager.getRequestedExternalCastSlots(EXTERNAL_CAST_URL);
 
-        assertEquals(List.of(2), slots);
+        assertTrue(slots.isEmpty());
     }
 
     @Test

@@ -1,6 +1,7 @@
 package com.libreshockwave.player.cast;
 
 import com.libreshockwave.DirectorFile;
+import com.libreshockwave.bitmap.Bitmap;
 import com.libreshockwave.cast.MemberType;
 import com.libreshockwave.chunks.*;
 import com.libreshockwave.format.ChunkType;
@@ -9,11 +10,12 @@ import com.libreshockwave.vm.datum.Datum;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Represents a loaded cast library.
@@ -40,10 +42,10 @@ public class CastLib {
     private Datum selection = Datum.list(); // Selected members as [[start, end], ...]
 
     // Raw member chunks indexed by member number
-    private final Map<Integer, CastMemberChunk> memberChunks = new ConcurrentHashMap<>();
+    private final Map<Integer, CastMemberChunk> memberChunks = new LinkedHashMap<>();
 
     // Loaded CastMember objects indexed by member number (lazy)
-    private final Map<Integer, CastMember> members = new ConcurrentHashMap<>();
+    private final Map<Integer, CastMember> members = new LinkedHashMap<>();
 
     // Scripts indexed by member number
     private final Map<Integer, ScriptChunk> scripts = new HashMap<>();
@@ -98,6 +100,11 @@ public class CastLib {
         return sourceFile != null || fetchedExternalData != null || !isExternal();
     }
 
+    public boolean hasFetchedExternalData(byte[] data) {
+        return data != null && fetchedExternalData != null
+                && Arrays.equals(fetchedExternalData, data);
+    }
+
     /**
      * Load the cast library members from the DirectorFile.
      * For external casts, this only works if the cast has been fetched first
@@ -128,8 +135,10 @@ public class CastLib {
             return;
         }
 
-        if (castChunk == null && sourceFile != null) {
-            // For external casts, use the first cast from the loaded file
+        if (isExternal()) {
+            // External cast slots in the root movie may still carry placeholder
+            // castChunk metadata. Once external bytes are hydrated, the real
+            // members must come from the loaded CCT/CST itself.
             if (!sourceFile.getCasts().isEmpty()) {
                 loadFromExternalFile();
             }
@@ -183,6 +192,11 @@ public class CastLib {
         // Must account for minMember offset so iteration 1..count covers all members
         totalSlotCount = cast.memberIds().size() + minMember - 1;
 
+        Map<Integer, CastMemberChunk> chunksById = new HashMap<>();
+        for (CastMemberChunk member : sourceFile.getCastMembers()) {
+            chunksById.put(member.id().value(), member);
+        }
+
         for (int i = 0; i < cast.memberIds().size(); i++) {
             int chunkId = cast.memberIds().get(i);
             if (chunkId <= 0) {
@@ -191,17 +205,16 @@ public class CastLib {
 
             int memberNumber = i + minMember;
 
-            for (CastMemberChunk member : sourceFile.getCastMembers()) {
-                if (member.id().value() == chunkId) {
-                    memberChunks.put(memberNumber, member);
+            CastMemberChunk member = chunksById.get(chunkId);
+            if (member == null) {
+                continue;
+            }
+            memberChunks.put(memberNumber, member);
 
-                    if (member.isScript() && member.scriptId() > 0) {
-                        ScriptChunk script = sourceFile.getScriptByContextId(member.scriptId());
-                        if (script != null) {
-                            scripts.put(memberNumber, script);
-                        }
-                    }
-                    break;
+            if (member.isScript() && member.scriptId() > 0) {
+                ScriptChunk script = sourceFile.getScriptByContextId(member.scriptId());
+                if (script != null) {
+                    scripts.put(memberNumber, script);
                 }
             }
         }
@@ -491,7 +504,7 @@ public class CastLib {
         if (!isLoaded()) {
             load();
         }
-        // Return total slot count (including empties) for correct iteration in preIndexMembers.
+        // Return total slot count (including empties) for authored member-table iteration.
         // If totalSlotCount wasn't set (e.g., empty/unloaded cast), fall back to memberChunks size.
         return totalSlotCount > 0 ? totalSlotCount : memberChunks.size();
     }
@@ -533,6 +546,14 @@ public class CastLib {
     }
 
     /**
+     * Return an already-created runtime wrapper without instantiating file-backed
+     * members. Useful for metadata queries that should not force media setup.
+     */
+    public CastMember getCachedMember(int memberNumber) {
+        return members.get(memberNumber);
+    }
+
+    /**
      * Find a member chunk by name.
      */
     public CastMemberChunk findMemberByName(String name) {
@@ -543,11 +564,6 @@ public class CastLib {
         CastMemberChunk direct = findMemberChunkByNameExact(name);
         if (direct != null) {
             return direct;
-        }
-
-        String sourcePrefixedName = sourcePrefixedLookupName(name);
-        if (sourcePrefixedName != null) {
-            return findMemberChunkByNameExact(sourcePrefixedName);
         }
         return null;
     }
@@ -565,11 +581,6 @@ public class CastLib {
         if (direct != null) {
             return direct;
         }
-
-        String sourcePrefixedName = sourcePrefixedLookupName(name);
-        if (sourcePrefixedName != null) {
-            return findMemberByNameExact(sourcePrefixedName);
-        }
         return null;
     }
 
@@ -577,12 +588,18 @@ public class CastLib {
         if (name == null || name.isEmpty()) {
             return null;
         }
-        for (CastMemberChunk member : memberChunks.values()) {
-            if (member.name() != null && member.name().equalsIgnoreCase(name)) {
-                return member;
+        CastMemberChunk best = null;
+        int bestMemberNumber = -1;
+        for (Map.Entry<Integer, CastMemberChunk> entry : memberChunks.entrySet()) {
+            CastMemberChunk member = entry.getValue();
+            if (member.name() != null
+                    && member.name().equalsIgnoreCase(name)
+                    && entry.getKey() > bestMemberNumber) {
+                best = member;
+                bestMemberNumber = entry.getKey();
             }
         }
-        return null;
+        return best;
     }
 
     CastMember findMemberByNameExact(String name) {
@@ -590,29 +607,41 @@ public class CastLib {
             return null;
         }
 
+        int bestMemberNumber = -1;
         for (Map.Entry<Integer, CastMemberChunk> entry : memberChunks.entrySet()) {
-            if (entry.getValue().name() != null && entry.getValue().name().equalsIgnoreCase(name)) {
-                return getMember(entry.getKey());
+            if (entry.getValue().name() != null
+                    && entry.getValue().name().equalsIgnoreCase(name)
+                    && entry.getKey() > bestMemberNumber) {
+                bestMemberNumber = entry.getKey();
             }
         }
-
-        for (CastMember member : members.values()) {
-            if (member.getName() != null && member.getName().equalsIgnoreCase(name)) {
-                return member;
-            }
+        if (bestMemberNumber > 0) {
+            return getMember(bestMemberNumber);
         }
-        return null;
+
+        return findCachedMemberByNameExact(name, bestMemberNumber);
     }
 
-    boolean hasMemberNamedExact(String name) {
-        return findMemberChunkByNameExact(name) != null || findMemberByNameExact(name) != null;
+    CastMember findCachedMemberByNameExact(String name) {
+        return findCachedMemberByNameExact(name, -1);
     }
 
-    private static String sourcePrefixedLookupName(String requestedName) {
-        if (requestedName == null || requestedName.isEmpty()) {
+    private CastMember findCachedMemberByNameExact(String name, int minimumMemberNumber) {
+        if (name == null || name.isEmpty()) {
             return null;
         }
-        return requestedName.regionMatches(true, 0, "s_", 0, 2) ? null : "s_" + requestedName;
+        CastMember bestDynamic = null;
+        int bestMemberNumber = minimumMemberNumber;
+        for (Map.Entry<Integer, CastMember> entry : members.entrySet()) {
+            CastMember member = entry.getValue();
+            if (member.getName() != null
+                    && member.getName().equalsIgnoreCase(name)
+                    && entry.getKey() > bestMemberNumber) {
+                bestDynamic = member;
+                bestMemberNumber = entry.getKey();
+            }
+        }
+        return bestDynamic;
     }
 
     /**
@@ -634,6 +663,31 @@ public class CastLib {
             }
         }
         return -1;
+    }
+
+    /**
+     * Some bootstrap movies keep transparent placeholder members with the same
+     * names as later external-cast artwork. Broad member("name") lookups should
+     * be able to prefer a visible duplicate without hard-coding asset names.
+     */
+    public boolean hasVisibleBitmapContent(int memberNumber) {
+        CastMemberChunk chunk = findMemberByNumber(memberNumber);
+        if (chunk == null || !chunk.isBitmap()) {
+            return false;
+        }
+        CastMember member = getMember(memberNumber);
+        Bitmap bitmap = member != null ? member.getBitmap() : null;
+        if (bitmap == null || bitmap.getPixels() == null) {
+            return false;
+        }
+        for (int pixel : bitmap.getPixels()) {
+            int alpha = (pixel >>> 24) & 0xFF;
+            int rgb = pixel & 0xFFFFFF;
+            if (alpha != 0 && rgb != 0xFFFFFF) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean sameAuthoredMember(CastMemberChunk left, CastMemberChunk right) {
@@ -678,15 +732,15 @@ public class CastLib {
     }
 
     /**
-     * Get all scripts in this cast library.
-     * Returns the scripts from the sourceFile if available.
+     * Get scripts that are actually authored as members of this cast library.
+     *
+     * External casts can contain raw Lscr chunks that are not associated with
+     * cast members through the loaded CASt table. Treating those as authored
+     * global scripts gives them unreliable names/types and can shadow builtins.
      */
     public Collection<ScriptChunk> getAllScripts() {
         if (!isLoaded()) {
             load();
-        }
-        if (sourceFile != null) {
-            return sourceFile.getScripts();
         }
         return scripts.values();
     }
@@ -792,12 +846,57 @@ public class CastLib {
      * Get a member property.
      */
     public Datum getMemberProp(int memberNumber, String propName) {
+        Datum chunkProp = getFileMemberPropWithoutWrapper(memberNumber, propName);
+        if (chunkProp != null) {
+            return chunkProp;
+        }
+
         CastMember member = getMember(memberNumber);
         if (member == null) {
             // Return defaults for invalid members
             return getInvalidMemberProp(propName);
         }
         return member.getProp(propName);
+    }
+
+    private Datum getFileMemberPropWithoutWrapper(int memberNumber, String propName) {
+        if (!isLoaded()) {
+            load();
+        }
+
+        CastMemberChunk chunk = memberChunks.get(memberNumber);
+        if (chunk == null) {
+            return null;
+        }
+
+        String prop = propName.toLowerCase();
+        return switch (prop) {
+            case "name" -> Datum.of(chunk.name() != null ? chunk.name() : "");
+            case "number" -> Datum.of((castLibId.value() << 16) | (memberNumber & 0xFFFF));
+            case "membernum" -> Datum.of(memberNumber);
+            case "type" -> Datum.symbol(getDirectorTypeName(chunk));
+            case "castlibnum" -> Datum.of(castLibId.value());
+            case "castlib" -> Datum.CastLibRef.of(castLibId.value());
+            case "script" -> getScript(memberNumber) != null
+                    ? Datum.ScriptRef.of(castLibId.value(), memberNumber)
+                    : Datum.VOID;
+            case "media" -> Datum.CastMemberRef.of(castLibId.value(), memberNumber);
+            case "mediaready" -> Datum.of(1);
+            default -> null;
+        };
+    }
+
+    private static String getDirectorTypeName(CastMemberChunk chunk) {
+        MemberType memberType = chunk != null ? chunk.memberType() : MemberType.NULL;
+        if (memberType == MemberType.NULL) {
+            return "empty";
+        }
+        if (memberType == MemberType.TEXT
+                || memberType == MemberType.BUTTON
+                || (memberType == MemberType.XTRA && chunk != null && chunk.isTextXtra())) {
+            return "field";
+        }
+        return memberType.getName();
     }
 
     /**
@@ -871,13 +970,21 @@ public class CastLib {
      * @return true if parsing was successful
      */
     public boolean setExternalData(byte[] data) {
+        return setExternalData(data, null);
+    }
+
+    /**
+     * Set external cast data, optionally reusing a DirectorFile parsed from the
+     * same payload in another cast slot.
+     */
+    public boolean setExternalData(byte[] data, DirectorFile parsedFile) {
         if (data == null || data.length == 0) {
             return false;
         }
 
         try {
-            fetchedExternalData = data.clone();
-            DirectorFile file = DirectorFile.load(data);
+            fetchedExternalData = data;
+            DirectorFile file = parsedFile != null ? parsedFile : DirectorFile.load(data);
             if (file != null) {
                 this.sourceFile = file;
 
@@ -942,30 +1049,20 @@ public class CastLib {
         if (data == null || data.length == 0) {
             return;
         }
-        fetchedExternalData = data.clone();
-        if (containsAscii(data, "font")) {
-            try {
-                registerFontAliases(DirectorFile.load(data));
-            } catch (Throwable ignored) {
-                // Full cast loading will report parse errors when the data is actually consumed.
-            }
-        }
+        fetchedExternalData = data;
     }
 
-    private static boolean containsAscii(byte[] data, String needle) {
-        if (needle == null || needle.isEmpty() || data.length < needle.length()) {
+    /**
+     * Drop raw external bytes once this cast has been parsed into a DirectorFile.
+     * Rendering uses sourceFile/memberChunks after load, so retaining the original
+     * download buffer only increases WASM heap pressure.
+     */
+    public boolean releaseFetchedExternalDataIfLoaded() {
+        if (sourceFile == null || fetchedExternalData == null) {
             return false;
         }
-        for (int i = 0; i <= data.length - needle.length(); i++) {
-            int j = 0;
-            while (j < needle.length() && data[i + j] == (byte) needle.charAt(j)) {
-                j++;
-            }
-            if (j == needle.length()) {
-                return true;
-            }
-        }
-        return false;
+        fetchedExternalData = null;
+        return true;
     }
 
     // Track next dynamic member number for new members created at runtime

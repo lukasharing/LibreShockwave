@@ -60,6 +60,24 @@ public interface CastLibProvider {
     Datum getMemberByName(int castLibNumber, String memberName);
 
     /**
+     * Get a script cast member by name.
+     *
+     * Director's script("Name") constructor namespace is narrower than
+     * member("Name"): field/bitmap data members can share names with parent
+     * scripts and must not satisfy script construction.
+     */
+    default Datum getScriptMemberByName(int castLibNumber, String memberName) {
+        Datum member = getMemberByName(castLibNumber, memberName);
+        if (member instanceof Datum.CastMemberRef ref) {
+            Datum type = getMemberProp(ref.castLibNum(), ref.memberNum(), "type");
+            if (type instanceof Datum.Symbol symbol && "script".equalsIgnoreCase(symbol.name())) {
+                return member;
+            }
+        }
+        return Datum.VOID;
+    }
+
+    /**
      * Get a cast member by name for registry-style lookups.
      * This is narrower than getMemberByName(0, ...): it should only expose
      * members that are already part of the movie's stable global namespace.
@@ -71,6 +89,15 @@ public interface CastLibProvider {
      */
     default Datum getRegistryMemberByName(int castLibNumber, String memberName) {
         return getMemberByName(castLibNumber, memberName);
+    }
+
+    /**
+     * Record the member slot most recently resolved through a movie-owned member registry.
+     * Some Director movies resolve a member by name through Lingo registry helpers and then
+     * read {@code field 0}; the player-side field provider needs the resolved slot to make
+     * that implicit field context deterministic.
+     */
+    default void rememberResolvedFieldMemberSlot(int slotValue) {
     }
 
     /**
@@ -210,6 +237,15 @@ public interface CastLibProvider {
      * @return true if the member exists
      */
     default boolean memberExists(int castLibNumber, int memberNumber) {
+        return false;
+    }
+
+    /**
+     * Return true when the slot is a runtime-created Director member rather than
+     * an authored cast member. Runtime resource managers use this distinction
+     * when a generated buffer name collides with a pre-indexed authored member.
+     */
+    default boolean isRuntimeDynamicMember(int castLibNumber, int memberNumber) {
         return false;
     }
 

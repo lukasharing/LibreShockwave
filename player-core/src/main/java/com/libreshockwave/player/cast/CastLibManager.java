@@ -13,6 +13,7 @@ import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.builtin.cast.CastLibProvider;
 import com.libreshockwave.vm.LingoVM;
 
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
@@ -34,6 +35,8 @@ public class CastLibManager implements CastLibProvider {
     private final Map<Integer, Map<String, HandlerLocation>> handlerLookupCache = new HashMap<>();
     private final Map<Integer, List<String>> scriptPropertyNamesCache = new HashMap<>();
     private boolean initialized = false;
+    private int lastResolvedFieldCastLib = -1;
+    private int lastResolvedFieldMember = -1;
 
     // Callback for cast data loading: when Lingo sets castLib.fileName, this is called
     // with (castLibNumber, fileName). Can load data synchronously (JVM) or queue for
@@ -63,6 +66,7 @@ public class CastLibManager implements CastLibProvider {
         String basePath = file.getBasePath();
 
         if (castList != null && !castList.entries().isEmpty()) {
+            boolean[] assignedCastChunks = new boolean[casts.size()];
             // Use CastListChunk entries as the source
             for (int i = 0; i < castList.entries().size(); i++) {
                 CastListChunk.CastListEntry listEntry = castList.entries().get(i);
@@ -70,8 +74,8 @@ public class CastLibManager implements CastLibProvider {
                 // Cast lib number is 1-based index
                 int castLibNumber = i + 1;
 
-                // Get the corresponding CastChunk if available
-                CastChunk castChunk = (i < casts.size()) ? casts.get(i) : null;
+                CastChunk castChunk = findCastChunkForListEntry(casts, assignedCastChunks, listEntry);
+                boolean isExternal = listEntry.path() != null && !listEntry.path().isEmpty();
 
                 CastLib castLib = new CastLib(castLibNumber, castChunk, listEntry);
 
@@ -82,7 +86,6 @@ public class CastLibManager implements CastLibProvider {
                 castLib.setBasePath(basePath);
 
                 // For internal casts (no external fileName), set the source file directly
-                boolean isExternal = listEntry.path() != null && !listEntry.path().isEmpty();
                 if (!isExternal) {
                     castLib.setSourceFile(file);
                 }
@@ -99,6 +102,28 @@ public class CastLibManager implements CastLibProvider {
                 castLibs.put(castLibNumber, castLib);
             }
         }
+    }
+
+    private static CastChunk findCastChunkForListEntry(
+            List<CastChunk> casts,
+            boolean[] assignedCastChunks,
+            CastListChunk.CastListEntry listEntry) {
+        if (casts == null || casts.isEmpty() || listEntry == null) {
+            return null;
+        }
+
+        int expectedMemberCount = listEntry.memberCount();
+        for (int i = 0; i < casts.size(); i++) {
+            if (assignedCastChunks[i]) {
+                continue;
+            }
+            CastChunk cast = casts.get(i);
+            if (cast != null && cast.memberIds().size() == expectedMemberCount) {
+                assignedCastChunks[i] = true;
+                return cast;
+            }
+        }
+        return null;
     }
 
     /**
@@ -151,7 +176,8 @@ public class CastLibManager implements CastLibProvider {
 
     @Override
     public Datum getCastLibProp(int castLibNumber, String propName) {
-        CastLib castLib = getCastLib(castLibNumber);
+        ensureInitialized();
+        CastLib castLib = castLibs.get(castLibNumber);
         if (castLib == null) {
             return Datum.VOID;
         }
@@ -160,15 +186,16 @@ public class CastLibManager implements CastLibProvider {
 
     @Override
     public boolean setCastLibProp(int castLibNumber, String propName, Datum value) {
-        CastLib castLib = getCastLib(castLibNumber);
+        ensureInitialized();
+        CastLib castLib = castLibs.get(castLibNumber);
         if (castLib == null) {
             return false;
         }
 
         boolean result = castLib.setProp(propName, value);
 
-        // When Lingo's CastLoad Manager sets castLib.fileName to a new URL (after downloading
-        // the .cct file), we need to reload the cast from the cached downloaded data.
+        // When authored Lingo sets castLib.fileName to a newly downloaded URL, reload
+        // the cast from cached data to match Director's automatic reload behavior.
         // In real Director, setting castLib.fileName triggers an automatic reload.
         if (result && "filename".equalsIgnoreCase(propName)) {
             tryLoadCastFromCache(castLibNumber, value.toStr());
@@ -213,7 +240,8 @@ public class CastLibManager implements CastLibProvider {
         if (castLib == null) {
             return false;
         }
-        return castLib.getMember(memberNumber) != null;
+        return castLib.findMemberByNumber(memberNumber) != null
+                || castLib.getCachedMember(memberNumber) != null;
     }
 
     @Override
@@ -225,35 +253,106 @@ public class CastLibManager implements CastLibProvider {
         if (!isRegistryFallbackEligibleCast(castLib)) {
             return false;
         }
-        return castLib.getMember(memberNumber) != null;
+        return castLib.findMemberByNumber(memberNumber) != null
+                || castLib.getCachedMember(memberNumber) != null;
     }
 
     @Override
     public Datum getMemberByName(int castLibNumber, String memberName) {
         ensureInitialized();
+        memberName = unquoteLingoStringLiteral(memberName);
         if (castLibNumber > 0) {
-            return getMemberByNameInCast(getCastLib(castLibNumber), memberName);
+            Datum found = getMemberByNameInCast(getCastLib(castLibNumber), memberName);
+            rememberResolvedFieldMember(found);
+            return found;
         } else {
+            MemberNameCandidate firstPlaceholder = null;
             // Prefer the movie's stable/authored namespace first. Runtime-retargeted
             // scratch casts may legitimately contain members with colliding names,
             // but they should not hijack broad member("name") lookups while a
             // stable cast already exposes the same member.
             for (CastLib castLib : castLibs.values()) {
-                CastLib loadedCast = getCastLib(castLib.getNumber());
+                CastLib loadedCast = castForMemberLookup(castLib);
                 if (!isRegistryFallbackEligibleCast(loadedCast)) {
                     continue;
                 }
-                Datum found = getMemberByNameInCast(loadedCast, memberName);
-                if (!found.isVoid()) {
-                    return found;
+                MemberNameCandidate found = getMemberByNameCandidate(loadedCast, memberName);
+                if (found == null) {
+                    continue;
+                }
+                if (!found.placeholderBitmap()) {
+                    rememberResolvedFieldMember(found.ref());
+                    return found.ref();
+                }
+                if (firstPlaceholder == null) {
+                    firstPlaceholder = found;
                 }
             }
 
             for (CastLib castLib : castLibs.values()) {
-                Datum found = getMemberByNameInCast(getCastLib(castLib.getNumber()), memberName);
-                if (!found.isVoid()) {
-                    return found;
+                MemberNameCandidate found = getMemberByNameCandidate(castForMemberLookup(castLib), memberName);
+                if (found == null) {
+                    continue;
                 }
+                if (!found.placeholderBitmap()) {
+                    rememberResolvedFieldMember(found.ref());
+                    return found.ref();
+                }
+                if (firstPlaceholder == null) {
+                    firstPlaceholder = found;
+                }
+            }
+            if (firstPlaceholder != null) {
+                rememberResolvedFieldMember(firstPlaceholder.ref());
+                return firstPlaceholder.ref();
+            }
+        }
+
+        return Datum.VOID;
+    }
+
+    private void rememberResolvedFieldMember(Datum member) {
+        if (member instanceof Datum.CastMemberRef ref) {
+            lastResolvedFieldCastLib = ref.castLibNum();
+            lastResolvedFieldMember = ref.memberNum();
+        }
+    }
+
+    @Override
+    public void rememberResolvedFieldMemberSlot(int slotValue) {
+        if (slotValue == 0) {
+            return;
+        }
+        SlotId slot = new SlotId(Math.abs(slotValue));
+        if (slot.castLib() >= 1 && slot.member() >= 1) {
+            lastResolvedFieldCastLib = slot.castLib();
+            lastResolvedFieldMember = slot.member();
+        }
+    }
+
+    @Override
+    public Datum getScriptMemberByName(int castLibNumber, String memberName) {
+        ensureInitialized();
+        memberName = unquoteLingoStringLiteral(memberName);
+        if (castLibNumber > 0) {
+            return getScriptMemberByNameInCast(getCastLib(castLibNumber), memberName);
+        }
+
+        for (CastLib castLib : castLibs.values()) {
+            CastLib loadedCast = castForGlobalLookup(castLib);
+            if (!isRegistryFallbackEligibleCast(loadedCast)) {
+                continue;
+            }
+            Datum found = getScriptMemberByNameInCast(loadedCast, memberName);
+            if (!found.isVoid()) {
+                return found;
+            }
+        }
+
+        for (CastLib castLib : castLibs.values()) {
+            Datum found = getScriptMemberByNameInCast(castForGlobalLookup(castLib), memberName);
+            if (!found.isVoid()) {
+                return found;
             }
         }
 
@@ -263,6 +362,7 @@ public class CastLibManager implements CastLibProvider {
     @Override
     public Datum getRegistryMemberByName(int castLibNumber, String memberName) {
         ensureInitialized();
+        memberName = unquoteLingoStringLiteral(memberName);
         if (castLibNumber > 0) {
             CastLib castLib = getCastLib(castLibNumber);
             if (!isRegistryFallbackEligibleCast(castLib)) {
@@ -272,7 +372,7 @@ public class CastLibManager implements CastLibProvider {
         }
 
         for (CastLib castLib : castLibs.values()) {
-            CastLib loadedCast = getCastLib(castLib.getNumber());
+            CastLib loadedCast = castForMemberLookup(castLib);
             if (!isRegistryFallbackEligibleCast(loadedCast)) {
                 continue;
             }
@@ -282,6 +382,42 @@ public class CastLibManager implements CastLibProvider {
             }
         }
         return Datum.VOID;
+    }
+
+    private static String unquoteLingoStringLiteral(String value) {
+        if (value == null || value.length() < 2) {
+            return value;
+        }
+        if (value.charAt(0) == '"' && value.charAt(value.length() - 1) == '"') {
+            return value.substring(1, value.length() - 1);
+        }
+        return value;
+    }
+
+    private CastLib castForGlobalLookup(CastLib castLib) {
+        if (castLib == null) {
+            return null;
+        }
+        if (castLib.isLoaded()) {
+            return castLib;
+        }
+        if (castLib.isExternal()) {
+            return null;
+        }
+        return getCastLib(castLib.getNumber());
+    }
+
+    private CastLib castForMemberLookup(CastLib castLib) {
+        if (castLib == null) {
+            return null;
+        }
+        if (castLib.isLoaded()) {
+            return castLib;
+        }
+        if (castLib.isExternal()) {
+            return castLib;
+        }
+        return getCastLib(castLib.getNumber());
     }
 
     @Override
@@ -659,10 +795,10 @@ public class CastLibManager implements CastLibProvider {
         }
     }
 
-    // Raw data cache keyed by baseName (e.g. "hh_interface").
-    // When a .cct is fetched via preloadNetThing, the raw bytes are cached here
-    // so that later castLib.fileName assignments can load instantly without
-    // a JS round-trip.
+    // Raw download cache. This is intentionally separate from CastLib state:
+    // fetching bytes does not install those bytes into every cast slot with a
+    // matching file name. Director exposes a cast's new members only when that
+    // specific cast slot is preloaded or when authored Lingo sets castLib.fileName.
     private final Map<String, byte[]> castDataCache = new HashMap<>();
     private final Map<Integer, String> pendingExternalLoads = new HashMap<>();
 
@@ -674,7 +810,9 @@ public class CastLibManager implements CastLibProvider {
             castDataCache.put(key, data);
         }
         for (CastLib castLib : findCastLibsByUrl(url)) {
-            castLib.cacheFetchedExternalData(data);
+            if (isRequestedExternalLoad(castLib, url)) {
+                castLib.cacheFetchedExternalData(data);
+            }
         }
     }
 
@@ -682,7 +820,13 @@ public class CastLibManager implements CastLibProvider {
      * Look up cached raw cast data by base name.
      */
     public byte[] getCachedExternalData(String baseName) {
-        return castDataCache.get(baseName);
+        for (String key : downloadCacheKeys(baseName)) {
+            byte[] data = castDataCache.get(key);
+            if (data != null) {
+                return data;
+            }
+        }
+        return null;
     }
 
     /**
@@ -720,9 +864,24 @@ public class CastLibManager implements CastLibProvider {
         pendingExternalLoads.remove(castLibNumber);
     }
 
+    /**
+     * Release raw download buffers for external casts that are already parsed.
+     * The parsed DirectorFile remains attached to each CastLib, so authored
+     * members/scripts used by rendering stay available.
+     */
+    public int releaseLoadedExternalData() {
+        ensureInitialized();
+        int released = 0;
+        for (CastLib castLib : castLibs.values()) {
+            if (castLib.releaseFetchedExternalDataIfLoaded()) {
+                released++;
+            }
+        }
+        return released;
+    }
+
     private void markPendingExternalLoad(int castLibNumber, String fileName) {
-        pendingExternalLoads.put(castLibNumber,
-                FileUtil.getFileNameWithoutExtension(FileUtil.getFileName(fileName)));
+        pendingExternalLoads.put(castLibNumber, normalizedBaseName(fileName));
     }
 
     /**
@@ -737,99 +896,150 @@ public class CastLibManager implements CastLibProvider {
         if (castLib == null) {
             return false;
         }
-        boolean loaded = castLib.setExternalData(data);
+        if (castLib.isLoaded() && castLib.hasFetchedExternalData(data)) {
+            return true;
+        }
+        DirectorFile reusableSource = findReusableExternalSource(castLibNumber, data);
+        boolean loaded = castLib.setExternalData(data, reusableSource);
         if (loaded) {
             clearPendingExternalLoad(castLibNumber);
         }
         return loaded;
     }
 
-    /**
-     * Set external cast data by URL from preloadNetThing.
-     * Multiple cast libraries may reference the same external file (e.g. empty.cst).
-     * This loads the data into ALL matching casts, not just the first one.
-     * Matching is done by comparing the filename portion of the cast's path with the URL.
-     * @param url The URL that was fetched
-     * @param data The raw file data
-     * @return true if at least one cast was loaded successfully
-     */
-    public boolean setExternalCastDataByUrl(String url, byte[] data) {
-        ensureInitialized();
-        boolean anyLoaded = false;
-        for (CastLib castLib : findCastLibsByUrl(url)) {
-            // Skip if already loaded with member data (prevents re-parsing same file)
-            if (castLib.isLoaded() && castLib.getMemberCount() > 0) {
-                anyLoaded = true;
+    private DirectorFile findReusableExternalSource(int targetCastLibNumber, byte[] data) {
+        if (data == null || data.length == 0) {
+            return null;
+        }
+        for (CastLib other : castLibs.values()) {
+            if (other.getNumber() == targetCastLibNumber) {
                 continue;
             }
-            if (setExternalCastData(castLib.getNumber(), data)) {
-                anyLoaded = true;
+            if (!other.isLoaded() || !other.hasFetchedExternalData(data)) {
+                continue;
+            }
+            DirectorFile source = other.getSourceFile();
+            if (source != null) {
+                return source;
             }
         }
-        return anyLoaded;
+        return null;
     }
 
-    /**
-     * Find cast library numbers whose file name matches the given URL/file name (by base name).
-     * Used to trigger post-load reindexing in the Resource Manager when external casts arrive late.
-     */
-    public java.util.List<Integer> getMatchingCastLibNumbersByUrl(String url) {
+    public boolean hasLoadedExternalCastData(int castLibNumber, byte[] data) {
         ensureInitialized();
-        java.util.List<Integer> result = new java.util.ArrayList<>();
-        for (CastLib castLib : findCastLibsByUrl(url)) {
-            result.add(castLib.getNumber());
-        }
-        return result;
+        CastLib castLib = castLibs.get(castLibNumber);
+        return castLib != null && castLib.isLoaded() && castLib.hasFetchedExternalData(data);
     }
 
     public java.util.List<Integer> getRequestedExternalCastSlots(String url) {
         ensureInitialized();
 
-        String baseName = FileUtil.getFileNameWithoutExtension(FileUtil.getFileName(url));
         java.util.List<Integer> slots = new java.util.ArrayList<>();
         
         for (CastLib castLib : findCastLibsByUrl(url)) {
-            int castLibNumber = castLib.getNumber();
-            boolean wasRequested = castLib.isFetching()
-                    || baseName.equalsIgnoreCase(pendingExternalLoads.get(castLibNumber))
-                    || (!castLib.isLoaded() && castLib.matchesAuthoredExternalFile(baseName));
-            if (wasRequested) {
-                slots.add(castLibNumber);
+            if (isRequestedExternalLoad(castLib, url)) {
+                slots.add(castLib.getNumber());
             }
         }
         return slots;
     }
 
+    private boolean isRequestedExternalLoad(CastLib castLib, String url) {
+        if (castLib == null) {
+            return false;
+        }
+        String baseName = normalizedBaseName(url);
+        if (baseName.isEmpty()) {
+            return false;
+        }
+        String pending = pendingExternalLoads.get(castLib.getNumber());
+        return castLib.isFetching() || baseName.equals(pending);
+    }
+
     private java.util.List<CastLib> findCastLibsByUrl(String url) {
-        String extractedFileName = FileUtil.getFileName(url);
-        String fileNameNoExt = FileUtil.getFileNameWithoutExtension(extractedFileName);
+        String fileNameNoExt = normalizedBaseName(url);
         java.util.List<CastLib> result = new java.util.ArrayList<>();
+        if (fileNameNoExt.isEmpty()) {
+            return result;
+        }
 
         for (CastLib castLib : castLibs.values()) {
             String castPath = castLib.getFileName();
             if (castPath == null || castPath.isEmpty()) continue;
 
-            String castFileNoExt = FileUtil.getFileNameWithoutExtension(
-                    FileUtil.getFileName(castPath));
-            if (castFileNoExt.equalsIgnoreCase(fileNameNoExt)) {
+            String castFileNoExt = normalizedBaseName(castPath);
+            if (castFileNoExt.equals(fileNameNoExt)) {
                 result.add(castLib);
             }
         }
         return result;
     }
 
+    private static String normalizedBaseName(String path) {
+        String fileName = FileUtil.getFileName(path);
+        if (fileName == null || fileName.isEmpty()) {
+            return "";
+        }
+        String baseName = FileUtil.getFileNameWithoutExtension(fileName);
+        return baseName != null ? baseName.toLowerCase(Locale.ROOT) : "";
+    }
+
     private static Datum getMemberByNameInCast(CastLib castLib, String memberName) {
+        MemberNameCandidate candidate = getMemberByNameCandidate(castLib, memberName);
+        return candidate != null ? candidate.ref() : Datum.VOID;
+    }
+
+    private record MemberNameCandidate(Datum ref, boolean placeholderBitmap) {}
+
+    private static MemberNameCandidate getMemberByNameCandidate(CastLib castLib, String memberName) {
         if (castLib == null || memberName == null || memberName.isEmpty()) {
-            return Datum.VOID;
+            return null;
+        }
+        if (!castLib.isLoaded()) {
+            CastMember dynamic = castLib.findCachedMemberByNameExact(memberName);
+            if (dynamic != null) {
+                return new MemberNameCandidate(
+                        Datum.CastMemberRef.of(castLib.getNumber(), dynamic.getMemberNumber()),
+                        false);
+            }
+            return null;
         }
         CastMemberChunk member = castLib.findMemberByName(memberName);
         if (member != null) {
             int memberNumber = castLib.getMemberNumber(member);
-            return Datum.CastMemberRef.of(castLib.getNumber(), memberNumber);
+            if (memberNumber > 0) {
+                Datum ref = Datum.CastMemberRef.of(castLib.getNumber(), memberNumber);
+                return new MemberNameCandidate(ref, member.isBitmap()
+                        && !castLib.hasVisibleBitmapContent(memberNumber));
+            }
         }
         CastMember dynamic = castLib.getMemberByName(memberName);
         if (dynamic != null) {
-            return Datum.CastMemberRef.of(castLib.getNumber(), dynamic.getMemberNumber());
+            return new MemberNameCandidate(
+                    Datum.CastMemberRef.of(castLib.getNumber(), dynamic.getMemberNumber()),
+                    false);
+        }
+        return null;
+    }
+
+    private static Datum getScriptMemberByNameInCast(CastLib castLib, String memberName) {
+        if (castLib == null || memberName == null || memberName.isEmpty()) {
+            return Datum.VOID;
+        }
+        if (!castLib.isLoaded()) {
+            castLib.load();
+        }
+        for (var entry : castLib.getMemberChunks().entrySet()) {
+            CastMemberChunk member = entry.getValue();
+            if (member == null || member.name() == null
+                    || !member.name().equalsIgnoreCase(memberName)) {
+                continue;
+            }
+            int memberNumber = entry.getKey();
+            if (castLib.getScript(memberNumber) != null) {
+                return Datum.CastMemberRef.of(castLib.getNumber(), memberNumber);
+            }
         }
         return Datum.VOID;
     }
@@ -849,6 +1059,16 @@ public class CastLibManager implements CastLibProvider {
             return Datum.VOID;
         }
         return Datum.CastMemberRef.of(castLibNumber, member.getMemberNumber());
+    }
+
+    @Override
+    public boolean isRuntimeDynamicMember(int castLibNumber, int memberNumber) {
+        CastLib castLib = getCastLib(castLibNumber);
+        if (castLib == null) {
+            return false;
+        }
+        CastMember member = castLib.getMember(memberNumber);
+        return member != null && member.isRuntimeDynamic();
     }
 
     @Override
@@ -989,65 +1209,7 @@ public class CastLibManager implements CastLibProvider {
             return "";
         }
 
-        String text = member.getTextContent();
-        if (text.isEmpty() || !"memberalias.index".equalsIgnoreCase(member.getName())) {
-            return text;
-        }
-
-        CastLib castLib = getCastLib(member.getCastLibNumber());
-        if (castLib == null) {
-            return text;
-        }
-        // Authored Resource Manager.preIndexMembers() indexes exact member names
-        // before importing memberalias.index. Some public-room casts keep their
-        // actual members under s_-prefixed source names while the alias table
-        // still points at the canonical unprefixed names, so normalize the field
-        // text before legacy scripts consume it.
-        return rewriteAliasIndexTargetsForSourcePrefixedMembers(castLib, text);
-    }
-
-    private static String rewriteAliasIndexTargetsForSourcePrefixedMembers(CastLib castLib, String aliasText) {
-        if (castLib == null || aliasText == null || aliasText.isEmpty()) {
-            return aliasText != null ? aliasText : "";
-        }
-
-        boolean changed = false;
-        StringBuilder rewritten = new StringBuilder(aliasText.length() + 32);
-        String[] lines = aliasText.split("\\r\\n|\\r|\\n", -1);
-        for (int i = 0; i < lines.length; i++) {
-            String rawLine = lines[i];
-            String normalizedLine = rawLine;
-
-            int delimiter = rawLine.indexOf('=');
-            if (delimiter > 0 && delimiter < rawLine.length() - 1) {
-                String targetName = rawLine.substring(delimiter + 1);
-                boolean mirrored = targetName.charAt(targetName.length() - 1) == '*';
-                String bareTarget = mirrored ? targetName.substring(0, targetName.length() - 1) : targetName;
-                String prefixedTarget = sourcePrefixedLookupName(bareTarget);
-                if (prefixedTarget != null
-                        && !castLib.hasMemberNamedExact(bareTarget)
-                        && castLib.hasMemberNamedExact(prefixedTarget)) {
-                    normalizedLine = rawLine.substring(0, delimiter + 1)
-                            + prefixedTarget
-                            + (mirrored ? "*" : "");
-                    changed = true;
-                }
-            }
-
-            if (i > 0) {
-                rewritten.append('\r');
-            }
-            rewritten.append(normalizedLine);
-        }
-
-        return changed ? rewritten.toString() : aliasText;
-    }
-
-    private static String sourcePrefixedLookupName(String requestedName) {
-        if (requestedName == null || requestedName.isEmpty()) {
-            return null;
-        }
-        return requestedName.regionMatches(true, 0, "s_", 0, 2) ? null : "s_" + requestedName;
+        return member.getTextContent();
     }
 
     /**
