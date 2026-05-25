@@ -60,6 +60,32 @@ class StringMethodDispatcherTest {
     }
 
     @Test
+    void returnItemDelimiterAcceptsLfConfigLines() {
+        String configText = ""
+                + "cast.entry.1=interface_assets\n"
+                + "cast.entry.2=patch_assets\n"
+                + "client.window.title=Director Runtime";
+
+        MoviePropertyProvider.ItemDelimiterCache._char = '\r';
+
+        assertEquals(3, countChunk(configText, "item"));
+        assertEquals("cast.entry.1=interface_assets", getChunk(configText, "item", 1, 1));
+        assertEquals("cast.entry.2=patch_assets", getChunk(configText, "item", 2, 2));
+        assertEquals("client.window.title=Director Runtime", getChunk(configText, "item", 3, 3));
+    }
+
+    @Test
+    void returnItemDelimiterTreatsCrLfAsOneBreak() {
+        String configText = "cast.entry.1=interface_assets\r\ncast.entry.2=patch_assets";
+
+        MoviePropertyProvider.ItemDelimiterCache._char = '\r';
+
+        assertEquals(2, countChunk(configText, "item"));
+        assertEquals("cast.entry.1=interface_assets", getChunk(configText, "item", 1, 1));
+        assertEquals("cast.entry.2=patch_assets", getChunk(configText, "item", 2, 2));
+    }
+
+    @Test
     void parsesSingleStringClassListsUsedBySystemProps() {
         Datum parsed = LingoValueParser.parseWithPartial("[\"Broker Manager Class\"]", new LingoVM(null));
 

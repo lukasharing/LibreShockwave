@@ -14,7 +14,7 @@ import java.util.List;
  * 2. Direct scanning for short strings on cache miss (avoids List allocation)
  */
 // Director treats all chars <= 0x20 (space) as word separators, including
-// control characters like \x02 (used as Habbo protocol field delimiter).
+// control characters used by binary/text protocols.
 public final class StringChunkUtils {
 
     private StringChunkUtils() {}
@@ -118,9 +118,15 @@ public final class StringChunkUtils {
 
         // ITEM: always use direct range scan (no burst allocation)
         if (chunkType == StringChunkType.ITEM) {
+            int requestedEnd = end == 0 ? start : end;
+            if (requestedEnd == start) return getItemWithCursor(str, start, itemDelimiter);
+            if (requestedEnd > 0) {
+                if (requestedEnd < start) return "";
+                return getItemRangeDirect(str, start, requestedEnd, itemDelimiter);
+            }
             int count = countDirect(str, chunkType, itemDelimiter);
             if (start > count) return "";
-            int actualEnd = Math.min(end, count);
+            int actualEnd = requestedEnd < 0 ? count : Math.min(requestedEnd, count);
             if (start == actualEnd) return getItemWithCursor(str, start, itemDelimiter);
             return getItemRangeDirect(str, start, actualEnd, itemDelimiter);
         }
@@ -205,7 +211,10 @@ public final class StringChunkUtils {
         } else if (chunkType == StringChunkType.ITEM) {
             int count = 1;
             for (int i = 0; i < str.length(); i++) {
-                if (str.charAt(i) == itemDelimiter) count++;
+                if (isItemDelimiterAt(str, i, itemDelimiter)) {
+                    count++;
+                    i += itemDelimiterWidth(str, i, itemDelimiter) - 1;
+                }
             }
             return count;
         } else if (chunkType == StringChunkType.WORD) {
@@ -245,10 +254,12 @@ public final class StringChunkUtils {
             int current = 1;
             int start = 0;
             for (int i = 0; i < str.length(); i++) {
-                if (str.charAt(i) == itemDelimiter) {
+                if (isItemDelimiterAt(str, i, itemDelimiter)) {
                     if (current == index) return str.substring(start, i);
                     current++;
-                    start = i + 1;
+                    int width = itemDelimiterWidth(str, i, itemDelimiter);
+                    start = i + width;
+                    i += width - 1;
                 }
             }
             return current == index ? str.substring(start) : "";
@@ -325,7 +336,7 @@ public final class StringChunkUtils {
                 return str.substring(_seqStartPos0, _seqEndPos0);
             }
             if (index == _seqIdx0 + 1 && _seqEndPos0 < str.length()) {
-                int start = _seqEndPos0 + 1;
+                int start = nextItemStart(str, _seqEndPos0, delimiter);
                 int end = indexOf(str, delimiter, start);
                 _seqIdx0 = index;
                 _seqStartPos0 = start;
@@ -350,7 +361,7 @@ public final class StringChunkUtils {
                 return str.substring(_seqStartPos0, _seqEndPos0);
             }
             if (index == _seqIdx0 + 1 && _seqEndPos0 < str.length()) {
-                int start = _seqEndPos0 + 1;
+                int start = nextItemStart(str, _seqEndPos0, delimiter);
                 int end = indexOf(str, delimiter, start);
                 _seqIdx0 = index;
                 _seqStartPos0 = start;
@@ -373,7 +384,7 @@ public final class StringChunkUtils {
         int current = 1;
         int start = 0;
         for (int i = 0; i < str.length(); i++) {
-            if (str.charAt(i) == delimiter) {
+            if (isItemDelimiterAt(str, i, delimiter)) {
                 if (current == index) {
                     _seqIdx0 = index;
                     _seqStartPos0 = start;
@@ -381,7 +392,9 @@ public final class StringChunkUtils {
                     return str.substring(start, i);
                 }
                 current++;
-                start = i + 1;
+                int width = itemDelimiterWidth(str, i, delimiter);
+                start = i + width;
+                i += width - 1;
             }
         }
         if (current == index) {
@@ -396,7 +409,7 @@ public final class StringChunkUtils {
     /** Fast indexOf for a single char, returns str.length() if not found. */
     private static int indexOf(String str, char ch, int fromIndex) {
         for (int i = fromIndex; i < str.length(); i++) {
-            if (str.charAt(i) == ch) return i;
+            if (isItemDelimiterAt(str, i, ch)) return i;
         }
         return str.length();
     }
@@ -407,15 +420,42 @@ public final class StringChunkUtils {
         int segStart = (startIdx == 1) ? 0 : -1;
 
         for (int i = 0; i < str.length(); i++) {
-            if (str.charAt(i) == delimiter) {
+            if (isItemDelimiterAt(str, i, delimiter)) {
                 delimsSeen++;
-                if (startIdx > 1 && delimsSeen == startIdx - 1) segStart = i + 1;
+                int width = itemDelimiterWidth(str, i, delimiter);
+                if (startIdx > 1 && delimsSeen == startIdx - 1) segStart = i + width;
                 if (delimsSeen == endIdx) {
                     return (segStart >= 0) ? str.substring(segStart, i) : "";
                 }
+                i += width - 1;
             }
         }
         return (segStart >= 0) ? str.substring(segStart) : "";
+    }
+
+    private static boolean isItemDelimiterAt(String str, int index, char delimiter) {
+        char ch = str.charAt(index);
+        if (delimiter == '\r') {
+            return ch == '\r' || ch == '\n';
+        }
+        return ch == delimiter;
+    }
+
+    private static int itemDelimiterWidth(String str, int index, char delimiter) {
+        if (delimiter == '\r'
+                && str.charAt(index) == '\r'
+                && index + 1 < str.length()
+                && str.charAt(index + 1) == '\n') {
+            return 2;
+        }
+        return 1;
+    }
+
+    private static int nextItemStart(String str, int delimiterIndex, char delimiter) {
+        if (delimiterIndex >= str.length()) {
+            return str.length();
+        }
+        return delimiterIndex + itemDelimiterWidth(str, delimiterIndex, delimiter);
     }
 
     /** Get words [startIdx..endIdx] joined by space, normalizing whitespace. */
