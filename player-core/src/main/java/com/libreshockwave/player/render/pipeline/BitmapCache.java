@@ -22,14 +22,24 @@ public class BitmapCache {
     record IndexedMatteColorRemap(int foreColor, int backColor) {}
 
     private final Map<CacheKey, Bitmap> cache = new ConcurrentHashMap<>();
+    private final Map<DynamicCacheKey, Bitmap> dynamicCache = new ConcurrentHashMap<>();
     private final Set<MemberCacheId> decodeFailed = Collections.newSetFromMap(new ConcurrentHashMap<>());
     /** Tracks the last known palette version per member ID to detect palette changes. */
     private final Map<MemberCacheId, Integer> paletteVersions = new ConcurrentHashMap<>();
 
     private record MemberCacheId(int fileIdentity, int memberId) {}
 
-    private record CacheKey(MemberCacheId member, int ink, int foreColor, int backColor,
+    private record CacheKey(MemberCacheId member, Palette paletteOverride,
+                            int ink, int foreColor, int backColor,
                             boolean hasForeColor, boolean hasBackColor) {}
+
+    private record DynamicCacheKey(Bitmap bitmap, int mutationRevision,
+                                   Palette imagePalette, byte[] paletteIndices,
+                                   int paletteRefCastLib, int paletteRefMemberNum,
+                                   String paletteRefSystemName, boolean nativeAlpha,
+                                   int ink, int foreColor, int backColor,
+                                   boolean hasForeColor, boolean hasBackColor,
+                                   boolean neutralizeOpaqueWhite) {}
 
     /**
      * Get an ink-processed bitmap for a file-loaded cast member.
@@ -57,8 +67,8 @@ public class BitmapCache {
                                 int foreColor, boolean hasForeColor, boolean hasBackColor,
                                 Player player, Palette paletteOverride) {
         MemberCacheId memberId = memberKey(member);
-        CacheKey key = new CacheKey(memberId, ink, hasForeColor ? foreColor : 0, backColor,
-                hasForeColor, hasBackColor);
+        CacheKey key = new CacheKey(memberId, paletteOverride, ink,
+                hasForeColor ? foreColor : 0, backColor, hasForeColor, hasBackColor);
 
         Bitmap cached = cache.get(key);
         if (cached != null) {
@@ -150,11 +160,12 @@ public class BitmapCache {
     /**
      * Get an ink-processed bitmap for a dynamic (runtime-created) cast member.
      * Synchronous — dynamic members already have their bitmap decoded.
-     * NOT cached because dynamic member bitmaps are mutable (window system updates them).
+     * Not cached because generic runtime-created members can be mutable without
+     * going through Lingo image mutation dispatch.
      */
     public Bitmap getProcessedDynamic(CastMember dynMember, int ink, int backColor,
                                      int foreColor, boolean hasForeColor, boolean hasBackColor) {
-        Bitmap bmp = dynMember.getBitmap();
+        Bitmap bmp = dynMember != null ? dynMember.getBitmap() : null;
         if (bmp == null) {
             return null;
         }
@@ -172,6 +183,50 @@ public class BitmapCache {
                 ink, foreColor, backColor, hasForeColor, hasBackColor, bmp.getImagePalette());
     }
 
+    public Bitmap getProcessedScriptModifiedDynamic(CastMember dynMember, int ink, int backColor,
+                                                    int foreColor, boolean hasForeColor,
+                                                    boolean hasBackColor,
+                                                    boolean neutralizeOpaqueWhite) {
+        Bitmap bmp = dynMember != null ? dynMember.getBitmap() : null;
+        if (bmp == null) {
+            return null;
+        }
+
+        DynamicCacheKey key = dynamicKey(bmp, ink, backColor, foreColor,
+                hasForeColor, hasBackColor, neutralizeOpaqueWhite);
+        Bitmap cached = dynamicCache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        removeStaleDynamicEntries(bmp);
+
+        Bitmap source = bmp;
+        if (source.getBitDepth() <= 1 && hasForeColor) {
+            source = InkProcessor.applyForeColorRemap(source, foreColor, backColor);
+        }
+
+        Bitmap processed;
+        if (InkProcessor.shouldProcessInk(ink)) {
+            Bitmap inkSource = source;
+            if (neutralizeOpaqueWhite) {
+                inkSource = InkProcessor.convertOpaqueWhiteToTransparent(inkSource);
+            }
+            boolean hasNativeAlpha = inkSource.getBitDepth() == 32 && inkSource.isNativeAlpha();
+            processed = applyIndexedMatteColorRemapIfNeeded(
+                    bmp,
+                    InkProcessor.applyInk(inkSource, ink, backColor,
+                            hasNativeAlpha, inkSource.getImagePalette(), true),
+                    ink, foreColor, backColor, hasForeColor, hasBackColor, bmp.getImagePalette());
+        } else {
+            processed = applyIndexedMatteColorRemapIfNeeded(
+                    bmp,
+                    source,
+                    ink, foreColor, backColor, hasForeColor, hasBackColor, bmp.getImagePalette());
+        }
+        dynamicCache.put(key, processed);
+        return processed;
+    }
+
     static Bitmap coerceNonNativeAlphaToOpaque(Bitmap raw, boolean useAlpha) {
         if (raw == null || raw.getBitDepth() != 32 || useAlpha || !raw.hasTransparentPixels()) {
             return raw;
@@ -184,8 +239,45 @@ public class BitmapCache {
      */
     public void clear() {
         cache.clear();
+        dynamicCache.clear();
         decodeFailed.clear();
         paletteVersions.clear();
+    }
+
+    private DynamicCacheKey dynamicKey(Bitmap bitmap, int ink, int backColor,
+                                       int foreColor, boolean hasForeColor,
+                                       boolean hasBackColor,
+                                       boolean neutralizeOpaqueWhite) {
+        return new DynamicCacheKey(
+                bitmap,
+                bitmap.getMutationRevision(),
+                bitmap.getImagePalette(),
+                bitmap.getPaletteIndicesUnsafe(),
+                bitmap.getPaletteRefCastLib(),
+                bitmap.getPaletteRefMemberNum(),
+                bitmap.getPaletteRefSystemName(),
+                bitmap.isNativeAlpha(),
+                ink,
+                hasForeColor ? foreColor : 0,
+                backColor,
+                hasForeColor,
+                hasBackColor,
+                neutralizeOpaqueWhite
+        );
+    }
+
+    private void removeStaleDynamicEntries(Bitmap bitmap) {
+        dynamicCache.keySet().removeIf(key -> key.bitmap() == bitmap && !matchesCurrentBitmapState(key, bitmap));
+    }
+
+    private boolean matchesCurrentBitmapState(DynamicCacheKey key, Bitmap bitmap) {
+        return key.mutationRevision() == bitmap.getMutationRevision()
+                && key.imagePalette() == bitmap.getImagePalette()
+                && key.paletteIndices() == bitmap.getPaletteIndicesUnsafe()
+                && key.paletteRefCastLib() == bitmap.getPaletteRefCastLib()
+                && key.paletteRefMemberNum() == bitmap.getPaletteRefMemberNum()
+                && Objects.equals(key.paletteRefSystemName(), bitmap.getPaletteRefSystemName())
+                && key.nativeAlpha() == bitmap.isNativeAlpha();
     }
 
     private MemberCacheId memberKey(CastMemberChunk member) {
@@ -197,7 +289,7 @@ public class BitmapCache {
     static IndexedMatteColorRemap resolveIndexedMatteColorRemap(
             Bitmap raw, int ink, int foreColor, int backColor,
             boolean hasForeColor, boolean hasBackColor, Palette palette) {
-        if (raw == null || raw.getBitDepth() <= 1 || raw.getPaletteIndices() == null) {
+        if (raw == null || raw.getBitDepth() <= 1 || raw.getPaletteIndicesUnsafe() == null) {
             return null;
         }
         InkMode inkMode = InkMode.fromCode(ink);
@@ -214,7 +306,7 @@ public class BitmapCache {
 
         // Skip the default black→white identity ramp. Dynamic sprites inherit score defaults
         // as explicit colors, but Director only needs indexed MATTE recoloring when a script
-        // actually changes the palette ramp (for example furni bgColor layers).
+        // actually changes the palette ramp.
         if (effectiveForeColor == 0x000000 && effectiveBackColor == 0xFFFFFF) {
             return null;
         }

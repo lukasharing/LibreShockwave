@@ -209,50 +209,14 @@ public class SpriteBaker {
         if (liveMember != null) {
             Bitmap liveBmp = liveMember.getBitmap();
             if (liveBmp != null && liveBmp.isScriptModified()) {
-                // Director applies foreColor/backColor colorization BEFORE ink for 1-bit bitmaps.
-                // This ensures masks with foreColor=white become all-white before ink removes
-                // the white background, making them fully transparent.
-                if (liveBmp.getBitDepth() <= 1 && sprite.hasForeColor()) {
-                    liveBmp = InkProcessor.applyForeColorRemap(liveBmp,
-                            sprite.getForeColor(), sprite.getBackColor());
-                }
-                if (InkProcessor.shouldProcessInk(sprite.getInk())) {
-                    // Script-modified bitmaps (avatar canvases, window buffers) use
-                    // simple exact-match color-key transparency. The graduated alpha
-                    // unblending in applyBackgroundTransparent is designed for text
-                    // anti-aliasing, but destroys intentionally grayscale body parts
-                    // (e.g., Habbo avatar sprites that use grayscale-to-color remapping).
-                    Bitmap inkSrc = liveBmp;
-                    if (shouldNeutralizeOpaqueWhiteForScriptCanvas(sprite, inkSrc)) {
-                        // Script-built 32-bit canvases commonly start life as opaque white
-                        // buffers and then receive masked copyPixels draws. Under Director,
-                        // the untouched white canvas does not contribute visible slabs when
-                        // the final sprite uses DARKEN/LIGHTEN; only the drawn content is
-                        // colorized. Preserve that by neutralizing opaque white before the
-                        // runtime DARKEN/LIGHTEN ink path runs.
-                        inkSrc = InkProcessor.convertOpaqueWhiteToTransparent(inkSrc);
-                    }
-                    boolean hasNativeAlpha = inkSrc.getBitDepth() == 32 && inkSrc.isNativeAlpha();
-                    return BitmapCache.applyIndexedMatteColorRemapIfNeeded(
-                            liveBmp,
-                            InkProcessor.applyInk(inkSrc, sprite.getInk(),
-                                    sprite.getBackColor(), hasNativeAlpha, inkSrc.getImagePalette(), true),
-                            sprite.getInk(),
-                            sprite.getForeColor(),
-                            sprite.getBackColor(),
-                            sprite.hasForeColor(),
-                            sprite.hasBackColor(),
-                            liveBmp.getImagePalette());
-                }
-                return BitmapCache.applyIndexedMatteColorRemapIfNeeded(
-                        liveBmp,
-                        liveBmp,
+                return bitmapCache.getProcessedScriptModifiedDynamic(
+                        liveMember,
                         sprite.getInk(),
-                        sprite.getForeColor(),
                         sprite.getBackColor(),
+                        sprite.getForeColor(),
                         sprite.hasForeColor(),
                         sprite.hasBackColor(),
-                        liveBmp.getImagePalette());
+                        shouldNeutralizeOpaqueWhiteForScriptCanvas(sprite, liveBmp));
             }
         }
 

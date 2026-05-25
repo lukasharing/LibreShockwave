@@ -16,6 +16,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -111,6 +112,64 @@ class BitmapCacheTest {
 
         assertSame(raw, coerced);
         assertEquals(0x00F0F0F0, coerced.getPixel(0, 0));
+    }
+
+    @Test
+    void scriptModifiedDynamicBitmapsAreCachedUntilMutatedAgain() {
+        Bitmap bitmap = new Bitmap(1, 1, 32, new int[] {0xFFFFFFFF});
+        bitmap.markScriptModified();
+        CastMember member = new CastMember(1, 10001, MemberType.BITMAP);
+        member.setBitmapDirectly(bitmap);
+
+        BitmapCache cache = new BitmapCache();
+
+        Bitmap first = cache.getProcessedScriptModifiedDynamic(
+                member, InkMode.BACKGROUND_TRANSPARENT.code(), 0xFFFFFF,
+                0, false, false, false);
+        Bitmap second = cache.getProcessedScriptModifiedDynamic(
+                member, InkMode.BACKGROUND_TRANSPARENT.code(), 0xFFFFFF,
+                0, false, false, false);
+
+        assertSame(first, second);
+
+        bitmap.setPixel(0, 0, 0xFF000000);
+        bitmap.markScriptModified();
+
+        Bitmap afterMutation = cache.getProcessedScriptModifiedDynamic(
+                member, InkMode.BACKGROUND_TRANSPARENT.code(), 0xFFFFFF,
+                0, false, false, false);
+
+        assertNotSame(first, afterMutation);
+    }
+
+    @Test
+    void scriptModifiedDynamicCacheInvalidatesWhenPaletteStateChanges() {
+        Palette bluePalette = new Palette(new int[] {0x0000FF}, "blue");
+        Palette redPalette = new Palette(new int[] {0xFF0000}, "red");
+        Bitmap bitmap = new Bitmap(1, 1, 8, new int[] {0xFF0000FF});
+        bitmap.setImagePalette(bluePalette);
+        bitmap.setPaletteIndices(new byte[] {0});
+        bitmap.markScriptModified();
+        CastMember member = new CastMember(1, 10003, MemberType.BITMAP);
+        member.setBitmapDirectly(bitmap);
+
+        BitmapCache cache = new BitmapCache();
+
+        Bitmap first = cache.getProcessedScriptModifiedDynamic(
+                member, InkMode.BACKGROUND_TRANSPARENT.code(), 0xFFFFFF,
+                0, false, false, false);
+
+        int revisionBeforePaletteChange = bitmap.getMutationRevision();
+        assertEquals(1, bitmap.remapImagePalette(redPalette));
+        assertEquals(revisionBeforePaletteChange, bitmap.getMutationRevision(),
+                "palette remaps can change visible pixels without going through image mutation dispatch");
+
+        Bitmap afterPaletteChange = cache.getProcessedScriptModifiedDynamic(
+                member, InkMode.BACKGROUND_TRANSPARENT.code(), 0xFFFFFF,
+                0, false, false, false);
+
+        assertNotSame(first, afterPaletteChange);
+        assertEquals(0xFFFF0000, afterPaletteChange.getPixel(0, 0));
     }
 
     @Test

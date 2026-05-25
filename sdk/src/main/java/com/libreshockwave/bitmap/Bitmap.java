@@ -14,6 +14,7 @@ public class Bitmap {
     private final int bitDepth;
     private byte[] paletteIndices;
     private boolean scriptModified; // Set when Lingo modifies this bitmap via image API
+    private int mutationRevision;
     private boolean nativeAlpha; // True for Director-decoded 32-bit bitmaps with real alpha
     private Palette imagePalette; // Palette for 8-bit images created via image(w,h,8,paletteMember)
     private int paletteRefCastLib = -1;
@@ -58,6 +59,15 @@ public class Bitmap {
     }
 
     /**
+     * Monotonic revision for script-visible bitmap mutations. Render caches use
+     * this to reuse processed dynamic images only while their pixels/metadata
+     * have not changed.
+     */
+    public int getMutationRevision() {
+        return mutationRevision;
+    }
+
+    /**
      * Returns true if this bitmap contains any fully transparent pixels (alpha=0).
      */
     public boolean hasTransparentPixels() {
@@ -89,6 +99,7 @@ public class Bitmap {
     /** Mark this bitmap as modified by Lingo script operations. */
     public void markScriptModified() {
         this.scriptModified = true;
+        this.mutationRevision++;
     }
 
     public boolean isNativeAlpha() {
@@ -139,6 +150,14 @@ public class Bitmap {
 
     public byte[] getPaletteIndices() {
         return paletteIndices != null ? java.util.Arrays.copyOf(paletteIndices, paletteIndices.length) : null;
+    }
+
+    /**
+     * Internal read-only fast path for render/image primitives. Callers must not
+     * mutate the returned array unless they own the bitmap update semantics.
+     */
+    public byte[] getPaletteIndicesUnsafe() {
+        return paletteIndices;
     }
 
     public void clearPaletteIndices() {
@@ -328,11 +347,13 @@ public class Bitmap {
             this.imagePalette = null;
             this.paletteIndices = null;
             this.scriptModified = false;
+            this.mutationRevision = 0;
             clearPaletteRefMetadata();
             return;
         }
         this.imagePalette = other.imagePalette;
         this.scriptModified = other.scriptModified;
+        this.mutationRevision = other.mutationRevision;
         this.nativeAlpha = other.nativeAlpha;
         this.paletteIndices = other.paletteIndices != null
                 ? java.util.Arrays.copyOf(other.paletteIndices, other.paletteIndices.length)
