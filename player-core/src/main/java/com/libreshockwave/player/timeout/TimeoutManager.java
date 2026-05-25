@@ -6,9 +6,11 @@ import com.libreshockwave.vm.builtin.timeout.TimeoutProvider;
 import com.libreshockwave.vm.util.AncestorChainWalker;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.LongSupplier;
 
 /**
  * Manages Director timeouts.
@@ -21,6 +23,15 @@ import java.util.Map;
 public class TimeoutManager implements TimeoutProvider {
 
     private final Map<String, TimeoutEntry> timeouts = new LinkedHashMap<>();
+    private final LongSupplier clock;
+
+    public TimeoutManager() {
+        this(System::currentTimeMillis);
+    }
+
+    public TimeoutManager(LongSupplier clock) {
+        this.clock = clock != null ? clock : System::currentTimeMillis;
+    }
 
     /**
      * A registered timeout entry.
@@ -49,13 +60,13 @@ public class TimeoutManager implements TimeoutProvider {
 
     @Override
     public Datum createTimeout(String name, int periodMs, String handler, Datum target) {
-        long now = System.currentTimeMillis();
+        long now = currentTimeMs();
         timeouts.put(name, new TimeoutEntry(name, periodMs, handler, target, now));
         return new Datum.TimeoutRef(name);
     }
 
     public Datum createTimeout(String name, int periodMs, String handler, Datum target, boolean oneShot) {
-        long now = System.currentTimeMillis();
+        long now = currentTimeMs();
         TimeoutEntry entry = new TimeoutEntry(name, periodMs, handler, target, now);
         entry.oneShot = oneShot;
         timeouts.put(name, entry);
@@ -83,7 +94,7 @@ public class TimeoutManager implements TimeoutProvider {
             case "period" -> Datum.of(entry.periodMs);
             case "handler" -> Datum.symbol(entry.handler);
             case "persistent" -> entry.persistent ? Datum.TRUE : Datum.FALSE;
-            case "time" -> Datum.of((int) (System.currentTimeMillis() - entry.lastFiredMs));
+            case "time" -> Datum.of((int) (currentTimeMs() - entry.lastFiredMs));
             default -> Datum.VOID;
         };
     }
@@ -120,6 +131,14 @@ public class TimeoutManager implements TimeoutProvider {
      * @param currentTimeMs Current time in milliseconds
      */
     public void processTimeouts(LingoVM vm, long currentTimeMs) {
+        processTimeouts(vm, currentTimeMs, false);
+    }
+
+    public void processInputEventTimeouts(LingoVM vm, long currentTimeMs) {
+        processTimeouts(vm, currentTimeMs, true);
+    }
+
+    private void processTimeouts(LingoVM vm, long currentTimeMs, boolean inputPump) {
         if (timeouts.isEmpty()) return;
 
         // Copy keys to avoid ConcurrentModificationException (handlers may create/remove timeouts)
@@ -129,8 +148,12 @@ public class TimeoutManager implements TimeoutProvider {
             TimeoutEntry entry = timeouts.get(key);
             if (entry == null) continue;  // May have been removed by a previous handler
 
+            if (entry.periodMs <= 0) {
+                continue;
+            }
+
             long elapsed = currentTimeMs - entry.lastFiredMs;
-            if (elapsed >= entry.periodMs) {
+            if (elapsed >= entry.periodMs || (inputPump && entry.periodMs == 1)) {
                 entry.lastFiredMs = currentTimeMs;
                 // One-shot timeouts are removed BEFORE firing so the handler
                 // can re-create a timeout with the same name (Director behavior)
@@ -215,13 +238,26 @@ public class TimeoutManager implements TimeoutProvider {
     public void dispatchSystemEvent(LingoVM vm, String handlerName) {
         if (timeouts.isEmpty()) return;
 
-        // Snapshot targets to avoid ConcurrentModificationException
-        List<TimeoutEntry> targets = new ArrayList<>(timeouts.values());
+        // Snapshot targets to avoid ConcurrentModificationException. Build the
+        // snapshot manually because TeaVM's Collection constructor path can
+        // surface VM-level collection failures as frame-loop crashes.
+        List<TimeoutEntry> targets = new ArrayList<>();
+        try {
+            for (TimeoutEntry entry : timeouts.values()) {
+                if (entry != null) {
+                    targets.add(entry);
+                }
+            }
+        } catch (Throwable t) {
+            System.err.println("[TimeoutManager] Error snapshotting system event targets for '"
+                    + handlerName + "': " + t.getMessage());
+            return;
+        }
         for (TimeoutEntry entry : targets) {
             if (entry.target instanceof Datum.ScriptInstance target) {
                 try {
-                    AncestorChainWalker.invokeHandler(vm, target, handlerName, List.of());
-                } catch (Exception e) {
+                    AncestorChainWalker.invokeHandler(vm, target, handlerName, Collections.emptyList());
+                } catch (Throwable e) {
                     System.err.println("[TimeoutManager] Error in system event '"
                             + handlerName + "': " + e.getMessage());
                 }
@@ -234,6 +270,10 @@ public class TimeoutManager implements TimeoutProvider {
      */
     public List<String> getTimeoutNames() {
         return new ArrayList<>(timeouts.keySet());
+    }
+
+    private long currentTimeMs() {
+        return clock.getAsLong();
     }
 
     /**
