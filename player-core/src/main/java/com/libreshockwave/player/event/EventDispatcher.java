@@ -233,6 +233,12 @@ public class EventDispatcher {
                 || spriteHasHandler(channel, PlayerEvent.MOUSE_WITHIN.getHandlerName());
     }
 
+    private boolean isBrokerProcedureEvent(String handlerName) {
+        return isMouseHandler(handlerName)
+                || PlayerEvent.KEY_DOWN.getHandlerName().equals(handlerName)
+                || PlayerEvent.KEY_UP.getHandlerName().equals(handlerName);
+    }
+
     /**
      * Dispatch an event to movie scripts only using a PlayerEvent constant.
      */
@@ -341,6 +347,11 @@ public class EventDispatcher {
     }
 
     private Datum invokeScriptInstanceEvent(Datum.ScriptInstance instance, String handlerName, List<Datum> args) {
+        if ((PlayerEvent.KEY_DOWN.getHandlerName().equals(handlerName)
+                || PlayerEvent.KEY_UP.getHandlerName().equals(handlerName))
+                && scriptInstanceHasProc(instance, handlerName)) {
+            return dispatchScriptInstanceProc(instance, handlerName);
+        }
         if (AncestorChainWalker.hasHandler(instance, handlerName)) {
             return ControlFlowBuiltins.callHandlerOnInstance(vm, instance, handlerName, args);
         }
@@ -348,7 +359,7 @@ public class EventDispatcher {
     }
 
     private Datum dispatchScriptInstanceProc(Datum.ScriptInstance instance, String handlerName) {
-        if (!isMouseHandler(handlerName)) {
+        if (!isBrokerProcedureEvent(handlerName)) {
             return Datum.VOID;
         }
         Datum procEntry = getScriptInstanceProcEntry(instance, handlerName);
@@ -358,6 +369,15 @@ public class EventDispatcher {
 
         try {
             Datum targetId = procList.items().get(1);
+            if (!isTruthy(targetId)
+                    && (PlayerEvent.KEY_DOWN.getHandlerName().equals(handlerName)
+                    || PlayerEvent.KEY_UP.getHandlerName().equals(handlerName))) {
+                Datum mouseUpEntry = getScriptInstanceProcEntry(instance, PlayerEvent.MOUSE_UP.getHandlerName());
+                if (mouseUpEntry instanceof Datum.List mouseUpProc && mouseUpProc.items().size() >= 2) {
+                    targetId = mouseUpProc.items().get(1);
+                    procList = new Datum.List(List.of(Datum.symbol(handlerName), targetId));
+                }
+            }
             if (!isTruthy(targetId)) {
                 return Datum.ZERO;
             }
@@ -384,7 +404,7 @@ public class EventDispatcher {
     }
 
     private boolean scriptInstanceHasProc(Datum.ScriptInstance instance, String handlerName) {
-        if (!isMouseHandler(handlerName)) {
+        if (!isBrokerProcedureEvent(handlerName)) {
             return false;
         }
         Datum procEntry = getScriptInstanceProcEntry(instance, handlerName);
@@ -397,9 +417,6 @@ public class EventDispatcher {
     private boolean scriptInstanceRespondsToEvent(Datum.ScriptInstance instance, String handlerName) {
         if (instance == null) {
             return false;
-        }
-        if (!isMouseHandler(handlerName)) {
-            return AncestorChainWalker.hasHandler(instance, handlerName);
         }
         if (scriptInstanceHasProc(instance, handlerName)) {
             return true;
