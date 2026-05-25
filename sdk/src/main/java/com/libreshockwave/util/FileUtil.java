@@ -34,16 +34,21 @@ public class FileUtil {
     }
 
     /**
-     * Build a list of URLs to try, preferring .cct (compressed) over .cst.
-     * For cast files (.cst/.cct): returns [.cct, .cst] (.cct first — common in web deployment)
-     * For movie files (.dcr/.dxr/.dir): returns [original, .dcr, .dxr, .dir]
+     * Build a list of URLs to try while preserving the authored extension first.
+     * For cast files (.cst/.cct), try the requested URL first and then the paired
+     * compressed/uncompressed variant.
+     * For movie files (.dcr/.dxr/.dir), returns [original, .dcr, .dxr, .dir].
      * Otherwise returns just the original URL.
      */
     public static String[] getUrlsWithFallbacks(String url) {
         String lower = url.toLowerCase();
-        if (lower.endsWith(".cst") || lower.endsWith(".cct")) {
+        if (lower.endsWith(".cst")) {
             String base = url.substring(0, url.length() - 4);
-            return new String[] { base + ".cct", base + ".cst" };
+            return new String[] { url, base + ".cct" };
+        }
+        if (lower.endsWith(".cct")) {
+            String base = url.substring(0, url.length() - 4);
+            return new String[] { url, base + ".cst" };
         }
         if (lower.endsWith(".dcr") || lower.endsWith(".dxr") || lower.endsWith(".dir")) {
             String base = url.substring(0, url.length() - 4);
