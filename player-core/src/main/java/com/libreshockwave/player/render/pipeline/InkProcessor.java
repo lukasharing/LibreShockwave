@@ -233,9 +233,11 @@ public final class InkProcessor {
         int w = src.getWidth();
         int h = src.getHeight();
         int[] srcPixels = src.getPixels();
-        int[] result = new int[w * h];
+        int pixelCount = w * h;
+        int[] result = new int[pixelCount];
 
-        for (int i = 0; i < srcPixels.length; i++) {
+        int limit = Math.min(srcPixels.length, pixelCount);
+        for (int i = 0; i < limit; i++) {
             int pixel = srcPixels[i];
             int alpha = (pixel >>> 24) & 0xFF;
             if (alpha == 0) {
@@ -250,8 +252,9 @@ public final class InkProcessor {
             }
 
             // Director uses exact-match keying here. Anti-aliased near-colors remain
-            // opaque and can create halos unless the source uses real alpha.
-            result[i] = pixel | 0xFF000000;
+            // visible, but existing source alpha must survive; ink 36 supplies a
+            // color key, not an alpha reset.
+            result[i] = pixel;
         }
 
         return newDerivedBitmap(src, result);
