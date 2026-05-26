@@ -1,11 +1,14 @@
 package com.libreshockwave.vm.opcode.dispatch;
 
 import com.libreshockwave.vm.datum.Datum;
+import com.libreshockwave.vm.datum.LingoException;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PropListMethodDispatcherTest {
@@ -67,20 +70,18 @@ class PropListMethodDispatcherTest {
     }
 
     @Test
-    void getAtStringKeyNoFallbackWhenCaseDiffers() {
-        // Cross-type fallback requires exact case: "Room_interface" != "room_interface"
+    void getAtStringKeyMatchesCaseInsensitivePropertyName() {
         Datum.PropList propList = new Datum.PropList();
         propList.add("room_interface", Datum.of(1), true);
 
         Datum result = PropListMethodDispatcher.dispatch(
                 propList, "getAt", List.of(Datum.of("Room_interface")));
 
-        assertTrue(result.isVoid());
+        assertEquals(1, result.toInt());
     }
 
     @Test
-    void getAtCrossTypeFallbackOnExactCase() {
-        // Cross-type fallback works when case matches exactly
+    void getAtCrossesSymbolAndStringKeysByPropertyName() {
         Datum.PropList propList = new Datum.PropList();
         propList.add("color", Datum.of(255), false);
 
@@ -91,7 +92,7 @@ class PropListMethodDispatcherTest {
     }
 
     @Test
-    void getAtSeparatesSymbolAndStringNamespaces() {
+    void getAtReturnsFirstCompatibleDuplicateAcrossSymbolAndStringKeys() {
         Datum.PropList propList = new Datum.PropList();
         propList.add("key", Datum.of(1), true);   // symbol #key
         propList.add("key", Datum.of(2), false);   // string "key"
@@ -102,7 +103,7 @@ class PropListMethodDispatcherTest {
                 propList, "getAt", List.of(Datum.of("key")));
 
         assertEquals(1, symResult.toInt());
-        assertEquals(2, strResult.toInt());
+        assertEquals(1, strResult.toInt());
     }
 
     @Test
@@ -151,6 +152,36 @@ class PropListMethodDispatcherTest {
     }
 
     @Test
+    void setAPropUpdatesFirstDuplicateAndSetPropRequiresExistingProperty() {
+        Datum.PropList propList = new Datum.PropList();
+        propList.add("door", Datum.of("first"), false);
+        propList.add("door", Datum.of("second"), false);
+
+        PropListMethodDispatcher.dispatch(
+                propList, "setAProp", List.of(Datum.of("door"), Datum.of("updated")));
+
+        assertEquals("updated", propList.getValue(0).toStr());
+        assertEquals("second", propList.getValue(1).toStr());
+
+        assertThrows(LingoException.class, () -> PropListMethodDispatcher.dispatch(
+                propList, "setProp", List.of(Datum.of("missing"), Datum.of("value"))));
+    }
+
+    @Test
+    void setAPropUpdatesFirstCompatibleSymbolOrStringKeyAndPreservesKeyToken() {
+        Datum.PropList propList = new Datum.PropList();
+        propList.add("door", Datum.of("first"), false);
+        propList.add("door", Datum.of("second"), true);
+
+        PropListMethodDispatcher.dispatch(
+                propList, "setAProp", List.of(Datum.symbol("door"), Datum.of("updated")));
+
+        assertTrue(propList.getKeyDatum(0) instanceof Datum.Str);
+        assertEquals("updated", propList.getValue(0).toStr());
+        assertEquals("second", propList.getValue(1).toStr());
+    }
+
+    @Test
     void getAtIntegerPrefersPositionOverNumericPropertyKey() {
         Datum.PropList propList = new Datum.PropList();
         propList.add("first", Datum.of("positional"), true);
@@ -163,16 +194,12 @@ class PropListMethodDispatcherTest {
     }
 
     @Test
-    void setAtIntegerOutOfRangeDoesNotCreateNumericPropertyKey() {
+    void setAtIntegerOutOfRangeRaisesScriptErrorForPropertyList() {
         Datum.PropList propList = new Datum.PropList();
 
-        PropListMethodDispatcher.dispatch(
-                propList, "setAt", List.of(Datum.of(42), Datum.of("roller")));
-
+        assertThrows(LingoException.class, () -> PropListMethodDispatcher.dispatch(
+                propList, "setAt", List.of(Datum.of(42), Datum.of("roller"))));
         assertEquals(0, propList.size());
-        Datum keyedValue = PropListMethodDispatcher.dispatch(
-                propList, "getAt", List.of(Datum.of(42)));
-        assertTrue(keyedValue.isVoid());
     }
 
     @Test
@@ -259,7 +286,7 @@ class PropListMethodDispatcherTest {
     }
 
     @Test
-    void deletePropRemovesOnlyMatchingKeyType() {
+    void deletePropRemovesFirstCompatibleSymbolOrStringKey() {
         Datum.PropList propList = new Datum.PropList();
         propList.add("room_interface", Datum.of(1), true);   // symbol #room_interface
         propList.add("room_interface", Datum.of(2), false);  // string "room_interface"
@@ -268,8 +295,8 @@ class PropListMethodDispatcherTest {
                 propList, "deleteProp", List.of(Datum.of("room_interface")));
 
         assertEquals(1, propList.size());
-        assertTrue(propList.entries().getFirst().isSymbolKey());
-        assertEquals(1, propList.entries().getFirst().value().toInt());
+        assertFalse(propList.entries().getFirst().isSymbolKey());
+        assertEquals(2, propList.entries().getFirst().value().toInt());
     }
 
     @Test

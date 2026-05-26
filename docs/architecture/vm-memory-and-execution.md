@@ -153,7 +153,28 @@ There is no single "emulator memory" bucket. Memory is distributed across severa
 
 That split is healthy. It prevents the player from having to choose between two bad options: either caching nothing and becoming slow, or flattening everything into one state bag and becoming impossible to invalidate correctly.
 
-## 9. Director File Memory Strategy
+## 9. Property List Storage
+
+`Datum.PropList` preserves Director's ordered, duplicate-friendly property-list
+model. The ordered entry array remains the source of truth because APIs such as
+`getPropAt`, `setAt`, formatting, and duplicate keys depend on physical order
+and original key tokens.
+
+Lookup acceleration is layered on top of that model, not used as replacement
+storage. The runtime builds lazy first-hit indexes for string-like keys so
+`getaProp`, `setaProp`, `findPos`, bracket access, and `deleteProp` can resolve
+the first compatible property without repeatedly scanning long lists. Mutations
+that can change ordering or first-hit identity invalidate those indexes.
+
+This keeps the important Director behavior intact:
+
+- `setaProp` updates the first compatible duplicate and preserves its key token
+- `setProp` updates an existing compatible property or raises a script error
+- `setAt` is ordinal for property lists and preserves the key at that position
+- string and symbol property names compare by Director property name while
+  still round-tripping as their original token type
+
+## 10. Director File Memory Strategy
 
 `DirectorFile` is not only a parser. It is also a memory boundary.
 
@@ -166,7 +187,7 @@ Notable behaviors include:
 
 That last point is especially important. The parser can deliberately free heavyweight data such as non-essential raw chunk payloads after they are no longer needed. The emulator therefore does attempt memory discipline rather than keeping the full original file materialized forever.
 
-## 10. Cache Invalidation Model
+## 11. Cache Invalidation Model
 
 The system uses several independent invalidation mechanisms.
 
@@ -180,7 +201,7 @@ Examples:
 
 This is one of the core engineering strengths of the project. The code does not rely on "hope-based caching". It explicitly tracks when cached outputs stop being valid.
 
-## 11. What Memory Means In Practice
+## 12. What Memory Means In Practice
 
 When people ask about "memory" in this emulator, the answer is not just heap usage. The real question is how long state is considered authoritative.
 

@@ -2,6 +2,7 @@ package com.libreshockwave.vm.opcode.dispatch;
 
 import com.libreshockwave.vm.LingoVM;
 import com.libreshockwave.vm.datum.Datum;
+import com.libreshockwave.vm.datum.LingoException;
 import com.libreshockwave.vm.util.LingoValueParser;
 
 import java.util.List;
@@ -42,10 +43,18 @@ public final class PropListMethodDispatcher {
                 }
                 yield value;
             }
-            case "setprop", "setaprop" -> {
+            case "setaprop" -> {
                 if (args.size() < 2) yield Datum.VOID;
                 Datum keyDatum = args.get(0);
                 propList.put(keyDatum, args.get(1));
+                yield Datum.VOID;
+            }
+            case "setprop" -> {
+                if (args.size() < 2) yield Datum.VOID;
+                Datum keyDatum = args.get(0);
+                if (!propList.putExisting(keyDatum, args.get(1))) {
+                    throw new LingoException("Property not found: " + keyDatum.toKeyName());
+                }
                 yield Datum.VOID;
             }
             case "addprop" -> {
@@ -58,18 +67,16 @@ public final class PropListMethodDispatcher {
             case "getat" -> {
                 if (args.isEmpty()) yield Datum.VOID;
                 Datum keyOrIndex = args.get(0);
-                if (keyOrIndex instanceof Datum.Str s) {
-                    yield propList.getOrDefault(s.value(), false, Datum.VOID);
-                }
-                if (keyOrIndex instanceof Datum.Symbol sym) {
-                    yield propList.getOrDefault(sym.name(), true, Datum.VOID);
+                if (keyOrIndex instanceof Datum.Str || keyOrIndex instanceof Datum.Symbol) {
+                    yield propList.getOrDefault(keyOrIndex, Datum.VOID);
                 }
                 if (keyOrIndex instanceof Datum.Int || keyOrIndex instanceof Datum.Float) {
                     int index = keyOrIndex.toInt() - 1;
                     if (index >= 0 && index < propList.size()) {
                         yield propList.getValue(index);
                     }
-                    yield Datum.VOID;
+                    Datum keyedValue = propList.get(keyOrIndex);
+                    yield keyedValue != null ? keyedValue : Datum.VOID;
                 }
                 Datum keyedValue = propList.get(keyOrIndex);
                 yield keyedValue != null ? keyedValue : Datum.VOID;
@@ -90,11 +97,17 @@ public final class PropListMethodDispatcher {
                     int index = keyOrIndex.toInt() - 1;
                     if (index >= 0 && index < propList.size()) {
                         propList.setValue(index, value);
+                        yield Datum.VOID;
+                    } else {
+                        throw new LingoException("setAt index out of range: " + keyOrIndex.toInt());
                     }
-                } else {
-                    propList.putTyped(keyOrIndex, value);
                 }
-                yield Datum.VOID;
+                LingoVM vm = LingoVM.getCurrentVM();
+                if (vm != null && vm.isPropListSetAtByKeyCompatibilityEnabled()) {
+                    propList.put(keyOrIndex, value);
+                    yield Datum.VOID;
+                }
+                throw new LingoException("setAt requires a numeric index for property lists");
             }
             case "getone" -> {
                 // getOne(propList, value) - find the property NAME where the value matches
@@ -145,11 +158,8 @@ public final class PropListMethodDispatcher {
     }
 
     private static Datum getPropListValueByKeyOrIndex(Datum.PropList propList, Datum keyOrIndex) {
-        if (keyOrIndex instanceof Datum.Str s) {
-            return propList.getOrDefault(s.value(), false, Datum.VOID);
-        }
-        if (keyOrIndex instanceof Datum.Symbol sym) {
-            return propList.getOrDefault(sym.name(), true, Datum.VOID);
+        if (keyOrIndex instanceof Datum.Str || keyOrIndex instanceof Datum.Symbol) {
+            return propList.getOrDefault(keyOrIndex, Datum.VOID);
         }
         int index = keyOrIndex.toInt() - 1;
         if (index >= 0 && index < propList.size()) {

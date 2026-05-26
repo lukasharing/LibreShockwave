@@ -1,6 +1,7 @@
 package com.libreshockwave.vm.builtin.data;
 
 import com.libreshockwave.vm.datum.Datum;
+import com.libreshockwave.vm.datum.LingoException;
 import com.libreshockwave.vm.LingoVM;
 import com.libreshockwave.vm.builtin.cast.CastLibProvider;
 
@@ -39,6 +40,7 @@ public final class ListBuiltins {
         builtins.put("listp", ListBuiltins::listP);
         builtins.put("list", ListBuiltins::listConstructor);
         builtins.put("getlast", ListBuiltins::getLast);
+        builtins.put("duplicate", ListBuiltins::duplicate);
     }
 
     private static Datum count(LingoVM vm, List<Datum> args) {
@@ -50,6 +52,14 @@ public final class ListBuiltins {
             return Datum.of(p.size());
         }
         return Datum.ZERO;
+    }
+
+    /**
+     * duplicate(value) - Director global duplicate helper.
+     */
+    private static Datum duplicate(LingoVM vm, List<Datum> args) {
+        if (args.isEmpty()) return Datum.VOID;
+        return args.get(0).deepCopy();
     }
 
     /**
@@ -70,18 +80,20 @@ public final class ListBuiltins {
         }
 
         if (container instanceof Datum.PropList pl) {
-            if (keyOrIndex instanceof Datum.Symbol sym) {
-                return pl.getOrDefault(sym.name(), true, Datum.VOID);
+            if (keyOrIndex instanceof Datum.Symbol || keyOrIndex instanceof Datum.Str) {
+                return pl.getOrDefault(keyOrIndex, Datum.VOID);
             }
-            if (keyOrIndex instanceof Datum.Str s) {
-                return pl.getOrDefault(s.value(), false, Datum.VOID);
+            if (keyOrIndex instanceof Datum.Int || keyOrIndex instanceof Datum.Float) {
+                // Integer positional access (1-based)
+                int index = keyOrIndex.toInt() - 1;
+                if (index >= 0 && index < pl.size()) {
+                    return pl.getValue(index);
+                }
+                Datum keyedValue = pl.get(keyOrIndex);
+                return keyedValue != null ? keyedValue : Datum.VOID;
             }
-            // Integer positional access (1-based)
-            int index = keyOrIndex.toInt() - 1;
-            if (index >= 0 && index < pl.size()) {
-                return pl.getValue(index);
-            }
-            return Datum.VOID;
+            Datum keyedValue = pl.get(keyOrIndex);
+            return keyedValue != null ? keyedValue : Datum.VOID;
         }
 
         if (container instanceof Datum.CastLibMemberAccessor accessor) {
@@ -119,9 +131,9 @@ public final class ListBuiltins {
     }
 
     /**
-     * setAt(container, keyOrIndex, value) - Set element in list or proplist.
-     * For List: integer index (1-based).
-     * For PropList: integer index (1-based positional) or symbol/string key.
+     * setAt(container, index, value) - Set element by ordinal index.
+     * For List: expand with VOID entries up to the requested 1-based index.
+     * For PropList: replace the value at an existing 1-based position, preserving the key.
      */
     private static Datum setAt(LingoVM vm, List<Datum> args) {
         if (args.size() < 3) return Datum.VOID;
@@ -130,28 +142,29 @@ public final class ListBuiltins {
         Datum value = args.get(2);
         if (container instanceof Datum.List l) {
             int index = keyOrIndex.toInt() - 1;
-            if (index >= 0 && index < l.items().size()) {
+            if (index >= 0) {
+                while (l.items().size() <= index) {
+                    l.items().add(Datum.VOID);
+                }
                 l.items().set(index, value);
             }
             return Datum.VOID;
         }
 
         if (container instanceof Datum.PropList pl) {
-            // Type-aware set for symbols and strings
-            if (keyOrIndex instanceof Datum.Symbol sym) {
-                pl.putTyped(sym.name(), true, value);
+            if (keyOrIndex instanceof Datum.Int || keyOrIndex instanceof Datum.Float) {
+                int index = keyOrIndex.toInt() - 1;
+                if (index >= 0 && index < pl.size()) {
+                    pl.setValue(index, value);
+                    return Datum.VOID;
+                }
+                throw new LingoException("setAt index out of range: " + keyOrIndex.toInt());
+            }
+            if (vm.isPropListSetAtByKeyCompatibilityEnabled()) {
+                pl.put(keyOrIndex, value);
                 return Datum.VOID;
             }
-            if (keyOrIndex instanceof Datum.Str s) {
-                pl.putTyped(s.value(), false, value);
-                return Datum.VOID;
-            }
-            // Integer positional set (1-based)
-            int index = keyOrIndex.toInt() - 1;
-            if (index >= 0 && index < pl.size()) {
-                pl.setValue(index, value);
-            }
-            return Datum.VOID;
+            throw new LingoException("setAt requires a numeric index for property lists");
         }
 
         // Rect and Point are mutable - setAt modifies them in place (Director behavior)
@@ -230,8 +243,7 @@ public final class ListBuiltins {
         if (!(container instanceof Datum.PropList pl)) return Datum.VOID;
 
         Datum keyDatum = args.get(1);
-        String key = keyDatum.toKeyName();
-        return pl.getOrDefault(key, keyDatum instanceof Datum.Symbol, Datum.VOID);
+        return pl.getAPropOrDefault(keyDatum, Datum.VOID);
     }
 
     /**
@@ -243,9 +255,7 @@ public final class ListBuiltins {
         if (!(container instanceof Datum.PropList pl)) return Datum.VOID;
 
         Datum keyDatum = args.get(1);
-        String key = keyDatum.toKeyName();
-        boolean isSym = keyDatum instanceof Datum.Symbol;
-        pl.put(key, isSym, args.get(2));
+        pl.put(keyDatum, args.get(2));
         return Datum.VOID;
     }
 
@@ -257,9 +267,7 @@ public final class ListBuiltins {
         Datum container = args.get(0);
         if (!(container instanceof Datum.PropList pl)) return Datum.VOID;
 
-        String key = args.get(1).toKeyName();
-        boolean isSym = args.get(1) instanceof Datum.Symbol;
-        pl.add(key, args.get(2), isSym);
+        pl.add(args.get(1), args.get(2));
         return Datum.VOID;
     }
 
@@ -272,7 +280,7 @@ public final class ListBuiltins {
         if (!(container instanceof Datum.PropList pl)) return Datum.VOID;
 
         Datum keyDatum = args.get(1);
-        pl.remove(keyDatum.toKeyName(), keyDatum instanceof Datum.Symbol);
+        pl.remove(keyDatum);
         return Datum.VOID;
     }
 
@@ -286,7 +294,7 @@ public final class ListBuiltins {
 
         int index = args.get(1).toInt() - 1;
         if (index >= 0 && index < pl.size()) {
-            return Datum.symbol(pl.getKey(index));
+            return pl.getKeyDatum(index);
         }
         return Datum.VOID;
     }
@@ -299,8 +307,7 @@ public final class ListBuiltins {
         Datum container = args.get(0);
         if (!(container instanceof Datum.PropList pl)) return Datum.VOID;
 
-        String key = args.get(1).toKeyName();
-        int pos = pl.findPos(key);
+        int pos = pl.findPos(args.get(1));
         return pos > 0 ? Datum.of(pos) : Datum.VOID;
     }
 

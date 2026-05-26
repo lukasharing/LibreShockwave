@@ -76,6 +76,7 @@ public class LingoVM {
 
     // AlertHook handling (error suppression via Lingo's alertHook mechanism)
     private final AlertHookHandler alertHookHandler = new AlertHookHandler();
+    private boolean propListSetAtByKeyCompatibility = false;
 
     public void setErrorHandlerSkipCallback(java.util.function.Consumer<String> callback) {
         alertHookHandler.setErrorHandlerSkipCallback(callback);
@@ -99,6 +100,14 @@ public class LingoVM {
 
     public Set<String> getTracedHandlers() {
         return java.util.Collections.unmodifiableSet(tracedHandlers);
+    }
+
+    public boolean isPropListSetAtByKeyCompatibilityEnabled() {
+        return propListSetAtByKeyCompatibility;
+    }
+
+    public void setPropListSetAtByKeyCompatibilityEnabled(boolean enabled) {
+        this.propListSetAtByKeyCompatibility = enabled;
     }
 
     public LingoVM(DirectorFile file) {

@@ -1,7 +1,6 @@
 package com.libreshockwave.vm.opcode.dispatch;
 
 import com.libreshockwave.vm.datum.Datum;
-import com.libreshockwave.vm.datum.LingoException;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -21,9 +20,7 @@ public final class ListMethodDispatcher {
             Datum indexDatum = args.get(0);
             int index = (indexDatum instanceof Datum.Int i ? i.value() : indexDatum.toInt()) - 1;
             if (index < 0 || index >= items.size()) {
-                throw new LingoException("getAt: index " + (index + 1)
-                    + " out of range (list size: " + items.size()
-                    + ", list: " + list + ")");
+                return Datum.VOID;
             }
             return items.get(index);
         }
@@ -69,9 +66,7 @@ public final class ListMethodDispatcher {
                 if (args.isEmpty()) yield Datum.VOID;
                 int index = args.get(0).toInt() - 1; // 1-indexed
                 if (index < 0 || index >= items.size()) {
-                    throw new LingoException("getAt: index " + (index + 1)
-                        + " out of range (list size: " + items.size()
-                        + ", list: " + list + ")");
+                    yield Datum.VOID;
                 }
                 yield items.get(index);
             }
@@ -171,7 +166,7 @@ public final class ListMethodDispatcher {
             }
             case "duplicate" -> {
                 // Deep copy: Director's duplicate() creates independent copies of nested structures.
-                // Shallow copy causes shared-cache corruption (e.g., Layout Parser cache in Habbo).
+                // Shallow copy causes shared-cache corruption in authored prop-list caches.
                 yield list.deepCopy();
             }
             default -> Datum.VOID;
