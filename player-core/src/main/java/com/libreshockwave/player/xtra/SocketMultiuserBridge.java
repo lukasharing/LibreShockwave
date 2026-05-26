@@ -2,6 +2,7 @@ package com.libreshockwave.player.xtra;
 
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.xtra.MultiuserNetBridge;
+import com.libreshockwave.vm.xtra.MultiuserTransportCodec;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -29,6 +30,9 @@ public class SocketMultiuserBridge implements MultiuserNetBridge {
         OutputStream out;
         boolean connected;
         boolean connecting;
+        boolean contentOnlyTransport;
+        boolean smusTransport;
+        String smusInboundBuffer = "";
         final byte[] readBuf = new byte[8192];
     }
 
@@ -36,8 +40,15 @@ public class SocketMultiuserBridge implements MultiuserNetBridge {
 
     @Override
     public void requestConnect(int instanceId, String host, int port) {
+        requestConnect(instanceId, host, port, 0);
+    }
+
+    @Override
+    public void requestConnect(int instanceId, String host, int port, int modeFlag) {
         Connection conn = new Connection();
         conn.connecting = true;
+        conn.contentOnlyTransport = modeFlag != 0;
+        conn.smusTransport = modeFlag == 0;
         connections.put(instanceId, conn);
 
         Thread t = new Thread(() -> {
@@ -62,7 +73,12 @@ public class SocketMultiuserBridge implements MultiuserNetBridge {
         Connection conn = connections.get(instanceId);
         if (conn == null || !conn.connected) return;
 
-        byte[] raw = content.toStr().getBytes(StandardCharsets.UTF_8);
+        String contentString = content.toStr();
+        String payload = conn.contentOnlyTransport
+                || MultiuserTransportCodec.isContentOnlyEnvelope(senderID, subject)
+                ? contentString
+                : MultiuserTransportCodec.encodeSmusPacket(senderID, subject, contentString);
+        byte[] raw = payload.getBytes(StandardCharsets.ISO_8859_1);
         try {
             conn.out.write(raw);
             conn.out.flush();
@@ -101,7 +117,26 @@ public class SocketMultiuserBridge implements MultiuserNetBridge {
                     conn.connected = false;
                     return List.of();
                 }
-                String data = new String(conn.readBuf, 0, read, StandardCharsets.UTF_8);
+                String data = new String(conn.readBuf, 0, read, StandardCharsets.ISO_8859_1);
+                if (conn.smusTransport) {
+                    conn.smusInboundBuffer += data;
+                    MultiuserTransportCodec.SmusParseResult result =
+                            MultiuserTransportCodec.parseSmusPackets(conn.smusInboundBuffer);
+                    if (result.messages().isEmpty()) {
+                        return List.of();
+                    }
+                    if (result.consumedChars() < conn.smusInboundBuffer.length()) {
+                        conn.smusInboundBuffer = conn.smusInboundBuffer.substring(result.consumedChars());
+                    } else {
+                        conn.smusInboundBuffer = "";
+                    }
+                    List<NetMessage> messages = new ArrayList<>();
+                    for (MultiuserTransportCodec.SmusMessage msg : result.messages()) {
+                        messages.add(new NetMessage(
+                                msg.errorCode(), msg.senderID(), msg.subject(), new Datum.Str(msg.content())));
+                    }
+                    return messages;
+                }
                 return List.of(new NetMessage(0, "", "", new Datum.Str(data)));
             }
         } catch (IOException e) {

@@ -23,6 +23,15 @@ public interface MultiuserNetBridge {
     void requestConnect(int instanceId, String host, int port);
 
     /**
+     * Request a connection to a server with the authored connectToNetServer
+     * mode flag. Director passes this flag through the Multiuser Xtra; platform
+     * bridges may use it to select the compatible wire representation.
+     */
+    default void requestConnect(int instanceId, String host, int port, int modeFlag) {
+        requestConnect(instanceId, host, port);
+    }
+
+    /**
      * Send a message to the server.
      * @param senderID sender identifier ("*" for default)
      * @param subject message subject

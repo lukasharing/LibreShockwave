@@ -3,6 +3,7 @@ package com.libreshockwave.player.wasm;
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.DebugConfig;
 import com.libreshockwave.vm.xtra.MultiuserNetBridge;
+import com.libreshockwave.vm.xtra.MultiuserTransportCodec;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -43,14 +44,30 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
     private final Map<Integer, Boolean> connectedMap = new HashMap<>();
     private final Map<Integer, List<NetMessage>> messageQueues = new HashMap<>();
     private final Set<Integer> closingInstances = new HashSet<>();
+    private final Set<Integer> contentOnlyInstances = new HashSet<>();
+    private final Set<Integer> smusInstances = new HashSet<>();
+    private final Map<Integer, String> smusInboundBuffers = new HashMap<>();
 
     // --- MultiuserNetBridge implementation ---
 
     @Override
     public void requestConnect(int instanceId, String host, int port) {
+        requestConnect(instanceId, host, port, 0);
+    }
+
+    @Override
+    public void requestConnect(int instanceId, String host, int port, int modeFlag) {
         closingInstances.remove(instanceId);
         connectedMap.remove(instanceId);
         messageQueues.remove(instanceId);
+        smusInboundBuffers.remove(instanceId);
+        if (modeFlag != 0) {
+            contentOnlyInstances.add(instanceId);
+            smusInstances.remove(instanceId);
+        } else {
+            contentOnlyInstances.remove(instanceId);
+            smusInstances.add(instanceId);
+        }
         PendingRequest req = new PendingRequest(REQ_CONNECT, instanceId);
         req.host = host;
         req.port = port;
@@ -63,7 +80,9 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
         PendingRequest req = new PendingRequest(REQ_SEND, instanceId);
         req.senderID = senderID;
         req.subject = subject;
-        req.content = contentString;
+        req.content = shouldSendContentOnly(instanceId, senderID, subject)
+                ? contentString
+                : MultiuserTransportCodec.encodeSmusPacket(senderID, subject, contentString);
         pendingRequests.add(req);
     }
 
@@ -92,6 +111,9 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
         closingInstances.add(instanceId);
         connectedMap.remove(instanceId);
         messageQueues.remove(instanceId);
+        contentOnlyInstances.remove(instanceId);
+        smusInstances.remove(instanceId);
+        smusInboundBuffers.remove(instanceId);
     }
 
     // --- JS polling API ---
@@ -140,9 +162,39 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
     }
 
     void deliverMessage(int instanceId, int errorCode, String senderID, String subject, String content) {
+        if (smusInstances.contains(instanceId) && (subject == null || subject.isEmpty())) {
+            deliverSmusMessages(instanceId, content);
+            return;
+        }
         debug("message instance=" + instanceId + " bytes=" + (content != null ? content.length() : 0)
                 + " content=" + preview(content));
         queueMessage(instanceId, new NetMessage(errorCode, senderID, subject, new Datum.Str(content)));
+    }
+
+    private void deliverSmusMessages(int instanceId, String content) {
+        String buffered = smusInboundBuffers.getOrDefault(instanceId, "") + (content != null ? content : "");
+        MultiuserTransportCodec.SmusParseResult result = MultiuserTransportCodec.parseSmusPackets(buffered);
+        if (result.messages().isEmpty()) {
+            smusInboundBuffers.put(instanceId, buffered);
+            debug("message instance=" + instanceId + " buffered=" + buffered.length());
+            return;
+        }
+        for (MultiuserTransportCodec.SmusMessage msg : result.messages()) {
+            debug("message instance=" + instanceId + " subject=" + msg.subject()
+                    + " content=" + preview(msg.content()));
+            queueMessage(instanceId, new NetMessage(
+                    msg.errorCode(), msg.senderID(), msg.subject(), new Datum.Str(msg.content())));
+        }
+        if (result.consumedChars() < buffered.length()) {
+            smusInboundBuffers.put(instanceId, buffered.substring(result.consumedChars()));
+        } else {
+            smusInboundBuffers.remove(instanceId);
+        }
+    }
+
+    private boolean shouldSendContentOnly(int instanceId, String senderID, String subject) {
+        return contentOnlyInstances.contains(instanceId)
+                || MultiuserTransportCodec.isContentOnlyEnvelope(senderID, subject);
     }
 
     private void queueMessage(int instanceId, NetMessage msg) {

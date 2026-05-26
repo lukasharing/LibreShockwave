@@ -2,6 +2,7 @@ package com.libreshockwave.player.wasm;
 
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.xtra.MultiuserNetBridge;
+import com.libreshockwave.vm.xtra.MultiuserTransportCodec;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -68,6 +69,64 @@ class WasmMultiuserBridgeTest {
         List<WasmMultiuserBridge.PendingRequest> messages = bridge.getPendingRequests();
         assertEquals(1, messages.size());
         assertEquals("@@BCD", messages.get(0).content);
+    }
+
+    @Test
+    void contentOnlyConnectionPreservesRawOutgoingPayload() {
+        WasmMultiuserBridge bridge = new WasmMultiuserBridge();
+
+        bridge.requestConnect(1, "example.test", 1234, 1);
+        bridge.requestSend(1, "0", "0", new Datum.Str("@@BCD"));
+
+        List<WasmMultiuserBridge.PendingRequest> messages = bridge.getPendingRequests();
+        assertEquals(2, messages.size());
+        assertEquals("@@BCD", messages.get(1).content);
+    }
+
+    @Test
+    void smusConnectionEncodesSubjectAndContentForRawTransport() {
+        WasmMultiuserBridge bridge = new WasmMultiuserBridge();
+
+        bridge.requestConnect(1, "example.test", 1234, 0);
+        bridge.requestSend(1, "*", "LOGIN", new Datum.Str("ticket-value"));
+        bridge.requestSend(1, "*", "PONG", new Datum.Str(""));
+
+        List<WasmMultiuserBridge.PendingRequest> messages = bridge.getPendingRequests();
+        assertEquals("LOGIN", MultiuserTransportCodec.parseSmusPackets(messages.get(1).content)
+                .messages().get(0).subject());
+        assertEquals("ticket-value", MultiuserTransportCodec.parseSmusPackets(messages.get(1).content)
+                .messages().get(0).content());
+        assertEquals("PONG", MultiuserTransportCodec.parseSmusPackets(messages.get(2).content)
+                .messages().get(0).subject());
+    }
+
+    @Test
+    void smusConnectionSplitsIncomingSubjectAndContent() {
+        WasmMultiuserBridge bridge = new WasmMultiuserBridge();
+
+        bridge.requestConnect(1, "example.test", 1234, 0);
+        bridge.deliverMessage(1, 0, "", "",
+                MultiuserTransportCodec.encodeSmusPacket("!", "HELLO", "session-id")
+                        + MultiuserTransportCodec.encodeSmusPacket("!", "PING", ""));
+
+        List<MultiuserNetBridge.NetMessage> messages = bridge.pollMessages(1);
+        assertEquals("HELLO", messages.get(0).subject());
+        assertEquals("session-id", messages.get(0).content().toStr());
+        assertEquals("PING", messages.get(1).subject());
+        assertEquals("", messages.get(1).content().toStr());
+    }
+
+    @Test
+    void contentOnlyConnectionKeepsIncomingPayloadInContent() {
+        WasmMultiuserBridge bridge = new WasmMultiuserBridge();
+
+        bridge.requestConnect(1, "example.test", 1234, 1);
+        String payload = MultiuserTransportCodec.encodeSmusPacket("!", "HELLO", "session-id");
+        bridge.deliverMessage(1, 0, "", "", payload);
+
+        List<MultiuserNetBridge.NetMessage> messages = bridge.pollMessages(1);
+        assertEquals("", messages.get(0).subject());
+        assertEquals(payload, messages.get(0).content().toStr());
     }
 
     @Test

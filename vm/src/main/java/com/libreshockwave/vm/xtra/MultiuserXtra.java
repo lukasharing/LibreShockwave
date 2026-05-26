@@ -165,11 +165,12 @@ public class MultiuserXtra implements Xtra {
         if (args.size() >= 4) {
             String host = args.get(2).toStr();
             int port = args.get(3).toInt();
+            int modeFlag = args.size() >= 6 ? args.get(5).toInt() : 0;
             state.host = host;
             state.port = port;
             state.currentMessage = null;
             state.messageQueue.clear();
-            netBridge.requestConnect(instanceId, host, port);
+            netBridge.requestConnect(instanceId, host, port, modeFlag);
         }
         return Datum.ZERO;
     }
