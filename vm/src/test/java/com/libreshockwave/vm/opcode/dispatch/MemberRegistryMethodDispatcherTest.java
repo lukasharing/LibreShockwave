@@ -224,18 +224,18 @@ class MemberRegistryMethodDispatcherTest {
     }
 
     @Test
-    void readAliasIndexesFromFieldPublishesTransientRoomAliasesWithoutLeakingRawTargets() {
+    void readAliasIndexesFromFieldWaitsForCopiedTargetInsteadOfPointingAtTransientCast() {
         Datum.PropList registry = new Datum.PropList();
         Datum.ScriptInstance instance = new Datum.ScriptInstance(1, new LinkedHashMap<>());
         instance.properties().put("pAllMemNumList", registry);
 
-        int transientSlot = (11 << 16) | 7;
+        int copiedSlot = (12 << 16) | 7;
         CastLibProvider.setProvider(new TransientAliasSourceProvider(
                 12,
                 11,
                 "room_bar.window=room_bar_window_a_0_0_0_0\r\n",
                 Map.of("room_bar_window_a_0_0_0_0", Datum.CastMemberRef.of(11, 7)),
-                Set.of()));
+                Set.of(copiedSlot)));
         try {
             MemberRegistryMethodDispatcher.DispatchResult imported =
                     MemberRegistryMethodDispatcher.dispatch(
@@ -244,9 +244,13 @@ class MemberRegistryMethodDispatcherTest {
                             List.of(Datum.of("memberalias.index"), Datum.of(11)));
 
             assertTrue(imported.handled());
-            assertEquals(1, imported.value().toInt());
-            assertEquals(transientSlot, registry.get("room_bar.window").toInt());
+            assertEquals(0, imported.value().toInt());
+            assertNull(registry.get("room_bar.window"));
             assertNull(registry.get("room_bar_window_a_0_0_0_0"));
+
+            registry.putTyped("room_bar_window_a_0_0_0_0", false, Datum.of(copiedSlot));
+            assertEquals(1, MemberRegistryMethodDispatcher.reapplyPersistentAliases(11));
+            assertEquals(copiedSlot, registry.get("room_bar.window").toInt());
 
             MemberRegistryMethodDispatcher.DispatchResult exists =
                     MemberRegistryMethodDispatcher.dispatch(
@@ -256,8 +260,8 @@ class MemberRegistryMethodDispatcherTest {
 
             assertTrue(exists.handled());
             assertEquals(1, exists.value().toInt());
-            assertEquals(transientSlot, registry.get("room_bar.window").toInt());
-            assertNull(registry.get("room_bar_window_a_0_0_0_0"));
+            assertEquals(copiedSlot, registry.get("room_bar.window").toInt());
+            assertEquals(copiedSlot, registry.get("room_bar_window_a_0_0_0_0").toInt());
         } finally {
             CastLibProvider.clearProvider();
             MemberRegistryMethodDispatcher.clearRememberedAliases();
@@ -265,18 +269,18 @@ class MemberRegistryMethodDispatcherTest {
     }
 
     @Test
-    void getmemnumLazilyDiscoversTransientMemberAliasIndexesFromLoadedCast() {
+    void getmemnumLazilyDiscoversAliasAfterCopiedTargetIsRegistered() {
         Datum.PropList registry = new Datum.PropList();
         Datum.ScriptInstance instance = new Datum.ScriptInstance(1, new LinkedHashMap<>());
         instance.properties().put("pAllMemNumList", registry);
 
-        int transientSlot = (11 << 16) | 7;
+        int copiedSlot = (12 << 16) | 7;
         CastLibProvider.setProvider(new TransientAliasSourceProvider(
                 12,
                 11,
                 "room_bar.window=room_bar_window_a_0_0_0_0\r\n",
                 Map.of("room_bar_window_a_0_0_0_0", Datum.CastMemberRef.of(11, 7)),
-                Set.of()));
+                Set.of(copiedSlot)));
         try {
             MemberRegistryMethodDispatcher.DispatchResult result =
                     MemberRegistryMethodDispatcher.dispatch(
@@ -285,9 +289,20 @@ class MemberRegistryMethodDispatcherTest {
                             List.of(Datum.of("room_bar.window")));
 
             assertTrue(result.handled());
-            assertEquals(transientSlot, result.value().toInt());
-            assertEquals(transientSlot, registry.get("room_bar.window").toInt());
+            assertEquals(0, result.value().toInt());
+            assertNull(registry.get("room_bar.window"));
             assertNull(registry.get("room_bar_window_a_0_0_0_0"));
+
+            registry.putTyped("room_bar_window_a_0_0_0_0", false, Datum.of(copiedSlot));
+            MemberRegistryMethodDispatcher.DispatchResult restored =
+                    MemberRegistryMethodDispatcher.dispatch(
+                            instance,
+                            "getmemnum",
+                            List.of(Datum.of("room_bar.window")));
+
+            assertTrue(restored.handled());
+            assertEquals(copiedSlot, restored.value().toInt());
+            assertEquals(copiedSlot, registry.get("room_bar.window").toInt());
         } finally {
             CastLibProvider.clearProvider();
             MemberRegistryMethodDispatcher.clearRememberedAliases();
