@@ -2,9 +2,11 @@ package com.libreshockwave.player.input;
 
 import com.libreshockwave.cast.BitmapInfo;
 import com.libreshockwave.bitmap.Bitmap;
+import com.libreshockwave.id.InkMode;
 import com.libreshockwave.player.cast.CastMember;
 import com.libreshockwave.player.render.pipeline.RenderSprite;
 import com.libreshockwave.player.render.pipeline.StageRenderer;
+import com.libreshockwave.player.sprite.SpriteState;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -15,10 +17,14 @@ import java.util.function.IntPredicate;
  * Tests from front-to-back (highest locZ/channel first).
  * Director-style hit testing is bounds-based by default.
  * Per-pixel alpha hit testing is reserved for true 32-bit bitmap members with
- * native alpha, using the member's alphaThreshold. Runtime-created members
- * also respect transparency introduced by their current ink processing.
+ * native alpha, using the member's alphaThreshold, and for MATTE ink's displayed
+ * portion. Other visual transparency inks, including BACKGROUND_TRANSPARENT,
+ * keep Director's rectangular active area. Callers that need Director-style
+ * rectangular UI hit areas can explicitly force bounding boxes.
  */
 public final class HitTester {
+
+    private static final IntPredicate NEVER_FORCE_BOUNDING_BOX = channel -> false;
 
     private HitTester() {}
 
@@ -27,7 +33,7 @@ public final class HitTester {
      * @return the sprite's channel number, or 0 if no sprite hit
      */
     public static int hitTest(StageRenderer renderer, int frame, int stageX, int stageY) {
-        return hitTest(renderer, frame, stageX, stageY, channel -> false);
+        return hitTest(renderer, frame, stageX, stageY, NEVER_FORCE_BOUNDING_BOX);
     }
 
     /**
@@ -46,7 +52,7 @@ public final class HitTester {
      * @return the sprite's SpriteType, or null if no sprite hit
      */
     public static RenderSprite.SpriteType hitTestType(StageRenderer renderer, int frame, int stageX, int stageY) {
-        return hitTestType(renderer, frame, stageX, stageY, channel -> false);
+        return hitTestType(renderer, frame, stageX, stageY, NEVER_FORCE_BOUNDING_BOX);
     }
 
     /**
@@ -74,16 +80,11 @@ public final class HitTester {
         List<Integer> result = new ArrayList<>();
         for (int i = sprites.size() - 1; i >= 0; i--) {
             RenderSprite sprite = sprites.get(i);
-            if (!sprite.isVisible()) continue;
+            if (!isVisibleNow(renderer, sprite)) continue;
             if (sprite.getChannel() <= 0) continue;
 
-            int left = sprite.getX();
-            int top = sprite.getY();
-            int right = left + sprite.getWidth();
-            int bottom = top + sprite.getHeight();
-
-            if (stageX >= left && stageX < right && stageY >= top && stageY < bottom
-                    && hitTestSpritePixel(sprite, stageX, stageY)) {
+            boolean forceBoundingBox = filter != null && filter.test(sprite.getChannel());
+            if (hitsSpriteGeometry(sprite, stageX, stageY, forceBoundingBox)) {
                 result.add(sprite.getChannel());
             }
         }
@@ -93,7 +94,7 @@ public final class HitTester {
     /**
      * Find the front-most visible sprite at the given stage coordinate.
      * Iterates back-to-front using sprite bounds and Director-style alpha hit
-     * testing only for true 32-bit native-alpha bitmap members.
+     * testing only for true 32-bit native-alpha bitmap members and MATTE ink.
      */
     private static RenderSprite findHitSprite(StageRenderer renderer, int frame, int stageX, int stageY,
                                               IntPredicate forceBoundingBox) {
@@ -104,21 +105,43 @@ public final class HitTester {
 
         for (int i = sprites.size() - 1; i >= 0; i--) {
             RenderSprite sprite = sprites.get(i);
-            if (!sprite.isVisible()) continue;
+            if (!isVisibleNow(renderer, sprite)) continue;
             if (sprite.getChannel() <= 0) continue;
 
-            int left = sprite.getX();
-            int top = sprite.getY();
-            int right = left + sprite.getWidth();
-            int bottom = top + sprite.getHeight();
-
-            if (stageX >= left && stageX < right && stageY >= top && stageY < bottom
-                    && hitTestSpritePixel(sprite, stageX, stageY)) {
+            boolean forceBounds = forceBoundingBox != null && forceBoundingBox.test(sprite.getChannel());
+            if (hitsSpriteGeometry(sprite, stageX, stageY, forceBounds)) {
                 return sprite;
             }
         }
 
         return null;
+    }
+
+    private static boolean isVisibleNow(StageRenderer renderer, RenderSprite sprite) {
+        if (sprite == null || sprite.getChannel() <= 0) {
+            return false;
+        }
+        SpriteState liveState = renderer != null
+                ? renderer.getSpriteRegistry().get(sprite.getChannel())
+                : null;
+        return liveState != null ? liveState.isVisible() : sprite.isVisible();
+    }
+
+    public static boolean hitsSprite(RenderSprite sprite, int stageX, int stageY, boolean forceBoundingBox) {
+        if (sprite == null || !sprite.isVisible() || sprite.getChannel() <= 0) {
+            return false;
+        }
+        return hitsSpriteGeometry(sprite, stageX, stageY, forceBoundingBox);
+    }
+
+    private static boolean hitsSpriteGeometry(RenderSprite sprite, int stageX, int stageY, boolean forceBoundingBox) {
+        int left = sprite.getX();
+        int top = sprite.getY();
+        int right = left + sprite.getWidth();
+        int bottom = top + sprite.getHeight();
+
+        return stageX >= left && stageX < right && stageY >= top && stageY < bottom
+                && (forceBoundingBox || hitTestSpritePixel(sprite, stageX, stageY));
     }
 
     private static boolean hitTestSpritePixel(RenderSprite sprite, int stageX, int stageY) {
@@ -165,7 +188,7 @@ public final class HitTester {
         return alpha >= alphaHitRule.threshold();
     }
 
-    private static AlphaHitRule getAlphaHitRule(RenderSprite sprite, com.libreshockwave.bitmap.Bitmap baked) {
+    private static AlphaHitRule getAlphaHitRule(RenderSprite sprite, Bitmap baked) {
         CastMember dynamicMember = sprite.getDynamicMember();
         if (dynamicMember != null) {
             Bitmap memberBitmap = dynamicMember.getBitmap();
@@ -175,10 +198,14 @@ public final class HitTester {
             if (memberBitmap.getBitDepth() == 32 && memberBitmap.isNativeAlpha()) {
                 return new AlphaHitRule(true, dynamicMember.getBitmapAlphaThreshold());
             }
-            if (usesDynamicInkTransparency(sprite)) {
+            if (usesMatteActiveArea(sprite)) {
                 return new AlphaHitRule(true, 1);
             }
             return AlphaHitRule.DISABLED;
+        }
+
+        if (usesMatteActiveArea(sprite)) {
+            return new AlphaHitRule(true, 1);
         }
 
         if (baked == null || !baked.isNativeAlpha() || baked.getBitDepth() != 32) {
@@ -199,13 +226,8 @@ public final class HitTester {
         return new AlphaHitRule(true, info.alphaThreshold());
     }
 
-    private static boolean usesDynamicInkTransparency(RenderSprite sprite) {
-        return switch (sprite.getInkMode()) {
-            case TRANSPARENT, REVERSE, GHOST, NOT_COPY, NOT_TRANSPARENT, NOT_REVERSE,
-                 NOT_GHOST, MATTE, MASK, ADD_PIN, ADD, SUBTRACT_PIN, SUBTRACT,
-                 BACKGROUND_TRANSPARENT, BLEND, LIGHTEN, DARKEN -> true;
-            default -> false;
-        };
+    private static boolean usesMatteActiveArea(RenderSprite sprite) {
+        return sprite != null && sprite.getInkMode() == InkMode.MATTE;
     }
 
     private record AlphaHitRule(boolean enabled, int threshold) {

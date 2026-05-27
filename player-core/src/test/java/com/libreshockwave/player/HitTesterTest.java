@@ -49,12 +49,40 @@ class HitTesterTest {
     }
 
     @Test
-    void dynamicTransparencyInkLetsTransparentPixelsFallThrough() {
+    void matteInkFallsThroughTransparentDisplayedPixels() {
         StageRenderer renderer = new StageRenderer(null);
-        renderer.setLastBakedSprites(List.of(createLowerSprite(), createDynamicTransparencyInkSprite()));
+        renderer.setLastBakedSprites(List.of(createLowerSprite(), createDynamicInkSprite(InkMode.MATTE)));
 
         assertEquals(40, HitTester.hitTest(renderer, 1, 11, 11));
         assertEquals(43, HitTester.hitTest(renderer, 1, 10, 10));
+    }
+
+    @Test
+    void backgroundTransparentInkKeepsRectangularMouseArea() {
+        StageRenderer renderer = new StageRenderer(null);
+        renderer.setLastBakedSprites(List.of(createLowerSprite(),
+                createDynamicInkSprite(InkMode.BACKGROUND_TRANSPARENT)));
+
+        assertEquals(43, HitTester.hitTest(renderer, 1, 11, 11));
+        assertEquals(43, HitTester.hitTest(renderer, 1, 10, 10));
+    }
+
+    @Test
+    void forceBoundingBoxPredicateKeepsInteractiveTransparentSpriteFromFallingThrough() {
+        StageRenderer renderer = new StageRenderer(null);
+        renderer.setLastBakedSprites(List.of(createLowerSprite(), createDynamicInkSprite(InkMode.MATTE)));
+
+        assertEquals(43, HitTester.hitTest(renderer, 1, 11, 11, channel -> channel == 43));
+        assertEquals(List.of(43, 40), HitTester.hitTestAll(renderer, 1, 11, 11, channel -> channel == 43));
+    }
+
+    @Test
+    void hitTestingHonorsLiveVisibilityChangesAfterLastBake() {
+        StageRenderer renderer = new StageRenderer(null);
+        renderer.setLastBakedSprites(List.of(createLowerSprite(), createDynamicInkSprite(InkMode.BACKGROUND_TRANSPARENT)));
+        renderer.getSpriteRegistry().getOrCreateDynamic(43).setVisible(false);
+
+        assertEquals(40, HitTester.hitTest(renderer, 1, 11, 11));
     }
 
     private static RenderSprite createCopyInkAlphaSprite() {
@@ -127,7 +155,7 @@ class HitTesterTest {
                 true);
     }
 
-    private static RenderSprite createDynamicTransparencyInkSprite() {
+    private static RenderSprite createDynamicInkSprite(InkMode inkMode) {
         Bitmap source = new Bitmap(3, 3, 8);
         source.fill(0xFFFF0000);
 
@@ -149,7 +177,7 @@ class HitTesterTest {
                 member,
                 0, 0,
                 false, false,
-                InkMode.MATTE.code(), 100,
+                inkMode.code(), 100,
                 false, false,
                 baked,
                 true);

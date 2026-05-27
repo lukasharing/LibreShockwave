@@ -41,6 +41,7 @@ public class MovieProperties implements MoviePropertyProvider {
     private Datum alertHook = Datum.VOID;
     private Datum cursor = Datum.of(-1);
     private int floatPrecision = 4;
+    private String runMode = "Plugin";
 
     // Stage properties
     private String stageTitle = "";
@@ -60,14 +61,14 @@ public class MovieProperties implements MoviePropertyProvider {
         this.player = player;
         this.file = file;
         this.xtraManagerOverride = null;
-        this.startTime = System.currentTimeMillis();
+        this.startTime = currentMovieTimeMs();
     }
 
     MovieProperties(Player player, DirectorFile file, XtraManager xtraManagerOverride) {
         this.player = player;
         this.file = file;
         this.xtraManagerOverride = xtraManagerOverride;
-        this.startTime = System.currentTimeMillis();
+        this.startTime = currentMovieTimeMs();
     }
 
     public void setInputState(InputState inputState) {
@@ -112,9 +113,9 @@ public class MovieProperties implements MoviePropertyProvider {
 
             // System info
             case "platform" -> Datum.of("Windows,32");
-            case "runmode" -> Datum.of("Plugin");
+            case "runmode" -> Datum.of(runMode);
             case "productversion" -> Datum.of("10.1");
-            case "environment" -> Datum.of("Java");
+            case "environment" -> Datum.of(runMode);
 
             // Date and time
             case "date" -> Datum.of(LocalDate.now().format(DateTimeFormatter.ofPattern("MM/dd/yyyy")));
@@ -126,11 +127,11 @@ public class MovieProperties implements MoviePropertyProvider {
 
             // Timer (in ticks - 60ths of a second)
             case "timer", "ticks" -> {
-                long elapsed = System.currentTimeMillis() - startTime;
+                long elapsed = currentMovieTimeMs() - startTime;
                 int ticks = (int) ((elapsed * 60) / 1000);
                 yield Datum.of(ticks);
             }
-            case "milliseconds" -> Datum.of((int) (System.currentTimeMillis() - startTime));
+            case "milliseconds" -> Datum.of((int) (currentMovieTimeMs() - startTime));
 
             // Writable properties
             case "exitlock" -> Datum.of(exitLock ? 1 : 0);
@@ -170,7 +171,7 @@ public class MovieProperties implements MoviePropertyProvider {
             }
             case "rightmousedown" -> Datum.of(inputState != null && inputState.isRightMouseDown() ? 1 : 0);
             case "doubleclick" -> Datum.of(inputState != null && inputState.isDoubleClick() ? 1 : 0);
-            case "rollover" -> Datum.of(inputState != null ? inputState.getRolloverSprite() : 0);
+            case "rollover" -> Datum.of(resolveRollover());
 
             // Key state
             case "key" -> Datum.of(inputState != null ? inputState.getLastKey() : "");
@@ -258,6 +259,16 @@ public class MovieProperties implements MoviePropertyProvider {
         };
     }
 
+    private int resolveRollover() {
+        if (inputState == null) {
+            return 0;
+        }
+        if (player != null && player.getInputHandler() != null) {
+            return player.getInputHandler().resolveRolloverAtCurrentMouse();
+        }
+        return inputState.getRolloverSprite();
+    }
+
     @Override
     public boolean setMovieProp(String propName, Datum value) {
         String prop = propName.toLowerCase();
@@ -303,7 +314,7 @@ public class MovieProperties implements MoviePropertyProvider {
             }
             case "keyboardfocussprite" -> {
                 if (inputState != null) {
-                    inputState.setKeyboardFocusSprite(value.toInt());
+                    inputState.setKeyboardFocusSprite(value.toInt(), false);
                 }
                 return true;
             }
@@ -463,6 +474,17 @@ public class MovieProperties implements MoviePropertyProvider {
 
     public boolean isExitLock() {
         return exitLock;
+    }
+
+    public void setRunMode(String runMode) {
+        if (runMode == null || runMode.isBlank()) {
+            return;
+        }
+        this.runMode = runMode;
+    }
+
+    private long currentMovieTimeMs() {
+        return player != null ? player.getMovieTimeMs() : System.currentTimeMillis();
     }
 
     public boolean isUpdateLock() {

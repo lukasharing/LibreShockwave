@@ -13,10 +13,12 @@ import com.libreshockwave.player.render.pipeline.StageRenderer;
 import com.libreshockwave.player.sprite.SpriteState;
 import com.libreshockwave.util.IntValueProvider;
 import com.libreshockwave.util.ValueProvider;
+import com.libreshockwave.vm.DebugConfig;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.function.IntPredicate;
 
 /**
  * Handles all input processing: mouse/keyboard event dispatch, rollover tracking,
@@ -25,14 +27,23 @@ import java.util.List;
  */
 public class InputHandler {
 
+    private static final IntPredicate NEVER_FORCE_BOUNDING_BOX = new IntPredicate() {
+        @Override
+        public boolean test(int channel) {
+            return false;
+        }
+    };
+
     private final InputState inputState;
     private final StageRenderer stageRenderer;
     private final CastLibManager castLibManager;
     private final IntValueProvider currentFrameSupplier;
     private final ValueProvider<EventDispatcher> eventDispatcherSupplier;
+    private Runnable afterInputEventCallback = () -> {};
 
     // Rollover tracking for mouseEnter/mouseLeave/mouseWithin events
     private int previousRolloverSprite = 0;
+    private int pressedEventSprite = 0;
 
     public InputHandler(InputState inputState, StageRenderer stageRenderer,
                         CastLibManager castLibManager, IntValueProvider currentFrameSupplier,
@@ -42,6 +53,16 @@ public class InputHandler {
         this.castLibManager = castLibManager;
         this.currentFrameSupplier = currentFrameSupplier;
         this.eventDispatcherSupplier = eventDispatcherSupplier;
+    }
+
+    public void setAfterInputEventCallback(Runnable callback) {
+        this.afterInputEventCallback = callback != null ? callback : () -> {};
+    }
+
+    public int resolveRolloverAtCurrentMouse() {
+        int hit = hitTestExact(inputState.getMouseH(), inputState.getMouseV());
+        inputState.setRolloverSprite(hit);
+        return hit;
     }
 
     // --- Public input event entry points (called by UI layer) ---
@@ -66,7 +87,7 @@ public class InputHandler {
                     if (memberNum > 0) {
                         CastMember member = castLibManager.getDynamicMember(
                                 sprite.getEffectiveCastLib(), memberNum);
-                        if (member != null && member.isEditable()) {
+                        if (isEditableTextLikeSprite(sprite, member)) {
                             int spriteX = sprite.getLocH() - member.getRegPointX();
                             int spriteY = sprite.getLocV() - member.getRegPointY();
                             int charPos = member.locToCharPos(stageX - spriteX, stageY - spriteY, sprite.getWidth());
@@ -84,12 +105,13 @@ public class InputHandler {
      */
     public void onMouseDown(int stageX, int stageY, boolean rightButton) {
         inputState.setMousePosition(stageX, stageY);
+        inputState.setRolloverSprite(hitTestExact(stageX, stageY));
         if (rightButton) {
             inputState.setRightMouseDown(true);
             inputState.queueEvent(InputEvent.rightMouseDown(stageX, stageY));
         } else {
             inputState.setMouseDown(true);
-            int hit = hitTestExact(stageX, stageY);
+            int hit = hitTestClickOn(stageX, stageY);
             inputState.setClickOnSprite(hit);
             inputState.setClickLoc(stageX, stageY);
             inputState.updateDoubleClick(stageX, stageY);
@@ -102,6 +124,7 @@ public class InputHandler {
      */
     public void onMouseUp(int stageX, int stageY, boolean rightButton) {
         inputState.setMousePosition(stageX, stageY);
+        inputState.setRolloverSprite(hitTestExact(stageX, stageY));
         if (rightButton) {
             inputState.setRightMouseDown(false);
             inputState.queueEvent(InputEvent.rightMouseUp(stageX, stageY));
@@ -164,8 +187,11 @@ public class InputHandler {
         boolean hadEvents = false;
         while ((event = inputState.pollEvent()) != null) {
             dispatchInputEvent(event);
+            afterInputEventCallback.run();
             hadEvents = true;
         }
+
+        resolveRolloverAtCurrentMouse();
 
         // Dispatch mouseEnter/mouseLeave/mouseWithin based on current rollover sprite
         dispatchRolloverEvents();
@@ -212,19 +238,22 @@ public class InputHandler {
         EventDispatcher dispatcher = eventDispatcherSupplier.get();
         switch (event.type()) {
             case MOUSE_DOWN -> {
-                int hitSprite = hitTestExact(event.stageX(), event.stageY());
+                int hitSprite = hitTestInteractive(event.stageX(), event.stageY());
+                int clickOnSprite = hitTestClickOn(event.stageX(), event.stageY());
+                traceMouseHit("down", event.stageX(), event.stageY(), hitSprite, clickOnSprite);
                 // Director D6+: if the previously clicked sprite is different from
                 // the current one, send mouseUpOutSide to the old sprite (ScummVM behavior).
-                int lastClicked = inputState.getClickOnSprite();
-                if (lastClicked > 0 && lastClicked != hitSprite) {
-                    dispatcher.dispatchSpriteEvent(lastClicked, "mouseUpOutSide", List.of());
+                if (pressedEventSprite > 0 && pressedEventSprite != hitSprite) {
+                    dispatcher.dispatchSpriteEvent(pressedEventSprite, "mouseUpOutSide", List.of());
                 }
-                // Track which sprite was clicked so mouseUp can target it
-                inputState.setClickOnSprite(hitSprite);
+                // Track the visual sprite for Director's "the clickOn" while
+                // keeping the handler target separate for event-broker overlays.
+                inputState.setClickOnSprite(clickOnSprite);
+                pressedEventSprite = hitSprite;
                 // Built-in Director behavior: clicking on an editable text/field sprite
                 // automatically sets keyboardFocusSprite to that sprite's channel.
                 // Clicking elsewhere clears the keyboard focus.
-                autoFocusEditableField(hitSprite, event.stageX(), event.stageY());
+                autoFocusEditableField(clickOnSprite, event.stageX(), event.stageY());
                 dispatcher.resetEventStopped();
                 if (hitSprite > 0) {
                     dispatcher.dispatchSpriteEvent(hitSprite, PlayerEvent.MOUSE_DOWN, List.of());
@@ -232,10 +261,25 @@ public class InputHandler {
                 dispatcher.dispatchFrameAndMovieEvent(PlayerEvent.MOUSE_DOWN, List.of());
             }
             case MOUSE_UP -> {
-                int pressedSprite = inputState.getClickOnSprite();
-                int releaseSprite = hitTestExact(event.stageX(), event.stageY());
+                int pressedSprite = pressedEventSprite;
+                int releaseSprite = hitTestInteractive(event.stageX(), event.stageY());
+                int clickOnSprite = inputState.getClickOnSprite();
+                traceMouseHit("up", event.stageX(), event.stageY(), releaseSprite, clickOnSprite);
                 dispatcher.resetEventStopped();
-                if (pressedSprite > 0 && releaseSprite == pressedSprite) {
+                boolean releaseSpriteHandled = false;
+                if (releaseSprite > 0
+                        && releaseSprite != pressedSprite
+                        && dispatcher.spriteHasHandler(releaseSprite, PlayerEvent.MOUSE_UP.getHandlerName())) {
+                    dispatcher.dispatchSpriteEvent(releaseSprite, PlayerEvent.MOUSE_UP, List.of());
+                    releaseSpriteHandled = true;
+                }
+                // Director UI drag helpers use an invisible high-z event agent
+                // to receive mouseUp even though the press began on another sprite.
+                // When that broker stops the event it has already cleaned up the drag.
+                boolean stoppedByReleaseSprite = releaseSpriteHandled && dispatcher.isEventStopped();
+                if (stoppedByReleaseSprite) {
+                    // Nothing else in the pressed-sprite chain should see this mouseUp.
+                } else if (pressedSprite > 0 && releaseSprite == pressedSprite) {
                     dispatcher.dispatchSpriteEvent(pressedSprite, PlayerEvent.MOUSE_UP, List.of());
                 } else if (pressedSprite > 0
                         && dispatcher.spriteHasHandler(pressedSprite, "mouseUpOutSide")) {
@@ -243,11 +287,11 @@ public class InputHandler {
                 } else if (pressedSprite > 0
                         && dispatcher.spriteHasHandler(pressedSprite, PlayerEvent.MOUSE_UP.getHandlerName())) {
                     dispatcher.dispatchSpriteEvent(pressedSprite, PlayerEvent.MOUSE_UP, List.of());
-                } else if (releaseSprite > 0) {
+                } else if (releaseSprite > 0 && !releaseSpriteHandled) {
                     dispatcher.dispatchSpriteEvent(releaseSprite, PlayerEvent.MOUSE_UP, List.of());
                 }
-                inputState.setClickOnSprite(0);
                 dispatcher.dispatchFrameAndMovieEvent(PlayerEvent.MOUSE_UP, List.of());
+                pressedEventSprite = 0;
             }
             case RIGHT_MOUSE_DOWN -> {
                 dispatcher.dispatchFrameAndMovieEvent(PlayerEvent.RIGHT_MOUSE_DOWN, List.of());
@@ -263,6 +307,7 @@ public class InputHandler {
                 // Built-in editable field keyboard handling (Director inserts typed chars into member.text)
                 if (focusSprite > 0) {
                     handleEditableFieldInput(focusSprite, event.keyChar());
+                    traceKeyDispatch(focusSprite, dispatcher);
                     dispatcher.dispatchSpriteEvent(focusSprite, PlayerEvent.KEY_DOWN, List.of());
                 }
                 // Director dispatches keyDown to focused sprite → frame → movie scripts
@@ -294,8 +339,7 @@ public class InputHandler {
                 int memberNum = sprite.getEffectiveCastMember();
                 if (memberNum > 0) {
                     CastMember member = castLibManager.getDynamicMember(castLibNum, memberNum);
-                    if (member != null && member.isEditable()
-                            && (member.getMemberType() == MemberType.TEXT)) {
+                    if (isEditableTextLikeSprite(sprite, member)) {
                         inputState.setKeyboardFocusSprite(hitChannel);
                         int spriteX = sprite.getLocH() - member.getRegPointX();
                         int spriteY = sprite.getLocV() - member.getRegPointY();
@@ -305,13 +349,16 @@ public class InputHandler {
                         inputState.setSelStart(charPos);
                         inputState.setSelEnd(charPos);
                         inputState.resetCaretBlink();
+                        traceTextFocus("autoFocus", hitChannel, member, charPos);
                         return;
                     }
+                    traceTextFocus("autoFocus-skip", hitChannel, member, -1);
                 }
             }
         }
         // Clicked on non-editable sprite or empty stage — clear focus
         inputState.setKeyboardFocusSprite(0);
+        traceTextFocus("autoFocus-clear", hitChannel, null, -1);
     }
 
     private int hitTest(int stageX, int stageY) {
@@ -323,66 +370,79 @@ public class InputHandler {
     }*/
 
     private int hitTestExact(int stageX, int stageY) {
+        return hitTestInteractive(stageX, stageY);
+    }
+
+    private int hitTestVisual(int stageX, int stageY) {
+        return HitTester.hitTest(
+                stageRenderer,
+                currentFrameSupplier.getAsInt(),
+                stageX,
+                stageY,
+                NEVER_FORCE_BOUNDING_BOX);
+    }
+
+    private int hitTestClickOn(int stageX, int stageY) {
+        EventDispatcher dispatcher = eventDispatcherSupplier.get();
+        List<RenderSprite> sprites = stageRenderer.getLastBakedSprites();
+        if (sprites == null || sprites.isEmpty()) {
+            sprites = stageRenderer.getSpritesForFrame(currentFrameSupplier.getAsInt());
+        }
+
+        for (int i = sprites.size() - 1; i >= 0; i--) {
+            RenderSprite sprite = sprites.get(i);
+            if (!isClickOnEligible(sprite, dispatcher)) {
+                continue;
+            }
+            boolean forceBounds = sprite.getType() == RenderSprite.SpriteType.BUTTON;
+            if (HitTester.hitsSprite(sprite, stageX, stageY, forceBounds)) {
+                return sprite.getChannel();
+            }
+        }
+        return 0;
+    }
+
+    private boolean isClickOnEligible(RenderSprite sprite, EventDispatcher dispatcher) {
+        if (sprite == null || sprite.getChannel() <= 0) {
+            return false;
+        }
+        if (sprite.getType() == RenderSprite.SpriteType.BUTTON) {
+            return true;
+        }
+        return dispatcher != null && dispatcher.isSpriteMouseInteractive(sprite.getChannel());
+    }
+
+    private int hitTestInteractive(int stageX, int stageY) {
         EventDispatcher dispatcher = eventDispatcherSupplier.get();
         if (dispatcher == null) {
             return 0;
         }
 
-
+        // Mouse events first target the front-most interactive sprite using
+        // Director active-area rules. Some movies also use rectangular
+        // invisible UI brokers, so keep a bounding-box fallback only when
+        // there is no normal interactive hit.
         List<Integer> exactHits = getInteractiveHits(stageX, stageY, dispatcher, false);
         if (!exactHits.isEmpty()) {
             return exactHits.get(0);
         }
 
-        // Bounding-box fallback is retained for callers that want the old helper
-        // semantics, but current stage hit testing is already bounds-based.
         List<Integer> boundingHits = getInteractiveHits(stageX, stageY, dispatcher, true);
         return boundingHits.isEmpty() ? 0 : boundingHits.get(0);
     }
-
-    /*private int hitTestInteractive(int stageX, int stageY, boolean allowBoundingBoxFallback) {
-        EventDispatcher dispatcher = eventDispatcherSupplier.get();
-        if (dispatcher == null) {
-            return 0;
-        }
-
-
-        List<Integer> exactHits = getInteractiveHits(stageX, stageY, dispatcher, false);
-        if (!exactHits.isEmpty()) {
-            return exactHits.get(0);
-        }
-        if (!allowBoundingBoxFallback) {
-            return 0;
-        }
-        // Bounding-box fallback is retained for callers that want the old helper
-        // semantics, but current stage hit testing is already bounds-based.
-        List<Integer> boundingHits = getInteractiveHits(stageX, stageY, dispatcher, true);
-        return boundingHits.isEmpty() ? 0 : boundingHits.get(0);
-    }
-
-    private List<Integer> hitTestAllInteractive(int stageX, int stageY, boolean allowBoundingBoxFallback) {
-        EventDispatcher dispatcher = eventDispatcherSupplier.get();
-        if (dispatcher == null) {
-            return List.of();
-        }
-        List<Integer> exactHits = getInteractiveHits(stageX, stageY, dispatcher, false);
-        if (!exactHits.isEmpty()) {
-            return exactHits;
-        }
-        if (!allowBoundingBoxFallback) {
-            return List.of();
-        }
-        return getInteractiveHits(stageX, stageY, dispatcher, true);
-    }*/
 
     private List<Integer> getInteractiveHits(int stageX, int stageY, EventDispatcher dispatcher,
                                              boolean forceBoundingBox) {
+        IntPredicate boundingBoxPredicate = NEVER_FORCE_BOUNDING_BOX;
+        if (forceBoundingBox) {
+            boundingBoxPredicate = new InteractiveSpritePredicate(dispatcher);
+        }
         List<Integer> hitChannels = HitTester.hitTestAll(
                 stageRenderer,
                 currentFrameSupplier.getAsInt(),
                 stageX,
                 stageY,
-                forceBoundingBox ? dispatcher::isSpriteMouseInteractive : channel -> false);
+                boundingBoxPredicate);
         if (hitChannels.isEmpty()) {
             return hitChannels;
         }
@@ -393,6 +453,59 @@ public class InputHandler {
             }
         }
         return interactive;
+    }
+
+    private static final class InteractiveSpritePredicate implements IntPredicate {
+        private final EventDispatcher dispatcher;
+
+        private InteractiveSpritePredicate(EventDispatcher dispatcher) {
+            this.dispatcher = dispatcher;
+        }
+
+        @Override
+        public boolean test(int channel) {
+            return dispatcher != null && dispatcher.isSpriteMouseInteractive(channel);
+        }
+    }
+
+    private void traceMouseHit(String phase, int stageX, int stageY, int channel, int clickOnSprite) {
+        if (!DebugConfig.isDebugPlaybackEnabled()) {
+            return;
+        }
+        EventDispatcher dispatcher = eventDispatcherSupplier.get();
+        boolean interactive = dispatcher != null && dispatcher.isSpriteMouseInteractive(channel);
+        System.out.println("[MouseHit] " + phase + " x=" + stageX + " y=" + stageY
+                + " ch=" + channel + " interactive=" + interactive
+                + " clickOn=" + clickOnSprite
+                + describeHitStacks(stageX, stageY, dispatcher));
+    }
+
+    private String describeHitStacks(int stageX, int stageY, EventDispatcher dispatcher) {
+        if (dispatcher == null) {
+            return "";
+        }
+        List<Integer> exactHits = getInteractiveHits(stageX, stageY, dispatcher, false);
+        List<Integer> boundsHits = getInteractiveHits(stageX, stageY, dispatcher, true);
+        return " exact=" + abbreviateChannels(exactHits) + " bounds=" + abbreviateChannels(boundsHits);
+    }
+
+    private static String abbreviateChannels(List<Integer> channels) {
+        if (channels == null || channels.isEmpty()) {
+            return "[]";
+        }
+        StringBuilder out = new StringBuilder("[");
+        int limit = Math.min(6, channels.size());
+        for (int i = 0; i < limit; i++) {
+            if (i > 0) {
+                out.append(',');
+            }
+            out.append(channels.get(i));
+        }
+        if (channels.size() > limit) {
+            out.append(",+").append(channels.size() - limit);
+        }
+        out.append(']');
+        return out.toString();
     }
 
     // --- Text editing ---
@@ -410,7 +523,7 @@ public class InputHandler {
             int memberNum = s.getEffectiveCastMember();
             if (memberNum <= 0) continue;
             CastMember m = castLibManager.getDynamicMember(s.getEffectiveCastLib(), memberNum);
-            if (m != null && m.isEditable() && m.getMemberType() == MemberType.TEXT) {
+            if (isEditableTextLikeSprite(s, m)) {
                 editableChannels.add(ch);
             }
         }
@@ -452,9 +565,10 @@ public class InputHandler {
         CastMember member = castLibManager.getDynamicMember(castLibNum, memberNum);
         if (member == null) return;
 
-        MemberType type = member.getMemberType();
-        if (type != MemberType.TEXT && type != MemberType.BUTTON) return;
-        if (!member.isEditable()) return;
+        if (!isEditableTextLikeSprite(sprite, member)) return;
+
+        inputState.allowCaretForKeyboardFocus();
+        traceTextFocus("keyDown", channel, member, inputState.getSelStart());
 
         String text = member.getTextContent();
         if (text == null) text = "";
@@ -521,7 +635,7 @@ public class InputHandler {
         if (memberNum <= 0) return null;
 
         CastMember member = castLibManager.getDynamicMember(castLibNum, memberNum);
-        if (member == null || !member.isEditable()) return null;
+        if (!isEditableTextLikeSprite(sprite, member)) return null;
 
         return new Object[]{sprite, member};
     }
@@ -548,22 +662,22 @@ public class InputHandler {
         TextRenderer renderer = member.getTextRenderer();
         if (renderer == null) return null;
 
-        int[] pos = renderer.charPosToLoc(text, selStart,
+        int[] pos = renderer.charPosToLoc(text, textBoundaryToDirectorCharPos(selStart),
                 member.getTextFont(), member.getTextFontSize(),
-                member.getTextFontStyle(), member.getTextFixedLineSpace(),
-                member.getTextAlignment(), sprite.getWidth());
+                member.getTextFontStyle(), member.getTextLineAdvance(),
+                member.getTextAlignmentForWidth(sprite.getWidth()), sprite.getWidth());
         if (pos == null) return null;
 
-        int lineHeight = renderer.getLineHeight(member.getTextFont(),
+        int[] caretBounds = renderer.getCaretBounds(member.getTextFont(),
                 member.getTextFontSize(), member.getTextFontStyle(),
                 member.getTextFixedLineSpace());
 
         int spriteX = sprite.getLocH() - member.getRegPointX();
         int spriteY = sprite.getLocV() - member.getRegPointY();
         int caretX = spriteX + pos[0];
-        int caretY = spriteY + pos[1];
+        int caretY = spriteY + pos[1] + caretBounds[0];
 
-        return new int[]{caretX, caretY, lineHeight};
+        return new int[]{caretX, caretY, caretBounds[1]};
     }
 
     /**
@@ -592,16 +706,18 @@ public class InputHandler {
         String font = member.getTextFont();
         int fontSize = member.getTextFontSize();
         String fontStyle = member.getTextFontStyle();
-        int fls = member.getTextFixedLineSpace();
+        int fls = member.getTextLineAdvance();
 
         int lineHeight = renderer.getLineHeight(font, fontSize, fontStyle, fls);
         int spriteX = sprite.getLocH() - member.getRegPointX();
         int spriteY = sprite.getLocV() - member.getRegPointY();
 
-        String alignment = member.getTextAlignment();
         int fieldWidth = sprite.getWidth();
-        int[] startPos = renderer.charPosToLoc(text, selMin, font, fontSize, fontStyle, fls, alignment, fieldWidth);
-        int[] endPos = renderer.charPosToLoc(text, selMax, font, fontSize, fontStyle, fls, alignment, fieldWidth);
+        String alignment = member.getTextAlignmentForWidth(fieldWidth);
+        int[] startPos = renderer.charPosToLoc(text, textBoundaryToDirectorCharPos(selMin),
+                font, fontSize, fontStyle, fls, alignment, fieldWidth);
+        int[] endPos = renderer.charPosToLoc(text, textBoundaryToDirectorCharPos(selMax),
+                font, fontSize, fontStyle, fls, alignment, fieldWidth);
         if (startPos == null || endPos == null) return null;
 
         int startLineY = startPos[1];
@@ -635,6 +751,64 @@ public class InputHandler {
         return result;
     }
 
+    private static int textBoundaryToDirectorCharPos(int zeroBasedBoundary) {
+        return Math.max(0, zeroBasedBoundary) + 1;
+    }
+
+    private void traceTextFocus(String phase, int channel, CastMember member, int charPos) {
+        if (!DebugConfig.isDebugPlaybackEnabled()) {
+            return;
+        }
+        String memberInfo = member == null
+                ? "null"
+                : member.getMemberType() + "/" + member.getName()
+                + " editable=" + member.isEditable()
+                + " text=\"" + abbreviate(member.getTextContent()) + "\"";
+        System.out.println("[TextFocus] " + phase
+                + " ch=" + channel
+                + " focus=" + inputState.getKeyboardFocusSprite()
+                + " char=" + charPos
+                + " member=" + memberInfo);
+    }
+
+    private static boolean isEditableTextLikeSprite(SpriteState sprite, CastMember member) {
+        if (member == null || !(member.isEditable() || (sprite != null && sprite.isEditable()))) {
+            return false;
+        }
+        MemberType type = member.getMemberType();
+        return type == MemberType.TEXT || type == MemberType.BUTTON;
+    }
+
+    private void traceKeyDispatch(int channel, EventDispatcher dispatcher) {
+        if (!DebugConfig.isDebugPlaybackEnabled()) {
+            return;
+        }
+        SpriteState sprite = stageRenderer.getSpriteRegistry().get(channel);
+        CastMember member = null;
+        if (sprite != null && sprite.getEffectiveCastMember() > 0) {
+            member = castLibManager.getDynamicMember(sprite.getEffectiveCastLib(), sprite.getEffectiveCastMember());
+        }
+        String memberInfo = member == null
+                ? "null"
+                : member.getMemberType() + "/" + member.getName()
+                + " editable=" + member.isEditable()
+                + " text=\"" + abbreviate(member.getTextContent()) + "\"";
+        System.out.println("[KeyDispatch] ch=" + channel
+                + " keyCode=" + inputState.getLastKeyCode()
+                + " key=\"" + abbreviate(inputState.getLastKey()) + "\""
+                + " hasKeyDown=" + (dispatcher != null && dispatcher.spriteHasHandler(channel, PlayerEvent.KEY_DOWN.getHandlerName()))
+                + " hasMouseUp=" + (dispatcher != null && dispatcher.spriteHasHandler(channel, PlayerEvent.MOUSE_UP.getHandlerName()))
+                + " member=" + memberInfo);
+    }
+
+    private static String abbreviate(String text) {
+        if (text == null) {
+            return "";
+        }
+        String normalized = text.replace('\r', ' ').replace('\n', ' ');
+        return normalized.length() <= 40 ? normalized : normalized.substring(0, 40) + "...";
+    }
+
     // --- Clipboard operations ---
 
     /**
@@ -652,7 +826,7 @@ public class InputHandler {
         if (memberNum <= 0) return;
 
         CastMember member = castLibManager.getDynamicMember(castLibNum, memberNum);
-        if (member == null || !member.isEditable()) return;
+        if (!isEditableTextLikeSprite(sprite, member)) return;
 
         String text = member.getTextContent();
         if (text == null) text = "";
@@ -716,7 +890,7 @@ public class InputHandler {
         if (memberNum <= 0) return null;
 
         CastMember member = castLibManager.getDynamicMember(castLibNum, memberNum);
-        if (member == null || !member.isEditable()) return null;
+        if (!isEditableTextLikeSprite(sprite, member)) return null;
 
         String text = member.getTextContent();
         if (text == null || text.isEmpty()) return "";

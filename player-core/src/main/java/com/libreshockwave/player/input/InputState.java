@@ -39,6 +39,7 @@ public class InputState {
 
     // Keyboard focus
     private int keyboardFocusSprite;
+    private boolean drawCaretForKeyboardFocus;
 
     // Selection state (for text fields)
     private int selStart;
@@ -118,10 +119,19 @@ public class InputState {
 
     public int getKeyboardFocusSprite() { return keyboardFocusSprite; }
     public void setKeyboardFocusSprite(int channel) {
+        setKeyboardFocusSprite(channel, true);
+    }
+
+    public void setKeyboardFocusSprite(int channel, boolean drawCaret) {
         if (this.keyboardFocusSprite != channel) {
             this.keyboardFocusSprite = channel;
             resetCaretBlink();
         }
+        this.drawCaretForKeyboardFocus = channel > 0 && drawCaret;
+    }
+
+    public void allowCaretForKeyboardFocus() {
+        this.drawCaretForKeyboardFocus = keyboardFocusSprite > 0;
     }
 
     // --- Selection ---
@@ -140,7 +150,11 @@ public class InputState {
     /** Update blink rate based on movie tempo (fps). Targets ~530ms per half-cycle. */
     public void setCaretBlinkRate(int tempo) { caretBlinkRate = Math.max(1, (tempo * 530 + 500) / 1000); }
     /** Visible during first half of each blink cycle. */
-    public boolean isCaretVisible() { return keyboardFocusSprite > 0 && (caretBlinkCounter / caretBlinkRate) % 2 == 0; }
+    public boolean isCaretVisible() {
+        return keyboardFocusSprite > 0
+                && drawCaretForKeyboardFocus
+                && (caretBlinkCounter / caretBlinkRate) % 2 == 0;
+    }
 
     // --- Event queue ---
 
