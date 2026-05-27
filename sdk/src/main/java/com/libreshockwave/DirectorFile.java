@@ -56,6 +56,7 @@ public class DirectorFile {
     private final Map<ChunkId, ChunkInfo> chunkInfo = new HashMap<>();
     private final List<CastChunk> casts = new ArrayList<>();
     private final List<CastMemberChunk> castMembers = new ArrayList<>();
+    private final Map<ChunkId, CastMemberChunk> castMembersById = new HashMap<>();
     private final List<ScriptChunk> scripts = new ArrayList<>();
     private final List<PaletteChunk> palettes = new ArrayList<>();
     private boolean capitalX = false;  // True if file uses LctX (capital X) format
@@ -133,7 +134,25 @@ public class DirectorFile {
     public ScriptNamesChunk getScriptNames() { return scriptNames; }
     public boolean isCapitalX() { return capitalX; }
     public List<CastChunk> getCasts() { return Collections.unmodifiableList(casts); }
-    public List<CastMemberChunk> getCastMembers() { return Collections.unmodifiableList(castMembers); }
+    public List<CastMemberChunk> getCastMembers() {
+        ensureAllCastMembersLoaded();
+        return Collections.unmodifiableList(castMembers);
+    }
+
+    public CastMemberChunk getCastMemberChunk(ChunkId id) {
+        if (id == null) {
+            return null;
+        }
+        CastMemberChunk cached = castMembersById.get(id);
+        if (cached != null) {
+            return cached;
+        }
+        Chunk chunk = getChunk(id);
+        if (chunk instanceof CastMemberChunk member) {
+            return member;
+        }
+        return null;
+    }
 
     /**
      * Get a cast member by its score index (castLib, castMember).
@@ -148,7 +167,8 @@ public class DirectorFile {
 
     private CastMemberLookup getCastMemberLookup() {
         if (castMemberLookup == null) {
-            castMemberLookup = new CastMemberLookup(casts, castMembers, castList, config);
+            castMemberLookup = new CastMemberLookup(casts, castMembers, castList, config, keyTable,
+                this::getCastMemberChunk);
         }
         return castMemberLookup;
     }
@@ -215,6 +235,14 @@ public class DirectorFile {
         return reparseChunk(id);
     }
 
+    private void ensureAllCastMembersLoaded() {
+        for (ChunkInfo info : chunkInfo.values()) {
+            if (info.type() == ChunkType.CASt) {
+                getCastMemberChunk(info.id());
+            }
+        }
+    }
+
     /**
      * Release audio and other non-essential chunks to free memory.
      * In WASM, audio can't be played, so SoundChunk/MediaChunk data is wasted heap.
@@ -258,6 +286,7 @@ public class DirectorFile {
             Chunk chunk = parseChunkFromReader(chunkReader, info, version, capitalX);
             if (chunk != null) {
                 chunks.put(id, chunk);
+                categorizeChunk(chunk);
             }
             return chunk;
         } catch (Exception e) {
@@ -522,7 +551,7 @@ public class DirectorFile {
                 info.width(), info.height(), info.bitDepth(),
                 palette, bigEndian, directorVersion, info.pitch()
             );
-            bitmap.setNativeAlpha(info.useAlpha());
+            bitmap.setNativeAlpha(info.useAlpha() && info.bitDepth() == 32);
             if (palette != null) {
                 bitmap.setImagePalette(palette);
             }
@@ -943,11 +972,17 @@ public class DirectorFile {
             }
         }
 
-        // Parse all chunks
+        // Parse only the chunks needed to index and run the movie. Media and
+        // bitmap payloads remain addressable through chunkInfo/dataStore and
+        // are parsed on demand by getChunk().
         int version = file.config != null ? file.config.directorVersion() : 0;
-        boolean capitalX = false;
+        boolean capitalX = hasCapitalXScriptContext(file.chunkInfo.values());
+        file.capitalX = capitalX;
 
         for (ChunkInfo info : file.chunkInfo.values()) {
+            if (!shouldEagerlyParseChunk(info.type())) {
+                continue;
+            }
             try {
                 BinaryReader r = reader.sliceReaderAt(info.offset, info.length);
                 Chunk chunk = file.parseChunkFromReader(r, info, version, capitalX);
@@ -955,9 +990,9 @@ public class DirectorFile {
                     file.chunks.put(info.id(), chunk);
                     file.categorizeChunk(chunk);
 
-                    if (chunk instanceof ScriptContextChunk) {
-                        capitalX = info.fourcc() == BinaryReader.fourCC("LctX");
-                        file.capitalX = capitalX;
+                    if (chunk instanceof ScriptContextChunk && info.type() == ChunkType.LctX) {
+                        capitalX = true;
+                        file.capitalX = true;
                     }
                 }
             } catch (Exception e) {
@@ -1029,11 +1064,16 @@ public class DirectorFile {
             }
         }
 
-        // Parse all chunks
+        // Parse only startup/index chunks. Large media/bitmap/raw chunks are
+        // reparsed lazily from dataStore when rendering or APIs request them.
         int version = file.config != null ? file.config.directorVersion() : 0;
-        boolean capitalX = false;
+        boolean capitalX = hasCapitalXScriptContext(file.chunkInfo.values());
+        file.capitalX = capitalX;
 
         for (ChunkInfo info : file.chunkInfo.values()) {
+            if (!shouldEagerlyParseChunk(info.type())) {
+                continue;
+            }
             try {
                 BinaryReader r = reader.sliceReaderAt(info.offset, info.length);
                 Chunk chunk = file.parseChunkFromReader(r, info, version, capitalX);
@@ -1041,9 +1081,9 @@ public class DirectorFile {
                     file.chunks.put(info.id(), chunk);
                     file.categorizeChunk(chunk);
 
-                    if (chunk instanceof ScriptContextChunk) {
-                        capitalX = info.fourcc() == BinaryReader.fourCC("LctX");
-                        file.capitalX = capitalX;
+                    if (chunk instanceof ScriptContextChunk && info.type() == ChunkType.LctX) {
+                        capitalX = true;
+                        file.capitalX = true;
                     }
                 }
             } catch (Exception e) {
@@ -1072,6 +1112,13 @@ public class DirectorFile {
 
         int version = abReader.getDirectorVersion();
         boolean capitalX = false;
+        for (com.libreshockwave.format.ChunkInfo abInfo : abReader.getChunkInfos()) {
+            if ("LctX".equals(abInfo.fourCC())) {
+                capitalX = true;
+                file.capitalX = true;
+                break;
+            }
+        }
 
         // First pass: find and parse the config chunk to get correct version
         for (com.libreshockwave.format.ChunkInfo abInfo : abReader.getChunkInfos()) {
@@ -1109,6 +1156,10 @@ public class DirectorFile {
             );
             file.chunkInfo.put(chunkId, info);
 
+            if (!shouldEagerlyParseChunk(info.type())) {
+                continue;
+            }
+
             // Try to get and parse the chunk data
             try {
                 byte[] chunkData = abReader.getChunkData(abInfo.resourceId());
@@ -1123,9 +1174,9 @@ public class DirectorFile {
                     file.categorizeChunk(chunk);
 
                     // Update capitalX flag if we found a script context
-                    if (chunk instanceof ScriptContextChunk) {
-                        capitalX = abInfo.fourCC().equals("LctX");
-                        file.capitalX = capitalX;
+                    if (chunk instanceof ScriptContextChunk && abInfo.fourCC().equals("LctX")) {
+                        capitalX = true;
+                        file.capitalX = true;
                     }
 
                     // Update version from config
@@ -1145,6 +1196,14 @@ public class DirectorFile {
         } finally {
             parseDeadline = 0; // Clear deadline
         }
+    }
+
+    private static boolean shouldEagerlyParseChunk(ChunkType type) {
+        return switch (type) {
+            case DRCF, VWCF, KEYp, MCsL, CASp, CASt, Lctx, LctX, Lnam, Lscr,
+                 VWSC, SCVW, VWLB, CLUT, STXT -> true;
+            default -> false;
+        };
     }
 
     private Chunk parseChunkFromReader(BinaryReader reader, ChunkInfo info, int version, boolean capitalX) {
@@ -1169,6 +1228,15 @@ public class DirectorFile {
             case ediM -> MediaChunk.read(this, reader, info.id());
             default -> new RawChunk(this, info.id(), type, reader.readBytes(reader.bytesLeft()));
         };
+    }
+
+    private static boolean hasCapitalXScriptContext(Collection<ChunkInfo> chunkInfos) {
+        for (ChunkInfo info : chunkInfos) {
+            if (info.type() == ChunkType.LctX) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /*
@@ -1203,11 +1271,13 @@ public class DirectorFile {
             case KeyTableChunk k -> this.keyTable = k;
             case CastListChunk cl -> this.castList = cl;
             case ScriptContextChunk sc -> {
-                // Store all script contexts (one per cast library)
-                allScriptContexts.add(sc);
-                // Keep the primary context (the one with entries)
-                if (this.scriptContext == null || sc.entries().size() > 0) {
-                    this.scriptContext = sc;
+                if (!allScriptContexts.contains(sc)) {
+                    // Store all script contexts (one per cast library)
+                    allScriptContexts.add(sc);
+                    // Keep the primary context (the one with entries)
+                    if (this.scriptContext == null || sc.entries().size() > 0) {
+                        this.scriptContext = sc;
+                    }
                 }
             }
             case ScriptNamesChunk sn -> {
@@ -1217,12 +1287,29 @@ public class DirectorFile {
                     this.scriptNames = sn;
                 }
             }
-            case CastChunk c -> this.casts.add(c);
-            case CastMemberChunk cm -> this.castMembers.add(cm);
-            case ScriptChunk s -> this.scripts.add(s);
+            case CastChunk c -> {
+                if (!this.casts.contains(c)) {
+                    this.casts.add(c);
+                }
+            }
+            case CastMemberChunk cm -> {
+                if (!this.castMembersById.containsKey(cm.id())) {
+                    this.castMembersById.put(cm.id(), cm);
+                    this.castMembers.add(cm);
+                }
+            }
+            case ScriptChunk s -> {
+                if (!this.scripts.contains(s)) {
+                    this.scripts.add(s);
+                }
+            }
             case ScoreChunk sc -> this.scoreChunk = sc;
             case FrameLabelsChunk fl -> this.frameLabelsChunk = fl;
-            case PaletteChunk p -> this.palettes.add(p);
+            case PaletteChunk p -> {
+                if (!this.palettes.contains(p)) {
+                    this.palettes.add(p);
+                }
+            }
             default -> {}
         }
     }

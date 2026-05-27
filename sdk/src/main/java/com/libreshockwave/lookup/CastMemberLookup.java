@@ -4,11 +4,14 @@ import com.libreshockwave.chunks.CastChunk;
 import com.libreshockwave.chunks.CastListChunk;
 import com.libreshockwave.chunks.CastMemberChunk;
 import com.libreshockwave.chunks.ConfigChunk;
+import com.libreshockwave.chunks.KeyTableChunk;
+import com.libreshockwave.format.ChunkType;
 import com.libreshockwave.id.ChunkId;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 
 /**
  * Provides cast member lookup functionality.
@@ -20,23 +23,41 @@ public final class CastMemberLookup {
     private final List<CastMemberChunk> castMembers;
     private final CastListChunk castList;
     private final ConfigChunk config;
+    private final KeyTableChunk keyTable;
+    private final Function<ChunkId, CastMemberChunk> castMemberById;
 
     // Maps castLib number (1+) to the correct CASp chunk
     private final Map<Integer, CastChunk> castLibToCASp;
 
     public CastMemberLookup(List<CastChunk> casts, List<CastMemberChunk> castMembers,
                             CastListChunk castList, ConfigChunk config) {
+        this(casts, castMembers, castList, config, null, null);
+    }
+
+    public CastMemberLookup(List<CastChunk> casts, List<CastMemberChunk> castMembers,
+                            CastListChunk castList, ConfigChunk config,
+                            Function<ChunkId, CastMemberChunk> castMemberById) {
+        this(casts, castMembers, castList, config, null, castMemberById);
+    }
+
+    public CastMemberLookup(List<CastChunk> casts, List<CastMemberChunk> castMembers,
+                            CastListChunk castList, ConfigChunk config,
+                            KeyTableChunk keyTable,
+                            Function<ChunkId, CastMemberChunk> castMemberById) {
         this.casts = casts;
         this.castMembers = castMembers;
         this.castList = castList;
         this.config = config;
+        this.keyTable = keyTable;
+        this.castMemberById = castMemberById;
         this.castLibToCASp = buildCastLibMapping();
     }
 
     /**
      * Build mapping from castLib number to CASp chunk.
      * CASp chunks in Afterburner files may not be ordered by cast library.
-     * Match them to MCsL entries by member count.
+     * Match them to MCsL entries through KEY* when the cast ResourceID is available,
+     * falling back to the legacy member-count heuristic for older/incomplete inputs.
      */
     private Map<Integer, CastChunk> buildCastLibMapping() {
         Map<Integer, CastChunk> mapping = new HashMap<>();
@@ -53,9 +74,16 @@ public final class CastMemberLookup {
 
         for (int libIdx = 0; libIdx < castList.entries().size(); libIdx++) {
             CastListChunk.CastListEntry entry = castList.entries().get(libIdx);
-            int expectedCount = entry.memberCount();
             int castLibNum = libIdx + 1;
 
+            int resourceMappedIndex = findCastIndexByResourceId(entry.id());
+            if (resourceMappedIndex >= 0 && !assigned[resourceMappedIndex]) {
+                mapping.put(castLibNum, casts.get(resourceMappedIndex));
+                assigned[resourceMappedIndex] = true;
+                continue;
+            }
+
+            int expectedCount = entry.memberCount();
             for (int ci = 0; ci < casts.size(); ci++) {
                 if (assigned[ci]) continue;
                 CastChunk cast = casts.get(ci);
@@ -70,6 +98,25 @@ public final class CastMemberLookup {
         return mapping;
     }
 
+    private int findCastIndexByResourceId(int castResourceId) {
+        if (keyTable == null || castResourceId <= 0) {
+            return -1;
+        }
+        KeyTableChunk.KeyTableEntry castMappingEntry =
+                keyTable.findEntry(new ChunkId(castResourceId), ChunkType.CASp.getFourCC());
+        if (castMappingEntry == null) {
+            return -1;
+        }
+        ChunkId mappingResourceId = castMappingEntry.sectionId();
+        for (int i = 0; i < casts.size(); i++) {
+            CastChunk cast = casts.get(i);
+            if (cast != null && mappingResourceId.equals(cast.id())) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
     /**
      * Get a cast member by its score index (castLib, castMemberIndex).
      * Handles the minMember offset from the cast list.
@@ -78,34 +125,11 @@ public final class CastMemberLookup {
      * @return The cast member, or null if not found
      */
     public CastMemberChunk getByIndex(int castLib, int castMemberIndex) {
-        // Get the min member offset from the cast list or config
-        int minMember = getMinMember(castLib);
-
-        // Calculate the actual member ID considering the offset
-        int adjustedMemberId = castMemberIndex + minMember;
-
-        // Try to find by adjusted ID first
-        for (CastMemberChunk member : castMembers) {
-            if (member.id().value() == adjustedMemberId) {
-                return member;
-            }
+        if (castMemberIndex < 0) {
+            return null;
         }
-
-        // Try direct match with raw index
-        for (CastMemberChunk member : castMembers) {
-            if (member.id().value() == castMemberIndex) {
-                return member;
-            }
-        }
-
-        // Try +1 offset
-        for (CastMemberChunk member : castMembers) {
-            if (member.id().value() == castMemberIndex + 1) {
-                return member;
-            }
-        }
-
-        return null;
+        int effectiveCastLib = castLib > 0 ? castLib : 1;
+        return getByNumber(effectiveCastLib, castMemberIndex + getMinMember(effectiveCastLib));
     }
 
     /**
@@ -146,14 +170,24 @@ public final class CastMemberLookup {
             return null;  // Empty slot
         }
 
-        // Find the cast member chunk with this ID
-        ChunkId chunkId = new ChunkId(rawChunkId);
+        return resolveByChunkId(new ChunkId(rawChunkId));
+    }
+
+    private CastMemberChunk resolveByChunkId(ChunkId chunkId) {
+        if (chunkId == null) {
+            return null;
+        }
+        if (castMemberById != null) {
+            CastMemberChunk member = castMemberById.apply(chunkId);
+            if (member != null) {
+                return member;
+            }
+        }
         for (CastMemberChunk member : castMembers) {
             if (member.id().equals(chunkId)) {
                 return member;
             }
         }
-
         return null;
     }
 
