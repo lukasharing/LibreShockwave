@@ -2,6 +2,7 @@ package com.libreshockwave.format;
 
 import com.libreshockwave.io.BinaryReader;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
@@ -11,6 +12,8 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.DataFormatException;
+import java.util.zip.Inflater;
 
 /**
  * Reader for Afterburner-compressed Director files (.dcr).
@@ -278,12 +281,9 @@ public class AfterburnerReader {
         if (cachedChunkData.containsKey(resourceId)) {
             byte[] chunkData = cachedChunkData.get(resourceId);
 
-            // Decompress if needed (check if sizes differ)
             ChunkInfo info = chunkInfoMap.get(resourceId);
-            if (info != null && info.compressedSize() != info.uncompressedSize()) {
-                if (info.isZlibCompressed()) {
-                    chunkData = reader.decompressZlib(chunkData);
-                }
+            if (info != null) {
+                chunkData = decodeChunkData(info, chunkData);
             }
             return chunkData;
         }
@@ -314,14 +314,80 @@ public class AfterburnerReader {
         // Restore position
         reader.seek(savedPos);
 
-        // Decompress if needed
-        if (info.compressedSize() != info.uncompressedSize() && info.isZlibCompressed()) {
-            chunkData = reader.decompressZlib(chunkData);
+        // Cache the encoded payload, matching the ILS path above. DirectorFile
+        // caches parsed chunks, so retaining inflated bytes here would duplicate
+        // memory for large resources.
+        cachedChunkData.put(resourceId, chunkData);
+        return decodeChunkData(info, chunkData);
+    }
+
+    private byte[] decodeChunkData(ChunkInfo info, byte[] chunkData) throws IOException {
+        if (!info.isZlibCompressed()) {
+            return chunkData;
         }
 
-        // Cache for future use
-        cachedChunkData.put(resourceId, chunkData);
+        if (info.compressedSize() != info.uncompressedSize()) {
+            return reader.decompressZlib(chunkData);
+        }
+
+        if (!looksLikeZlibPayload(chunkData)) {
+            return chunkData;
+        }
+
+        byte[] inflated = inflateStrict(chunkData, info.uncompressedSize());
+        if (inflated != null) {
+            return inflated;
+        }
+
         return chunkData;
+    }
+
+    private boolean looksLikeZlibPayload(byte[] data) {
+        if (data == null || data.length < 2) {
+            return false;
+        }
+        int cmf = data[0] & 0xFF;
+        int flg = data[1] & 0xFF;
+        return (cmf & 0x0F) == 8
+                && (cmf >> 4) <= 7
+                && (((cmf << 8) + flg) % 31) == 0;
+    }
+
+    private byte[] inflateStrict(byte[] compressed, int expectedLength) {
+        Inflater inflater = new Inflater();
+        try {
+            inflater.setInput(compressed);
+            ByteArrayOutputStream output = new ByteArrayOutputStream(
+                    Math.max(expectedLength, compressed.length));
+            byte[] buffer = new byte[Math.max(128, Math.min(4096,
+                    expectedLength > 0 ? expectedLength : compressed.length * 4))];
+
+            while (!inflater.finished()) {
+                int count = inflater.inflate(buffer);
+                if (count == 0) {
+                    return null;
+                }
+
+                output.write(buffer, 0, count);
+                if (output.size() > expectedLength) {
+                    return null;
+                }
+            }
+
+            if (inflater.getRemaining() != 0) {
+                return null;
+            }
+
+            if (output.size() != expectedLength) {
+                return null;
+            }
+
+            return output.toByteArray();
+        } catch (DataFormatException ignored) {
+            return null;
+        } finally {
+            inflater.end();
+        }
     }
 
     /**

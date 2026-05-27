@@ -17,7 +17,7 @@ public record ChunkInfo(
      * Check if this chunk is compressed.
      */
     public boolean isCompressed() {
-        return compressedSize != uncompressedSize && !compressionType.isNull();
+        return !compressionType.isNull();
     }
 
     /**

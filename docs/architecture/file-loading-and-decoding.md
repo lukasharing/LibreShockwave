@@ -53,6 +53,15 @@ Important behaviors:
 - ILS chunk bodies are cached after extraction
 - later chunk requests can rehydrate data on demand from the cached decompressed segment or from offsets into the remaining file body
 
+Do not infer compression only from `compressedSize != uncompressedSize`.
+Some Afterburner resources declare zlib compression while the compressed byte
+length happens to match the uncompressed byte length. The compression directory
+is authoritative, but this equal-size case is ambiguous enough that the reader
+must verify a complete zlib stream and the exact declared output length before
+returning inflated bytes. If verification fails, keep the raw payload. This
+keeps STXT-backed object metadata such as `.props` members working without
+mis-decoding bitmap/media bytes that merely look like a zlib header.
+
 That means the loader is not forced to decompress everything up front just to serve a later bitmap or text request.
 
 ## 5. Lazy Reparsing And Memory Discipline
