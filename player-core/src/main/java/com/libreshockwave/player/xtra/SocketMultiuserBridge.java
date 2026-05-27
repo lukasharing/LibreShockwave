@@ -2,14 +2,13 @@ package com.libreshockwave.player.xtra;
 
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.xtra.MultiuserNetBridge;
-import com.libreshockwave.vm.xtra.MultiuserTransportCodec;
+import com.libreshockwave.vm.xtra.MultiuserTransportState;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -30,9 +29,7 @@ public class SocketMultiuserBridge implements MultiuserNetBridge {
         OutputStream out;
         boolean connected;
         boolean connecting;
-        boolean contentOnlyTransport;
-        boolean smusTransport;
-        String smusInboundBuffer = "";
+        MultiuserTransportState transport;
         final byte[] readBuf = new byte[8192];
     }
 
@@ -47,8 +44,7 @@ public class SocketMultiuserBridge implements MultiuserNetBridge {
     public void requestConnect(int instanceId, String host, int port, int modeFlag) {
         Connection conn = new Connection();
         conn.connecting = true;
-        conn.contentOnlyTransport = modeFlag != 0;
-        conn.smusTransport = modeFlag == 0;
+        conn.transport = new MultiuserTransportState(modeFlag);
         connections.put(instanceId, conn);
 
         Thread t = new Thread(() -> {
@@ -73,11 +69,7 @@ public class SocketMultiuserBridge implements MultiuserNetBridge {
         Connection conn = connections.get(instanceId);
         if (conn == null || !conn.connected) return;
 
-        String contentString = content.toStr();
-        String payload = conn.contentOnlyTransport
-                || MultiuserTransportCodec.isContentOnlyEnvelope(senderID, subject)
-                ? contentString
-                : MultiuserTransportCodec.encodeSmusPacket(senderID, subject, contentString);
+        String payload = conn.transport.encodeOutgoing(senderID, subject, content);
         byte[] raw = payload.getBytes(StandardCharsets.ISO_8859_1);
         try {
             conn.out.write(raw);
@@ -118,26 +110,7 @@ public class SocketMultiuserBridge implements MultiuserNetBridge {
                     return List.of();
                 }
                 String data = new String(conn.readBuf, 0, read, StandardCharsets.ISO_8859_1);
-                if (conn.smusTransport) {
-                    conn.smusInboundBuffer += data;
-                    MultiuserTransportCodec.SmusParseResult result =
-                            MultiuserTransportCodec.parseSmusPackets(conn.smusInboundBuffer);
-                    if (result.messages().isEmpty()) {
-                        return List.of();
-                    }
-                    if (result.consumedChars() < conn.smusInboundBuffer.length()) {
-                        conn.smusInboundBuffer = conn.smusInboundBuffer.substring(result.consumedChars());
-                    } else {
-                        conn.smusInboundBuffer = "";
-                    }
-                    List<NetMessage> messages = new ArrayList<>();
-                    for (MultiuserTransportCodec.SmusMessage msg : result.messages()) {
-                        messages.add(new NetMessage(
-                                msg.errorCode(), msg.senderID(), msg.subject(), new Datum.Str(msg.content())));
-                    }
-                    return messages;
-                }
-                return List.of(new NetMessage(0, "", "", new Datum.Str(data)));
+                return conn.transport.decodeIncoming(0, "", "", data);
             }
         } catch (IOException e) {
             return List.of();

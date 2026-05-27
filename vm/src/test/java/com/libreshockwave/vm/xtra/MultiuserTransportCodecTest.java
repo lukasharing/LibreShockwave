@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MultiuserTransportCodecTest {
@@ -61,6 +62,16 @@ class MultiuserTransportCodecTest {
     @Test
     void detectsDirectorContentOnlyEnvelope() {
         assertTrue(MultiuserTransportCodec.isContentOnlyEnvelope("0", "0"));
+    }
+
+    @Test
+    void recognizesSmusPrefixesWithoutRejectingSplitHeaders() {
+        String packet = MultiuserTransportCodec.encodeSmusPacket("*", "LOGIN", "ticket");
+
+        assertTrue(MultiuserTransportCodec.couldStartSmusPacket(packet));
+        assertTrue(MultiuserTransportCodec.couldStartSmusPacket(packet.substring(0, 1)));
+        assertTrue(MultiuserTransportCodec.couldStartSmusPacket(packet.substring(0, 2)));
+        assertFalse(MultiuserTransportCodec.couldStartSmusPacket("@@raw-fuse-payload"));
     }
 
     private static String latin1FromHex(String hex) {

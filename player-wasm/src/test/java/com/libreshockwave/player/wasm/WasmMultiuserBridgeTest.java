@@ -117,6 +117,38 @@ class WasmMultiuserBridgeTest {
     }
 
     @Test
+    void smusConnectionFallsBackToRawWhenServerSpeaksContentOnly() {
+        WasmMultiuserBridge bridge = new WasmMultiuserBridge();
+
+        bridge.requestConnect(1, "example.test", 1234, 0);
+        bridge.deliverMessage(1, 0, "", "", "@@raw-fuse-payload");
+        bridge.requestSend(1, "*", "GET_PAGE_ARTICLES", new Datum.Str("@@encoded-command"));
+
+        List<MultiuserNetBridge.NetMessage> messages = bridge.pollMessages(1);
+        assertEquals(1, messages.size());
+        assertEquals("", messages.get(0).subject());
+        assertEquals("@@raw-fuse-payload", messages.get(0).content().toStr());
+
+        List<WasmMultiuserBridge.PendingRequest> requests = bridge.getPendingRequests();
+        assertEquals("@@encoded-command", requests.get(1).content);
+    }
+
+    @Test
+    void smusConnectionKeepsSplitPacketPrefixBeforeRawFallback() {
+        WasmMultiuserBridge bridge = new WasmMultiuserBridge();
+
+        bridge.requestConnect(1, "example.test", 1234, 0);
+        bridge.deliverMessage(1, 0, "", "", "r");
+        assertEquals(List.of(), bridge.pollMessages(1));
+
+        bridge.deliverMessage(1, 0, "", "", "@raw-fuse-payload");
+
+        List<MultiuserNetBridge.NetMessage> messages = bridge.pollMessages(1);
+        assertEquals(1, messages.size());
+        assertEquals("r@raw-fuse-payload", messages.get(0).content().toStr());
+    }
+
+    @Test
     void contentOnlyConnectionKeepsIncomingPayloadInContent() {
         WasmMultiuserBridge bridge = new WasmMultiuserBridge();
 
@@ -175,5 +207,21 @@ class WasmMultiuserBridgeTest {
         bridge.requestDisconnect(1);
 
         assertEquals(List.of(), bridge.pollMessages(1));
+    }
+
+    @Test
+    void connectionProblemKeepsHostDiagnosticDetailInContent() {
+        WasmMultiuserBridge bridge = new WasmMultiuserBridge();
+
+        bridge.notifyDisconnected(1, 1006, false,
+                "close code=1006 wasClean=false url=ws://127.0.0.1:4173/mus-ws");
+
+        List<MultiuserNetBridge.NetMessage> messages = bridge.pollMessages(1);
+        assertEquals(1, messages.size());
+        assertEquals(-2, messages.get(0).errorCode());
+        assertEquals("ConnectionProblem", messages.get(0).subject());
+        String detail = messages.get(0).content().toStr();
+        assertEquals(true, detail.contains("closeCode=1006"));
+        assertEquals(true, detail.contains("wasClean=false"));
     }
 }

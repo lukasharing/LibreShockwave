@@ -24,6 +24,24 @@ public final class MultiuserTransportCodec {
         return "0".equals(senderID) && "0".equals(subject);
     }
 
+    /**
+     * Returns whether the supplied bytes can still be interpreted as the start
+     * of an SMUS packet. This deliberately accepts incomplete prefixes because
+     * TCP/WebSocket delivery may split a packet between callbacks.
+     */
+    public static boolean couldStartSmusPacket(String rawContent) {
+        byte[] data = rawContent != null
+                ? rawContent.getBytes(StandardCharsets.ISO_8859_1)
+                : new byte[0];
+        if (data.length == 0) {
+            return true;
+        }
+        if (data[0] != SMUS_HEADER_TAG) {
+            return false;
+        }
+        return data.length == 1 || data[1] == 0;
+    }
+
     public static String encodeSmusPacket(String recipients, String subject, String content) {
         ByteArrayOutputStream body = new ByteArrayOutputStream();
         writeSmusString(body, subject);

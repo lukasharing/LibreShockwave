@@ -3,7 +3,7 @@ package com.libreshockwave.player.wasm;
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.DebugConfig;
 import com.libreshockwave.vm.xtra.MultiuserNetBridge;
-import com.libreshockwave.vm.xtra.MultiuserTransportCodec;
+import com.libreshockwave.vm.xtra.MultiuserTransportState;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -44,9 +44,7 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
     private final Map<Integer, Boolean> connectedMap = new HashMap<>();
     private final Map<Integer, List<NetMessage>> messageQueues = new HashMap<>();
     private final Set<Integer> closingInstances = new HashSet<>();
-    private final Set<Integer> contentOnlyInstances = new HashSet<>();
-    private final Set<Integer> smusInstances = new HashSet<>();
-    private final Map<Integer, String> smusInboundBuffers = new HashMap<>();
+    private final Map<Integer, MultiuserTransportState> transports = new HashMap<>();
 
     // --- MultiuserNetBridge implementation ---
 
@@ -57,17 +55,12 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
 
     @Override
     public void requestConnect(int instanceId, String host, int port, int modeFlag) {
+        debug("request connect instance=" + instanceId + " host=" + host + " port=" + port
+                + " mode=" + modeFlag + (modeFlag != 0 ? " content-only" : " smus"));
         closingInstances.remove(instanceId);
         connectedMap.remove(instanceId);
         messageQueues.remove(instanceId);
-        smusInboundBuffers.remove(instanceId);
-        if (modeFlag != 0) {
-            contentOnlyInstances.add(instanceId);
-            smusInstances.remove(instanceId);
-        } else {
-            contentOnlyInstances.remove(instanceId);
-            smusInstances.add(instanceId);
-        }
+        transports.put(instanceId, new MultiuserTransportState(modeFlag));
         PendingRequest req = new PendingRequest(REQ_CONNECT, instanceId);
         req.host = host;
         req.port = port;
@@ -77,22 +70,29 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
     @Override
     public void requestSend(int instanceId, String senderID, String subject, Datum content) {
         String contentString = content.toStr();
+        MultiuserTransportState transport =
+                transports.computeIfAbsent(instanceId, ignored -> new MultiuserTransportState(0));
+        boolean contentOnly = transport.willSendContentOnly(senderID, subject);
+        String encoded = transport.encodeOutgoing(senderID, subject, content);
+        debug("request send instance=" + instanceId + " sender=" + senderID
+                + " subject=" + subject + " contentOnly=" + contentOnly
+                + " bytes=" + contentString.length() + " content=" + preview(contentString));
         PendingRequest req = new PendingRequest(REQ_SEND, instanceId);
         req.senderID = senderID;
         req.subject = subject;
-        req.content = shouldSendContentOnly(instanceId, senderID, subject)
-                ? contentString
-                : MultiuserTransportCodec.encodeSmusPacket(senderID, subject, contentString);
+        req.content = encoded;
         pendingRequests.add(req);
     }
 
     @Override
     public void requestDisconnect(int instanceId) {
+        debug("request disconnect instance=" + instanceId);
         closingInstances.add(instanceId);
         messageQueues.remove(instanceId);
         PendingRequest req = new PendingRequest(REQ_DISCONNECT, instanceId);
         pendingRequests.add(req);
         connectedMap.remove(instanceId);
+        transports.remove(instanceId);
     }
 
     @Override
@@ -108,12 +108,11 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
 
     @Override
     public void destroyInstance(int instanceId) {
+        debug("destroy instance=" + instanceId);
         closingInstances.add(instanceId);
         connectedMap.remove(instanceId);
         messageQueues.remove(instanceId);
-        contentOnlyInstances.remove(instanceId);
-        smusInstances.remove(instanceId);
-        smusInboundBuffers.remove(instanceId);
+        transports.remove(instanceId);
     }
 
     // --- JS polling API ---
@@ -142,59 +141,59 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
     }
 
     void notifyDisconnected(int instanceId) {
+        notifyDisconnected(instanceId, 0, false, "");
+    }
+
+    void notifyDisconnected(int instanceId, int closeCode, boolean wasClean, String detail) {
         connectedMap.remove(instanceId);
         if (closingInstances.contains(instanceId)) {
-            debug("disconnected ignored for closing instance=" + instanceId);
+            debug("disconnected ignored for closing instance=" + instanceId
+                    + formatCloseDetail(closeCode, wasClean, detail));
             return;
         }
-        debug("disconnected instance=" + instanceId);
-        queueMessage(instanceId, new NetMessage(-2, "System", "ConnectionProblem", new Datum.Str("")));
+        String diagnostic = formatCloseDetail(closeCode, wasClean, detail);
+        debug("disconnected instance=" + instanceId + diagnostic);
+        queueMessage(instanceId, new NetMessage(-2, "System", "ConnectionProblem", new Datum.Str(diagnostic.trim())));
     }
 
     void notifyError(int instanceId, int errorCode) {
+        notifyError(instanceId, errorCode, "");
+    }
+
+    void notifyError(int instanceId, int errorCode, String detail) {
         connectedMap.remove(instanceId);
         if (closingInstances.contains(instanceId)) {
-            debug("error ignored for closing instance=" + instanceId + " code=" + errorCode);
+            debug("error ignored for closing instance=" + instanceId + " code=" + errorCode
+                    + formatTextDetail(detail));
             return;
         }
-        debug("error instance=" + instanceId + " code=" + errorCode);
-        queueMessage(instanceId, new NetMessage(errorCode, "System", "ConnectionProblem", new Datum.Str("")));
+        String diagnostic = formatTextDetail(detail);
+        debug("error instance=" + instanceId + " code=" + errorCode + diagnostic);
+        queueMessage(instanceId, new NetMessage(errorCode, "System", "ConnectionProblem", new Datum.Str(diagnostic.trim())));
     }
 
     void deliverMessage(int instanceId, int errorCode, String senderID, String subject, String content) {
-        if (smusInstances.contains(instanceId) && (subject == null || subject.isEmpty())) {
-            deliverSmusMessages(instanceId, content);
+        MultiuserTransportState transport = transports.get(instanceId);
+        if (transport == null) {
+            debug("message instance=" + instanceId + " bytes=" + (content != null ? content.length() : 0)
+                    + " content=" + preview(content));
+            queueMessage(instanceId, new NetMessage(errorCode, senderID, subject, new Datum.Str(content)));
             return;
         }
-        debug("message instance=" + instanceId + " bytes=" + (content != null ? content.length() : 0)
-                + " content=" + preview(content));
-        queueMessage(instanceId, new NetMessage(errorCode, senderID, subject, new Datum.Str(content)));
-    }
-
-    private void deliverSmusMessages(int instanceId, String content) {
-        String buffered = smusInboundBuffers.getOrDefault(instanceId, "") + (content != null ? content : "");
-        MultiuserTransportCodec.SmusParseResult result = MultiuserTransportCodec.parseSmusPackets(buffered);
-        if (result.messages().isEmpty()) {
-            smusInboundBuffers.put(instanceId, buffered);
-            debug("message instance=" + instanceId + " buffered=" + buffered.length());
+        boolean wasContentOnly = transport.isContentOnly();
+        List<NetMessage> decoded = transport.decodeIncoming(errorCode, senderID, subject, content);
+        if (decoded.isEmpty()) {
+            debug("message instance=" + instanceId + " buffered=" + (content != null ? content.length() : 0));
             return;
         }
-        for (MultiuserTransportCodec.SmusMessage msg : result.messages()) {
+        if (!wasContentOnly && transport.isContentOnly()) {
+            debug("message instance=" + instanceId + " switching-to-content-only");
+        }
+        for (NetMessage msg : decoded) {
             debug("message instance=" + instanceId + " subject=" + msg.subject()
-                    + " content=" + preview(msg.content()));
-            queueMessage(instanceId, new NetMessage(
-                    msg.errorCode(), msg.senderID(), msg.subject(), new Datum.Str(msg.content())));
+                    + " content=" + preview(msg.content() != null ? msg.content().toStr() : null));
+            queueMessage(instanceId, msg);
         }
-        if (result.consumedChars() < buffered.length()) {
-            smusInboundBuffers.put(instanceId, buffered.substring(result.consumedChars()));
-        } else {
-            smusInboundBuffers.remove(instanceId);
-        }
-    }
-
-    private boolean shouldSendContentOnly(int instanceId, String senderID, String subject) {
-        return contentOnlyInstances.contains(instanceId)
-                || MultiuserTransportCodec.isContentOnlyEnvelope(senderID, subject);
     }
 
     private void queueMessage(int instanceId, NetMessage msg) {
@@ -207,6 +206,29 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
         if (DebugConfig.isDebugPlaybackEnabled()) {
             System.out.println("[MUSBridge] " + message);
         }
+    }
+
+    private static String formatCloseDetail(int closeCode, boolean wasClean, String detail) {
+        StringBuilder out = new StringBuilder();
+        if (closeCode != 0) {
+            out.append(" closeCode=").append(closeCode);
+        }
+        out.append(" wasClean=").append(wasClean);
+        appendDetail(out, detail);
+        return out.toString();
+    }
+
+    private static String formatTextDetail(String detail) {
+        StringBuilder out = new StringBuilder();
+        appendDetail(out, detail);
+        return out.toString();
+    }
+
+    private static void appendDetail(StringBuilder out, String detail) {
+        if (detail == null || detail.isBlank()) {
+            return;
+        }
+        out.append(" detail=").append(preview(detail));
     }
 
     private static String preview(String content) {
