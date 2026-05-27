@@ -293,7 +293,7 @@ public class BitmapCache {
             return null;
         }
         InkMode inkMode = InkMode.fromCode(ink);
-        if (inkMode != InkMode.MATTE && inkMode != InkMode.BACKGROUND_TRANSPARENT) {
+        if (inkMode != InkMode.MATTE) {
             return null;
         }
         if (!hasForeColor && !hasBackColor) {
