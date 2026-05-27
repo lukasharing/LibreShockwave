@@ -30,8 +30,7 @@ public final class InkProcessor {
         return ink == InkMode.TRANSPARENT || ink == InkMode.REVERSE || ink == InkMode.GHOST
             || ink == InkMode.NOT_COPY || ink == InkMode.NOT_TRANSPARENT || ink == InkMode.NOT_REVERSE
             || ink == InkMode.NOT_GHOST || ink == InkMode.MATTE || ink == InkMode.MASK || ink == InkMode.ADD_PIN
-            || ink == InkMode.ADD || ink == InkMode.SUBTRACT_PIN || ink == InkMode.SUBTRACT
-            || ink == InkMode.BACKGROUND_TRANSPARENT || ink == InkMode.BLEND
+            || ink == InkMode.ADD || ink == InkMode.BACKGROUND_TRANSPARENT
             || ink == InkMode.LIGHTEN || ink == InkMode.DARKEN;
     }
 
@@ -81,10 +80,16 @@ public final class InkProcessor {
         }
 
         if (ink == InkMode.MATTE) {
-            // Matte ink: flood-fill from edges
+            // Matte ink: flood-fill from edges. Indexed Director artwork can use
+            // the same RGB color for both matte and visible pixels; when palette
+            // index metadata is present, the index decides which edge-connected
+            // pixels are transparent. RGB-only assets keep the legacy RGB matte.
             Drawing.FloodFillMatte matteSpec = resolveMatteSpec(src, ink, backColor, useAlpha, palette);
             if (matteSpec == null) {
                 return src;
+            }
+            if (usesIndexedMatte(src)) {
+                return Drawing.applyFloodFillTransparency(src);
             }
             return applyMatte(src, matteSpec.matteColorRgb(), matteSpec.tolerance());
         } else if (ink == InkMode.MASK) {
@@ -141,9 +146,19 @@ public final class InkProcessor {
                 }
             }
             return masked;
-        } else if (ink == InkMode.NOT_GHOST || ink == InkMode.ADD_PIN
-                || ink == InkMode.ADD || ink == InkMode.SUBTRACT_PIN || ink == InkMode.SUBTRACT
-                || ink == InkMode.BACKGROUND_TRANSPARENT || ink == InkMode.BLEND) {
+        } else if (ink == InkMode.ADD_PIN || ink == InkMode.ADD) {
+            // Add inks are arithmetic compositing modes. They do not use a white
+            // color key; black pixels are naturally neutral in the compositor.
+            // Indexed art may already have had edge-connected palette-zero matte
+            // isolation applied above.
+            return src;
+        } else if (ink == InkMode.SUBTRACT_PIN || ink == InkMode.SUBTRACT || ink == InkMode.BLEND) {
+            // Subtract/Blend inks are also arithmetic/opacity modes, not
+            // transparency modes. In particular, the room dimmer uses a 1x1 white
+            // #subtractPin sprite to darken the room; keying white here erases the
+            // effect before the compositor sees it.
+            return src;
+        } else if (ink == InkMode.NOT_GHOST || ink == InkMode.BACKGROUND_TRANSPARENT) {
             // Background transparent / not-ghost / etc: color-key
             int bgColor = resolveBackColor(src, ink, backColor, useAlpha, palette);
             if (bgColor < 0) {
@@ -156,7 +171,7 @@ public final class InkProcessor {
     }
 
     private static boolean needsFloodFillIsolation(InkMode ink, Bitmap src) {
-        if (src.getPaletteIndices() == null) {
+        if (src.getPaletteIndicesUnsafe() == null) {
             return false;
         }
         return ink == InkMode.ADD_PIN || ink == InkMode.ADD;
@@ -181,7 +196,39 @@ public final class InkProcessor {
         if (src.getBitDepth() == 32 && !src.isScriptModified()) {
             return new Drawing.FloodFillMatte(0xFFFFFF, 0);
         }
+        if (src.isScriptModified()) {
+            return new Drawing.FloodFillMatte(0xFFFFFF, 0);
+        }
         return Drawing.resolveFloodFillMatte(src);
+    }
+
+    private static boolean usesIndexedMatte(Bitmap src) {
+        byte[] indices = src.getPaletteIndicesUnsafe();
+        if (indices == null || indices.length < src.getWidth() * src.getHeight()) {
+            return false;
+        }
+        Drawing.FloodFillMatte matte = Drawing.resolveFloodFillMatte(src);
+        if (matte == null || !matte.usesPaletteIndex()) {
+            return false;
+        }
+        if (src.isScriptModified() && !hasOpaqueNonMattePaletteIndex(src, matte.mattePaletteIndex())) {
+            return false;
+        }
+        return true;
+    }
+
+    private static boolean hasOpaqueNonMattePaletteIndex(Bitmap src, int mattePaletteIndex) {
+        byte[] indices = src.getPaletteIndicesUnsafe();
+        if (indices == null || src.getPixels() == null) {
+            return false;
+        }
+        int count = Math.min(indices.length, src.getPixels().length);
+        for (int i = 0; i < count; i++) {
+            if ((src.getPixels()[i] >>> 24) != 0 && (indices[i] & 0xFF) != mattePaletteIndex) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -195,6 +242,13 @@ public final class InkProcessor {
         // Native 32-bit alpha already defines transparency when the sprite uses alpha.
         if (src.hasNativeMatteAlpha() && useAlpha) {
             return -1;
+        }
+
+        if (ink == InkMode.BACKGROUND_TRANSPARENT) {
+            int textBackgroundRgb = src.getOpaqueTextRenderBackgroundRgb();
+            if (textBackgroundRgb >= 0) {
+                return textBackgroundRgb;
+            }
         }
 
         // Packed RGB value
@@ -264,9 +318,11 @@ public final class InkProcessor {
         int w = src.getWidth();
         int h = src.getHeight();
         int[] srcPixels = src.getPixels();
-        int[] result = new int[w * h];
+        int pixelCount = w * h;
+        int[] result = new int[pixelCount];
 
-        for (int i = 0; i < srcPixels.length; i++) {
+        int limit = Math.min(srcPixels.length, pixelCount);
+        for (int i = 0; i < limit; i++) {
             int pixel = srcPixels[i];
             int srcAlpha = (pixel >>> 24) & 0xFF;
             if (srcAlpha == 0) {
@@ -294,7 +350,8 @@ public final class InkProcessor {
         int w = src.getWidth();
         int h = src.getHeight();
         int[] pixels = src.getPixels();
-        boolean[] transparent = new boolean[w * h];
+        int pixelCount = w * h;
+        boolean[] transparent = new boolean[pixelCount];
         Queue<Integer> queue = new ArrayDeque<>();
 
         // Seed border pixels matching matte color
@@ -318,8 +375,9 @@ public final class InkProcessor {
             if (py < h - 1) seedMatte(pixels, transparent, queue, px, py + 1, w, matteColorRGB, tolerance);
         }
 
-        int[] result = new int[w * h];
-        for (int i = 0; i < pixels.length; i++) {
+        int[] result = new int[pixelCount];
+        int limit = Math.min(pixels.length, pixelCount);
+        for (int i = 0; i < limit; i++) {
             if (transparent[i]) {
                 result[i] = 0x00000000;
             } else {
@@ -333,6 +391,9 @@ public final class InkProcessor {
     private static void seedMatte(int[] pixels, boolean[] transparent, Queue<Integer> queue,
                                    int x, int y, int w, int matteRgb, int tolerance) {
         int idx = y * w + x;
+        if (idx < 0 || idx >= transparent.length || idx >= pixels.length) {
+            return;
+        }
         if (!transparent[idx] && isTransparentOrMatte(pixels[idx], matteRgb, tolerance)) {
             transparent[idx] = true;
             queue.add(idx);
@@ -389,9 +450,11 @@ public final class InkProcessor {
         int w = src.getWidth();
         int h = src.getHeight();
         int[] srcPixels = src.getPixels();
-        int[] result = new int[w * h];
+        int pixelCount = w * h;
+        int[] result = new int[pixelCount];
 
-        for (int i = 0; i < srcPixels.length; i++) {
+        int limit = Math.min(srcPixels.length, pixelCount);
+        for (int i = 0; i < limit; i++) {
             int alpha = (srcPixels[i] >>> 24);
             if (alpha == 0) {
                 result[i] = 0;
@@ -416,8 +479,10 @@ public final class InkProcessor {
         int w = src.getWidth();
         int h = src.getHeight();
         int[] pixels = src.getPixels();
-        int[] result = new int[w * h];
-        for (int i = 0; i < pixels.length; i++) {
+        int pixelCount = w * h;
+        int[] result = new int[pixelCount];
+        int limit = Math.min(pixels.length, pixelCount);
+        for (int i = 0; i < limit; i++) {
             if ((pixels[i] & 0xFFFFFF) == fromRgb) {
                 result[i] = (pixels[i] & 0xFF000000) | toRgb;
             } else {
@@ -465,9 +530,11 @@ public final class InkProcessor {
         int w = src.getWidth();
         int h = src.getHeight();
         int[] srcPixels = src.getPixels();
-        int[] result = new int[w * h];
+        int pixelCount = w * h;
+        int[] result = new int[pixelCount];
 
-        for (int i = 0; i < srcPixels.length; i++) {
+        int limit = Math.min(srcPixels.length, pixelCount);
+        for (int i = 0; i < limit; i++) {
             int alpha = (srcPixels[i] >>> 24);
             if (alpha == 0) {
                 result[i] = 0;
@@ -499,7 +566,7 @@ public final class InkProcessor {
 
     /**
      * Apply sprite-level color remapping using the source bitmap's preserved palette indices.
-     * This is used after MATTE masking so indexed furni layers can keep Director's edge
+     * This is used after MATTE masking so indexed sprite layers can keep Director's edge
      * transparency while still tinting the remaining pixels from black→foreColor / white→backColor.
      */
     static Bitmap applyIndexedColorRemap(Bitmap indexedSource, Bitmap maskedSource,
@@ -509,7 +576,7 @@ public final class InkProcessor {
                 || indexedSource.getHeight() != maskedSource.getHeight()) {
             return maskedSource;
         }
-        byte[] paletteIndices = indexedSource.getPaletteIndices();
+        byte[] paletteIndices = indexedSource.getPaletteIndicesUnsafe();
         if (paletteIndices == null || paletteIndices.length != maskedSource.getPixels().length) {
             return maskedSource;
         }
@@ -547,7 +614,13 @@ public final class InkProcessor {
     }
 
     private static Bitmap newDerivedBitmap(Bitmap src, int[] pixels) {
-        Bitmap derived = new Bitmap(src.getWidth(), src.getHeight(), src.getBitDepth(), pixels);
+        int pixelCount = src.getWidth() * src.getHeight();
+        int[] normalized = pixels;
+        if (pixels.length != pixelCount) {
+            normalized = new int[pixelCount];
+            System.arraycopy(pixels, 0, normalized, 0, Math.min(pixels.length, pixelCount));
+        }
+        Bitmap derived = new Bitmap(src.getWidth(), src.getHeight(), src.getBitDepth(), normalized);
         derived.copyPaletteMetadataFrom(src);
         return derived;
     }

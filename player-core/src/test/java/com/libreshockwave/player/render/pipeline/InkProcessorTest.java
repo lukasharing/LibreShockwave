@@ -103,6 +103,42 @@ class InkProcessorTest {
     }
 
     @Test
+    void arithmeticInksDoNotTreatWhiteAsTransparent() {
+        Bitmap src = new Bitmap(1, 1, 32, new int[] { 0xFFFFFFFF });
+
+        assertEquals(0xFFFFFFFF,
+                InkProcessor.applyInk(src, InkMode.ADD_PIN, 0, false, null).getPixel(0, 0));
+        assertEquals(0xFFFFFFFF,
+                InkProcessor.applyInk(src, InkMode.ADD, 0, false, null).getPixel(0, 0));
+        assertEquals(0xFFFFFFFF,
+                InkProcessor.applyInk(src, InkMode.SUBTRACT_PIN, 0, false, null).getPixel(0, 0));
+        assertEquals(0xFFFFFFFF,
+                InkProcessor.applyInk(src, InkMode.SUBTRACT, 0, false, null).getPixel(0, 0));
+        assertEquals(0xFFFFFFFF,
+                InkProcessor.applyInk(src, InkMode.BLEND, 0, false, null).getPixel(0, 0));
+    }
+
+    @Test
+    void backgroundTransparentUsesRenderedTextBackgroundAsKey() {
+        Bitmap src = new Bitmap(3, 1, 32, new int[] {
+            0xFF6794A7,
+            0xFFFFFFFF,
+            0xFF6794A7
+        });
+        src.markScriptModified();
+        src.markTextRenderedImage(0xFF6794A7);
+
+        int bg = InkProcessor.resolveBackColor(src, InkMode.BACKGROUND_TRANSPARENT, 0xFFFFFF, false, null);
+        Bitmap result = InkProcessor.applyInk(src, InkMode.BACKGROUND_TRANSPARENT, 0xFFFFFF, false, null);
+
+        assertEquals(0x6794A7, bg);
+        assertEquals(0x00000000, result.getPixel(0, 0));
+        assertEquals(0xFFFFFFFF, result.getPixel(1, 0),
+                "the text glyph color must survive; the text backing is the key");
+        assertEquals(0x00000000, result.getPixel(2, 0));
+    }
+
+    @Test
     void darkenKeepsOpaqueWhitePixelsFor32BitBitmapWithoutNativeAlpha() {
         Bitmap src = new Bitmap(3, 1, 32, new int[] {
             0xFFFFFFFF,
@@ -240,6 +276,27 @@ class InkProcessorTest {
         assertEquals(0xFFFFFF, matte);
         assertEquals(0x00000000, result.getPixel(0, 0));
         assertEquals(0xFF00AA00, result.getPixel(1, 1));
+        assertEquals(0x00000000, result.getPixel(2, 2));
+    }
+
+    @Test
+    void matteIgnoresStalePaletteIndicesForScriptModifiedBitmaps() {
+        Bitmap src = new Bitmap(3, 3, 8, new int[] {
+            0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
+            0xFFFFFFFF, 0xFF6794A7, 0xFFFFFFFF,
+            0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+        });
+        src.setPaletteIndices(new byte[] {
+            0, 0, 0,
+            0, 0, 0,
+            0, 0, 0
+        });
+        src.markScriptModified();
+
+        Bitmap result = InkProcessor.applyInk(src, InkMode.MATTE, 0, false, null);
+
+        assertEquals(0x00000000, result.getPixel(0, 0));
+        assertEquals(0xFF6794A7, result.getPixel(1, 1));
         assertEquals(0x00000000, result.getPixel(2, 2));
     }
 

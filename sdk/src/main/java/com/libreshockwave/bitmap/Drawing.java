@@ -71,8 +71,20 @@ public class Drawing {
                                    InkMode ink, int blend,
                                    Bitmap mask,
                                    Integer backgroundKeyRgb) {
+        copyPixels(dest, src, destX, destY, srcX, srcY, width, height, ink, blend,
+                mask, backgroundKeyRgb, srcX, srcY);
+    }
+
+    public static void copyPixels(Bitmap dest, Bitmap src,
+                                   int destX, int destY,
+                                   int srcX, int srcY,
+                                   int width, int height,
+                                   InkMode ink, int blend,
+                                   Bitmap mask,
+                                   Integer backgroundKeyRgb,
+                                   int maskX, int maskY) {
         if (width <= 0 || height <= 0) return;
-        if (ink == InkMode.MATTE && dest.getBitDepth() <= 8
+        if (ink == InkMode.MATTE && dest.getBitDepth() <= 8 && src.getBitDepth() > 8
                 && copyMatteToMaskImage(dest, src, destX, destY, srcX, srcY, width, height)) {
             return;
         }
@@ -89,9 +101,6 @@ public class Drawing {
             effectiveSrcX = srcX;
             effectiveSrcY = srcY;
         }
-        boolean keyNearWhiteMatte = ink == InkMode.BACKGROUND_TRANSPARENT
-                && shouldKeyNearWhiteMatte(effectiveSrc, effectiveSrcX, effectiveSrcY, width, height,
-                        backgroundKeyRgb);
         for (int y = 0; y < height; y++) {
             int sy = effectiveSrcY + y;
             int dy = destY + y;
@@ -109,67 +118,30 @@ public class Drawing {
                 }
 
                 // Check mask at source coordinates (mask has same dimensions as source)
+                int pixelBlend = blend;
+                InkMode pixelInk = ink;
                 if (mask != null) {
-                    int mx = srcX + x;
-                    int my = srcY + y;
-                    if (!maskAllowsPixel(mask, mx, my)) {
+                    int mx = maskX + x;
+                    int my = maskY + y;
+                    int maskAlpha = maskAlphaAt(mask, mx, my);
+                    if (maskAlpha <= 0) {
                         continue;
+                    }
+                    if (maskAlpha < 255) {
+                        pixelBlend = combineAlpha(blend, maskAlpha);
+                        if (pixelInk == InkMode.COPY) {
+                            pixelInk = InkMode.BLEND;
+                        }
                     }
                 }
 
                 int srcPixel = effectiveSrc.getPixel(sx, sy);
                 int destPixel = dest.getPixel(dx, dy);
 
-                int resultPixel = keyNearWhiteMatte && isNearWhiteMattePixel(srcPixel)
-                        ? destPixel
-                        : applyInk(srcPixel, destPixel, ink, blend, backgroundKeyRgb);
+                int resultPixel = applyInk(srcPixel, destPixel, pixelInk, pixelBlend, backgroundKeyRgb);
                 dest.setPixelPreservePaletteIndex(dx, dy, resultPixel);
             }
         }
-    }
-
-    private static boolean shouldKeyNearWhiteMatte(Bitmap src, int srcX, int srcY,
-                                                   int width, int height,
-                                                   Integer backgroundKeyRgb) {
-        if (src == null || src.getBitDepth() < 32 || !src.hasTransparentPixels()) {
-            return false;
-        }
-        int keyRgb = backgroundKeyRgb != null ? (backgroundKeyRgb & 0xFFFFFF) : 0xFFFFFF;
-        if (keyRgb != 0xFFFFFF || width <= 0 || height <= 0) {
-            return false;
-        }
-        int maxX = src.getWidth() - 1;
-        int maxY = src.getHeight() - 1;
-        int left = Math.max(0, Math.min(maxX, srcX));
-        int top = Math.max(0, Math.min(maxY, srcY));
-        int right = Math.max(0, Math.min(maxX, srcX + width - 1));
-        int bottom = Math.max(0, Math.min(maxY, srcY + height - 1));
-
-        for (int x = left; x <= right; x++) {
-            if (isNearWhiteMattePixel(src.getPixel(x, top))
-                    || isNearWhiteMattePixel(src.getPixel(x, bottom))) {
-                return true;
-            }
-        }
-        for (int y = top + 1; y < bottom; y++) {
-            if (isNearWhiteMattePixel(src.getPixel(left, y))
-                    || isNearWhiteMattePixel(src.getPixel(right, y))) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static boolean isNearWhiteMattePixel(int pixel) {
-        if (((pixel >>> 24) & 0xFF) == 0) {
-            return false;
-        }
-        int r = (pixel >> 16) & 0xFF;
-        int g = (pixel >> 8) & 0xFF;
-        int b = pixel & 0xFF;
-        return r >= 240 && g >= 240 && b >= 240
-                && Math.abs(r - g) <= 2
-                && Math.abs(g - b) <= 2;
     }
 
     private static boolean copyMatteToMaskImage(Bitmap dest, Bitmap src,
@@ -192,7 +164,7 @@ public class Drawing {
             }
         }
 
-        byte[] paletteIndices = src.getPaletteIndices();
+        byte[] paletteIndices = src.getPaletteIndicesUnsafe();
         FloodFillMatte matteSpec = resolveFloodFillMatte(pixels, paletteIndices, w, h);
         if (matteSpec == null) {
             return false;
@@ -444,22 +416,31 @@ public class Drawing {
                 return alphaBlend(src, dest, combineAlpha(srcA, blend));
 
             case ADD_PIN:
+                if (srcA == 0 || blend <= 0) {
+                    return dest;
+                }
                 r = Math.min(255, srcR + destR);
                 g = Math.min(255, srcG + destG);
                 b = Math.min(255, srcB + destB);
-                return packOpaqueRgb(r, g, b);
+                return compositeSpecialResult(dest, destR, destG, destB, r, g, b, combineAlpha(srcA, blend));
 
             case ADD:
+                if (srcA == 0 || blend <= 0) {
+                    return dest;
+                }
                 r = (srcR + destR) & 0xFF; // Wrap around
                 g = (srcG + destG) & 0xFF;
                 b = (srcB + destB) & 0xFF;
-                return packOpaqueRgb(r, g, b);
+                return compositeSpecialResult(dest, destR, destG, destB, r, g, b, combineAlpha(srcA, blend));
 
             case SUBTRACT_PIN:
+                if (srcA == 0 || blend <= 0) {
+                    return dest;
+                }
                 r = Math.max(0, destR - srcR);
                 g = Math.max(0, destG - srcG);
                 b = Math.max(0, destB - srcB);
-                return packOpaqueRgb(r, g, b);
+                return compositeSpecialResult(dest, destR, destG, destB, r, g, b, combineAlpha(srcA, blend));
 
             case BACKGROUND_TRANSPARENT:
                 // Director's Background Transparent is exact-match keying against the
@@ -480,20 +461,23 @@ public class Drawing {
                 r = Math.max(srcR, destR);
                 g = Math.max(srcG, destG);
                 b = Math.max(srcB, destB);
-                return packOpaqueRgb(r, g, b);
+                return compositeSpecialResult(dest, destR, destG, destB, r, g, b, combineAlpha(srcA, blend));
 
             case SUBTRACT:
+                if (srcA == 0 || blend <= 0) {
+                    return dest;
+                }
                 r = (destR - srcR) & 0xFF; // Wrap around
                 g = (destG - srcG) & 0xFF;
                 b = (destB - srcB) & 0xFF;
-                return packOpaqueRgb(r, g, b);
+                return compositeSpecialResult(dest, destR, destG, destB, r, g, b, combineAlpha(srcA, blend));
 
             case DARKEST:
                 if (srcA == 0) return dest;
                 r = Math.min(srcR, destR);
                 g = Math.min(srcG, destG);
                 b = Math.min(srcB, destB);
-                return packOpaqueRgb(r, g, b);
+                return compositeSpecialResult(dest, destR, destG, destB, r, g, b, combineAlpha(srcA, blend));
 
             case LIGHTEN:
             case DARKEN:
@@ -503,6 +487,21 @@ public class Drawing {
             default:
                 return src;
         }
+    }
+
+    private static int compositeSpecialResult(int dest, int destR, int destG, int destB,
+                                              int outR, int outG, int outB, int alpha) {
+        if (alpha <= 0) {
+            return dest;
+        }
+        if (alpha >= 255) {
+            return packOpaqueRgb(outR, outG, outB);
+        }
+        int invA = 255 - alpha;
+        int r = (outR * alpha + destR * invA) / 255;
+        int g = (outG * alpha + destG * invA) / 255;
+        int b = (outB * alpha + destB * invA) / 255;
+        return packOpaqueRgb(r, g, b);
     }
 
     /**
@@ -543,14 +542,18 @@ public class Drawing {
     }
 
     public static boolean maskAllowsPixel(Bitmap mask, int x, int y) {
+        return maskAlphaAt(mask, x, y) > 0;
+    }
+
+    public static int maskAlphaAt(Bitmap mask, int x, int y) {
         if (mask == null || x < 0 || x >= mask.getWidth() || y < 0 || y >= mask.getHeight()) {
-            return false;
+            return 0;
         }
         int pixel = mask.getPixel(x, y);
         if (mask.hasNativeMatteAlpha()) {
-            return ((pixel >>> 24) & 0xFF) != 0;
+            return (pixel >>> 24) & 0xFF;
         }
-        return maskAlphaFromPixel(pixel) < 255;
+        return 255 - maskAlphaFromPixel(pixel);
     }
 
     /**
@@ -561,9 +564,53 @@ public class Drawing {
     }
 
     /**
+     * Draw a filled rectangle while preserving an authored palette index.
+     */
+    public static void fillRectPaletteIndex(Bitmap dest, int x, int y, int width, int height,
+                                            int paletteIndex, int color) {
+        dest.fillRectPaletteIndex(x, y, width, height, paletteIndex, color);
+    }
+
+    /**
      * Draw a rectangle outline.
      */
     public static void drawRect(Bitmap dest, int x, int y, int width, int height, int color) {
+        drawRect(dest, x, y, width, height, color, 1);
+    }
+
+    /**
+     * Draw a rectangle outline using Director-style line size.
+     */
+    public static void drawRect(Bitmap dest, int x, int y, int width, int height, int color, int lineSize) {
+        if (width <= 0 || height <= 0 || lineSize <= 0) {
+            return;
+        }
+        int stroke = Math.min(lineSize, Math.max(width, height));
+        for (int i = 0; i < stroke; i++) {
+            drawRectOutline(dest, x + i, y + i, width - (i * 2), height - (i * 2), color);
+        }
+    }
+
+    /**
+     * Draw a rectangle outline using Director-style line size while preserving
+     * an authored palette index.
+     */
+    public static void drawRectPaletteIndex(Bitmap dest, int x, int y, int width, int height,
+                                            int paletteIndex, int color, int lineSize) {
+        if (width <= 0 || height <= 0 || lineSize <= 0) {
+            return;
+        }
+        int stroke = Math.min(lineSize, Math.max(width, height));
+        for (int i = 0; i < stroke; i++) {
+            drawRectOutlinePaletteIndex(dest, x + i, y + i, width - (i * 2), height - (i * 2),
+                    paletteIndex, color);
+        }
+    }
+
+    private static void drawRectOutline(Bitmap dest, int x, int y, int width, int height, int color) {
+        if (width <= 0 || height <= 0) {
+            return;
+        }
         // Top
         for (int i = x; i < x + width; i++) {
             dest.setPixel(i, y, color);
@@ -579,6 +626,25 @@ public class Drawing {
         // Right
         for (int i = y; i < y + height; i++) {
             dest.setPixel(x + width - 1, i, color);
+        }
+    }
+
+    private static void drawRectOutlinePaletteIndex(Bitmap dest, int x, int y, int width, int height,
+                                                    int paletteIndex, int color) {
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+        for (int i = x; i < x + width; i++) {
+            dest.setPixelPaletteIndex(i, y, paletteIndex, color);
+        }
+        for (int i = x; i < x + width; i++) {
+            dest.setPixelPaletteIndex(i, y + height - 1, paletteIndex, color);
+        }
+        for (int i = y; i < y + height; i++) {
+            dest.setPixelPaletteIndex(x, i, paletteIndex, color);
+        }
+        for (int i = y; i < y + height; i++) {
+            dest.setPixelPaletteIndex(x + width - 1, i, paletteIndex, color);
         }
     }
 
@@ -610,6 +676,34 @@ public class Drawing {
     }
 
     /**
+     * Draw a line while preserving an authored palette index.
+     */
+    public static void drawLinePaletteIndex(Bitmap dest, int x0, int y0, int x1, int y1,
+                                            int paletteIndex, int color) {
+        int dx = Math.abs(x1 - x0);
+        int dy = Math.abs(y1 - y0);
+        int sx = x0 < x1 ? 1 : -1;
+        int sy = y0 < y1 ? 1 : -1;
+        int err = dx - dy;
+
+        while (true) {
+            dest.setPixelPaletteIndex(x0, y0, paletteIndex, color);
+
+            if (x0 == x1 && y0 == y1) break;
+
+            int e2 = 2 * err;
+            if (e2 > -dy) {
+                err -= dy;
+                x0 += sx;
+            }
+            if (e2 < dx) {
+                err += dx;
+                y0 += sy;
+            }
+        }
+    }
+
+    /**
      * Draw a filled ellipse.
      */
     public static void fillEllipse(Bitmap dest, int cx, int cy, int rx, int ry, int color) {
@@ -623,6 +717,20 @@ public class Drawing {
     }
 
     /**
+     * Draw a filled ellipse while preserving an authored palette index.
+     */
+    public static void fillEllipsePaletteIndex(Bitmap dest, int cx, int cy, int rx, int ry,
+                                               int paletteIndex, int color) {
+        for (int y = -ry; y <= ry; y++) {
+            for (int x = -rx; x <= rx; x++) {
+                if ((x * x * ry * ry + y * y * rx * rx) <= (rx * rx * ry * ry)) {
+                    dest.setPixelPaletteIndex(cx + x, cy + y, paletteIndex, color);
+                }
+            }
+        }
+    }
+
+    /**
      * Director's image.createMatte() uses authored/native alpha when present.
      * Otherwise it falls back to flood-fill matte extraction:
      * indexed art prefers a dominant edge palette index, and RGB art prefers a
@@ -630,6 +738,37 @@ public class Drawing {
      */
     public static Bitmap createMatte(Bitmap src) {
         return createMatte(src, 0);
+    }
+
+    /**
+     * Director's image.createMask() creates a mask object for copyPixels.
+     * White pixels mask out the source; darker pixels allow it through. Preserve
+     * native alpha as an additional gate so transparent source-mask pixels do not
+     * become visible mask regions.
+     */
+    public static Bitmap createMask(Bitmap src) {
+        int w = src.getWidth();
+        int h = src.getHeight();
+        if (w <= 0 || h <= 0) {
+            return new Bitmap(1, 1, 32);
+        }
+
+        int[] mask = new int[w * h];
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int pixel = src.getPixel(x, y);
+                int sourceAlpha = (pixel >>> 24) & 0xFF;
+                int maskAlpha = 255 - maskAlphaFromPixel(pixel);
+                int alpha = src.hasNativeMatteAlpha()
+                        ? combineAlpha(sourceAlpha, maskAlpha)
+                        : maskAlpha;
+                mask[y * w + x] = (alpha << 24) | 0x00FFFFFF;
+            }
+        }
+
+        Bitmap maskBitmap = new Bitmap(w, h, 32, mask);
+        maskBitmap.setNativeAlpha(true);
+        return maskBitmap;
     }
 
     /**
@@ -682,7 +821,7 @@ public class Drawing {
                 pixels[y * w + x] = src.getPixel(x, y);
             }
         }
-        byte[] paletteIndices = src.getPaletteIndices();
+        byte[] paletteIndices = src.getPaletteIndicesUnsafe();
         return resolveFloodFillMatte(pixels, paletteIndices, w, h);
     }
 
@@ -692,6 +831,16 @@ public class Drawing {
      */
     public static Bitmap applyFloodFillTransparency(Bitmap src) {
         return applyMatteToRegion(src, 0, 0, src.getWidth(), src.getHeight());
+    }
+
+    /**
+     * Remove the edge-connected pixels that match an explicit matte specification.
+     * This is used for Lingo-created image buffers where Director's blank image()
+     * starts as white, even if later script drawing puts black outlines on the
+     * outer edge.
+     */
+    public static Bitmap applyFloodFillTransparency(Bitmap src, FloodFillMatte matteSpec) {
+        return applyMatteToRegion(src, 0, 0, src.getWidth(), src.getHeight(), matteSpec);
     }
 
     private static Bitmap createFloodFillMatte(Bitmap src) {
@@ -704,7 +853,7 @@ public class Drawing {
             }
         }
 
-        byte[] paletteIndices = src.getPaletteIndices();
+        byte[] paletteIndices = src.getPaletteIndicesUnsafe();
         FloodFillMatte matteSpec = resolveFloodFillMatte(pixels, paletteIndices, w, h);
         boolean[] transparent = matteSpec != null
                 ? computeFloodFillTransparency(pixels, paletteIndices, w, h, matteSpec)
@@ -712,13 +861,10 @@ public class Drawing {
 
         int[] mask = new int[w * h];
         for (int i = 0; i < pixels.length; i++) {
-            if (transparent[i]) {
+            int alpha = (pixels[i] >>> 24) & 0xFF;
+            if (transparent[i] || alpha == 0) {
                 mask[i] = 0x00FFFFFF;
             } else {
-                int alpha = (pixels[i] >>> 24) & 0xFF;
-                if (alpha == 0) {
-                    alpha = 0xFF;
-                }
                 mask[i] = (alpha << 24) | 0x00FFFFFF;
             }
         }
@@ -734,6 +880,11 @@ public class Drawing {
      * Used by copyPixels with MATTE ink to properly handle source transparency.
      */
     private static Bitmap applyMatteToRegion(Bitmap src, int srcX, int srcY, int w, int h) {
+        return applyMatteToRegion(src, srcX, srcY, w, h, null);
+    }
+
+    private static Bitmap applyMatteToRegion(Bitmap src, int srcX, int srcY, int w, int h,
+                                             FloodFillMatte explicitMatteSpec) {
         if (w <= 0 || h <= 0) {
             return new Bitmap(Math.max(w, 1), Math.max(h, 1), src.getBitDepth());
         }
@@ -744,8 +895,10 @@ public class Drawing {
         }
         Bitmap region = src.getRegion(srcX, srcY, w, h);
         int[] pixels = region.getPixels();
-        byte[] paletteIndices = region.getPaletteIndices();
-        FloodFillMatte matteSpec = resolveFloodFillMatte(pixels, paletteIndices, w, h);
+        byte[] paletteIndices = region.getPaletteIndicesUnsafe();
+        FloodFillMatte matteSpec = explicitMatteSpec != null
+                ? explicitMatteSpec
+                : resolveFloodFillMatte(pixels, paletteIndices, w, h);
         if (matteSpec == null) {
             return region;
         }
@@ -1067,6 +1220,51 @@ public class Drawing {
             dest.setPixel(cx - x, cy + y, color);
             dest.setPixel(cx + x, cy - y, color);
             dest.setPixel(cx - x, cy - y, color);
+
+            if (p > 0) {
+                y--;
+                p -= 2 * rxSq * y + rxSq;
+            } else {
+                y--;
+                x++;
+                p += 2 * rySq * x - 2 * rxSq * y + rxSq;
+            }
+        }
+    }
+
+    /**
+     * Draw an ellipse outline while preserving an authored palette index.
+     */
+    public static void drawEllipsePaletteIndex(Bitmap dest, int cx, int cy, int rx, int ry,
+                                               int paletteIndex, int color) {
+        int x = 0;
+        int y = ry;
+        int rxSq = rx * rx;
+        int rySq = ry * ry;
+        int p = (int)(rySq - rxSq * ry + 0.25 * rxSq);
+
+        while (rySq * x < rxSq * y) {
+            dest.setPixelPaletteIndex(cx + x, cy + y, paletteIndex, color);
+            dest.setPixelPaletteIndex(cx - x, cy + y, paletteIndex, color);
+            dest.setPixelPaletteIndex(cx + x, cy - y, paletteIndex, color);
+            dest.setPixelPaletteIndex(cx - x, cy - y, paletteIndex, color);
+
+            if (p < 0) {
+                x++;
+                p += 2 * rySq * x + rySq;
+            } else {
+                x++;
+                y--;
+                p += 2 * rySq * x - 2 * rxSq * y + rySq;
+            }
+        }
+
+        p = (int)(rySq * (x + 0.5) * (x + 0.5) + rxSq * (y - 1) * (y - 1) - rxSq * rySq);
+        while (y >= 0) {
+            dest.setPixelPaletteIndex(cx + x, cy + y, paletteIndex, color);
+            dest.setPixelPaletteIndex(cx - x, cy + y, paletteIndex, color);
+            dest.setPixelPaletteIndex(cx + x, cy - y, paletteIndex, color);
+            dest.setPixelPaletteIndex(cx - x, cy - y, paletteIndex, color);
 
             if (p > 0) {
                 y--;

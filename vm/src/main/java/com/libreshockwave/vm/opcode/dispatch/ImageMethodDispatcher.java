@@ -19,6 +19,7 @@ public final class ImageMethodDispatcher {
     private static Runnable imageMutationCallback;
 
     private record ResolvedPalette(Palette palette, Datum.CastMemberRef ref, String systemName) {}
+    private record MaskOffset(int x, int y) {}
 
     private ImageMethodDispatcher() {}
 
@@ -30,6 +31,7 @@ public final class ImageMethodDispatcher {
         if (bmp == null) {
             return;
         }
+        bmp.clearTextRenderMetadata();
         bmp.markScriptModified();
         if (imageMutationCallback != null) {
             imageMutationCallback.run();
@@ -39,6 +41,15 @@ public final class ImageMethodDispatcher {
     public static Datum dispatch(Datum.ImageRef imageRef, String methodName, List<Datum> args) {
         String method = methodName.toLowerCase();
         Bitmap bmp = imageRef.bitmap();
+        if (bmp == null) {
+            return dispatchNullImage(method, args);
+        }
+
+        if ("draw".equals(method)) {
+            Datum result = draw(bmp, args);
+            notifyImageMutation(bmp);
+            return result;
+        }
 
         return switch (method) {
             case "fill" -> {
@@ -47,12 +58,18 @@ public final class ImageMethodDispatcher {
                 }
                 yield Datum.VOID;
             }
-            case "draw" -> { notifyImageMutation(bmp); yield draw(bmp, args); }
             case "copypixels" -> {
+                Datum result = copyPixels(bmp, args);
                 notifyImageMutation(bmp);
-                yield copyPixels(bmp, args);
+                yield result;
             }
-            case "setalpha" -> { notifyImageMutation(bmp); yield setAlpha(bmp, args); }
+            case "setalpha" -> {
+                Datum result = setAlpha(bmp, args);
+                if (result.isTruthy()) {
+                    notifyImageMutation(bmp);
+                }
+                yield result;
+            }
             case "duplicate" -> new Datum.ImageRef(bmp.copy());
             case "crop" -> crop(bmp, args);
             case "setpixel" -> {
@@ -84,8 +101,7 @@ public final class ImageMethodDispatcher {
                 yield Datum.VOID;
             }
             case "trimwhitespace" -> {
-                // Director's trimWhiteSpace() returns a CROPPED image (not a rect).
-                // All Habbo usages treat the return value as an image.
+                // Director's trimWhiteSpace() returns a cropped image, not a rect.
                 int[] bounds = bmp.trimWhiteSpace();
                 if (bounds[2] <= bounds[0] || bounds[3] <= bounds[1]) {
                     // Entirely white - return 1x1 white image
@@ -93,8 +109,10 @@ public final class ImageMethodDispatcher {
                     empty.fill(0xFFFFFFFF);
                     yield new Datum.ImageRef(empty);
                 }
-                yield new Datum.ImageRef(bmp.getRegion(bounds[0], bounds[1],
-                        bounds[2] - bounds[0], bounds[3] - bounds[1]));
+                Bitmap trimmed = bmp.getRegion(bounds[0], bounds[1],
+                        bounds[2] - bounds[0], bounds[3] - bounds[1]);
+                trimmed.clearAnchorPoint();
+                yield new Datum.ImageRef(trimmed);
             }
             case "creatematte" -> {
                 int alphaThreshold = 0;
@@ -103,6 +121,7 @@ public final class ImageMethodDispatcher {
                 }
                 yield new Datum.ImageRef(Drawing.createMatte(bmp, alphaThreshold));
             }
+            case "createmask" -> new Datum.ImageRef(Drawing.createMask(bmp));
             case "getat" -> {
                 // getAt(index) on image - some scripts use this
                 // NOTE: Uses if-else instead of nested switch to avoid TeaVM WASM issue
@@ -117,6 +136,23 @@ public final class ImageMethodDispatcher {
                     yield Datum.VOID;
                 }
             }
+            default -> Datum.VOID;
+        };
+    }
+
+    private static Datum dispatchNullImage(String method, List<Datum> args) {
+        return switch (method) {
+            case "getat" -> {
+                if (!args.isEmpty()) {
+                    int index = args.get(0).toInt();
+                    if (index == 1 || index == 2) {
+                        yield Datum.ZERO;
+                    }
+                }
+                yield Datum.VOID;
+            }
+            case "duplicate", "crop", "trimwhitespace", "creatematte", "createmask" ->
+                    new Datum.ImageRef(new Bitmap(0, 0, 32));
             default -> Datum.VOID;
         };
     }
@@ -173,13 +209,9 @@ public final class ImageMethodDispatcher {
         String normalizedName = Palette.normalizeBuiltInSymbolName(name);
         if (normalizedName != null) {
             Palette palette = Palette.getBuiltInBySymbolName(name);
-            if ("systemMac".equals(normalizedName)
-                    && target != null
-                    && target.getBitDepth() > 8
-                    && target.getPaletteIndices() == null) {
-                palette = Palette.SYSTEM_WIN_PALETTE;
+            if (palette != null) {
+                return new ResolvedPalette(palette, null, normalizedName);
             }
-            return new ResolvedPalette(palette, null, normalizedName);
         }
         if (provider == null) {
             return null;
@@ -201,6 +233,17 @@ public final class ImageMethodDispatcher {
 
     public static Datum getProperty(Datum.ImageRef imageRef, String propName) {
         Bitmap bmp = imageRef.bitmap();
+        if (bmp == null) {
+            return switch (propName.toLowerCase()) {
+                case "rect" -> new Datum.Rect(0, 0, 0, 0);
+                case "width", "height", "depth" -> Datum.ZERO;
+                case "usealpha" -> Datum.FALSE;
+                case "ilk" -> Datum.symbol("image");
+                case "image" -> imageRef;
+                case "paletteref", "palette" -> Datum.VOID;
+                default -> Datum.VOID;
+            };
+        }
         return switch (propName.toLowerCase()) {
             case "rect" -> new Datum.Rect(0, 0, bmp.getWidth(), bmp.getHeight());
             case "width" -> Datum.of(bmp.getWidth());
@@ -286,13 +329,13 @@ public final class ImageMethodDispatcher {
     }
 
     private static Integer resolvePaletteIndexFill(Datum colorDatum, Bitmap bmp) {
-        if (bmp == null || bmp.getBitDepth() > 8 || bmp.getImagePalette() == null) {
+        if (bmp == null) {
             return null;
         }
         if (colorDatum instanceof Datum.PaletteIndexColor pic) {
             return pic.index() & 0xFF;
         }
-        if (colorDatum instanceof Datum.Int i) {
+        if (bmp.getBitDepth() <= 8 && colorDatum instanceof Datum.Int i) {
             int value = i.value();
             if (value >= 0 && value <= 255) {
                 return value;
@@ -313,6 +356,7 @@ public final class ImageMethodDispatcher {
 
         int left, top, right, bottom;
         Datum propsArg;
+        boolean pointToPointLine = false;
 
         if (firstArg instanceof Datum.Rect rect) {
             // draw(rect, propList)
@@ -321,6 +365,16 @@ public final class ImageMethodDispatcher {
             right = rect.right();
             bottom = rect.bottom();
             propsArg = args.get(1);
+        } else if (firstArg instanceof Datum.Point start
+                && args.size() >= 3
+                && args.get(1) instanceof Datum.Point end) {
+            // draw(pointA, pointB, propList) draws a line in Director.
+            left = start.x();
+            top = start.y();
+            right = end.x();
+            bottom = end.y();
+            propsArg = args.get(2);
+            pointToPointLine = true;
         } else if (args.size() >= 5) {
             // draw(left, top, right, bottom, propList)
             left = args.get(0).toInt();
@@ -333,39 +387,119 @@ public final class ImageMethodDispatcher {
         }
 
         // Extract color from propList
-        int colorArgb = 0xFF000000; // default black
-        String shapeType = "rect";
+        Datum colorDatum = new Datum.Color(0, 0, 0);
+        String shapeType = pointToPointLine ? "line" : "rect";
+        int lineSize = 1;
 
         if (propsArg instanceof Datum.PropList pl) {
-            Datum colorDatum = getPropIgnoreCase(pl, "color", "Color");
-            if (!colorDatum.isVoid()) {
-                colorArgb = Datum.datumToArgb(colorDatum, bmp);
+            Datum propColor = getPropIgnoreCase(pl, "color", "Color");
+            if (!propColor.isVoid()) {
+                colorDatum = propColor;
             }
             Datum shapeDatum = getPropIgnoreCase(pl, "shapeType", "shapetype");
             if (shapeDatum instanceof Datum.Symbol s) {
                 shapeType = s.name().toLowerCase();
             }
+            Datum lineSizeDatum = getPropIgnoreCase(pl, "lineSize", "linesize", "LineSize");
+            if (!lineSizeDatum.isVoid()) {
+                lineSize = Math.max(0, lineSizeDatum.toInt());
+            }
         } else {
             // Second arg is a color directly
-            colorArgb = Datum.datumToArgb(propsArg, bmp);
+            if (!propsArg.isVoid()) {
+                colorDatum = propsArg;
+            }
         }
 
-        int w = right - left;
-        int h = bottom - top;
-        if (w <= 0 || h <= 0) return Datum.VOID;
+        int colorArgb = Datum.datumToArgb(colorDatum, bmp);
+        Integer paletteIndex = resolvePaletteIndexFill(colorDatum, bmp);
 
-        switch (shapeType) {
-            case "rect" -> Drawing.drawRect(bmp, left, top, w, h, colorArgb);
-            case "oval", "ellipse" -> {
-                int cx = left + w / 2;
-                int cy = top + h / 2;
-                Drawing.drawEllipse(bmp, cx, cy, w / 2, h / 2, colorArgb);
+        if ("rect".equals(shapeType)) {
+            int w = right - left;
+            int h = bottom - top;
+            if (w <= 0 || h <= 0) return Datum.VOID;
+            if (lineSize > 0) {
+                if (paletteIndex != null) {
+                    drawRectOutlineByFill(bmp, left, top, w, h, paletteIndex, colorArgb, lineSize);
+                } else {
+                    drawRectOutlineByFill(bmp, left, top, w, h, null, colorArgb, lineSize);
+                }
+            } else {
+                if (paletteIndex != null) {
+                    Drawing.fillRectPaletteIndex(bmp, left, top, w, h, paletteIndex, colorArgb);
+                } else {
+                    Drawing.fillRect(bmp, left, top, w, h, colorArgb);
+                }
             }
-            case "line" -> Drawing.drawLine(bmp, left, top, right, bottom, colorArgb);
-            default -> Drawing.drawRect(bmp, left, top, w, h, colorArgb);
+        } else if ("oval".equals(shapeType) || "ellipse".equals(shapeType)) {
+            int w = right - left;
+            int h = bottom - top;
+            if (w <= 0 || h <= 0) return Datum.VOID;
+            int cx = left + w / 2;
+            int cy = top + h / 2;
+            if (lineSize > 0) {
+                if (paletteIndex != null) {
+                    Drawing.drawEllipsePaletteIndex(bmp, cx, cy, w / 2, h / 2, paletteIndex, colorArgb);
+                } else {
+                    Drawing.drawEllipse(bmp, cx, cy, w / 2, h / 2, colorArgb);
+                }
+            } else {
+                if (paletteIndex != null) {
+                    Drawing.fillEllipsePaletteIndex(bmp, cx, cy, w / 2, h / 2, paletteIndex, colorArgb);
+                } else {
+                    Drawing.fillEllipse(bmp, cx, cy, w / 2, h / 2, colorArgb);
+                }
+            }
+        } else if ("line".equals(shapeType)) {
+            if (left == right && top == bottom) return Datum.VOID;
+            if (paletteIndex != null) {
+                Drawing.drawLinePaletteIndex(bmp, left, top, right, bottom, paletteIndex, colorArgb);
+            } else {
+                Drawing.drawLine(bmp, left, top, right, bottom, colorArgb);
+            }
+        } else {
+            int w = right - left;
+            int h = bottom - top;
+            if (w <= 0 || h <= 0) return Datum.VOID;
+            if (paletteIndex != null) {
+                Drawing.fillRectPaletteIndex(bmp, left, top, w, h, paletteIndex, colorArgb);
+            } else {
+                Drawing.fillRect(bmp, left, top, w, h, colorArgb);
+            }
         }
 
         return Datum.VOID;
+    }
+
+    private static void drawRectOutlineByFill(Bitmap bmp, int left, int top, int width, int height,
+                                              Integer paletteIndex, int colorArgb, int lineSize) {
+        if (bmp == null || width <= 0 || height <= 0 || lineSize <= 0) {
+            return;
+        }
+        int stroke = Math.min(lineSize, Math.min(width, height));
+        fillDrawnRectEdge(bmp, left, top, width, stroke, paletteIndex, colorArgb);
+        if (height > stroke) {
+            fillDrawnRectEdge(bmp, left, top + height - stroke, width, stroke, paletteIndex, colorArgb);
+        }
+        int verticalTop = top + stroke;
+        int verticalHeight = height - (stroke * 2);
+        if (verticalHeight <= 0) {
+            return;
+        }
+        fillDrawnRectEdge(bmp, left, verticalTop, stroke, verticalHeight, paletteIndex, colorArgb);
+        if (width > stroke) {
+            fillDrawnRectEdge(bmp, left + width - stroke, verticalTop, stroke, verticalHeight,
+                    paletteIndex, colorArgb);
+        }
+    }
+
+    private static void fillDrawnRectEdge(Bitmap bmp, int x, int y, int width, int height,
+                                          Integer paletteIndex, int colorArgb) {
+        if (paletteIndex != null) {
+            Drawing.fillRectPaletteIndex(bmp, x, y, width, height, paletteIndex, colorArgb);
+        } else {
+            Drawing.fillRect(bmp, x, y, width, height, colorArgb);
+        }
     }
 
     /**
@@ -386,10 +520,10 @@ public final class ImageMethodDispatcher {
                 return Datum.FALSE;
             }
 
-            // Habbo's Writer_Class builds an 8-bit matte with a white outside
-            // region and dark glyph pixels. Plain grayscale alpha maps use the
-            // opposite polarity, so infer matte-style masks from transparent
-            // pixels or from white-backed text matte shapes.
+            // Some authored text pipelines build an 8-bit matte with a white
+            // outside region and dark glyph pixels. Plain grayscale alpha maps
+            // use the opposite polarity, so infer matte-style masks from
+            // transparent pixels or from white-backed text matte shapes.
             boolean mattePolarity = hasMattePolarity(alpha);
             for (int y = 0; y < bmp.getHeight(); y++) {
                 for (int x = 0; x < bmp.getWidth(); x++) {
@@ -553,6 +687,8 @@ public final class ImageMethodDispatcher {
         int colorRemap = -1;   // #color param: remap BLACK (foreground) pixels to this color
         int bgColorRemap = -1; // #bgColor param: remap WHITE (background) pixels to this color
         Bitmap mask = null;    // #maskImage param: matte mask for transparency
+        MaskOffset maskOffset = new MaskOffset(0, 0);
+        ResolvedPalette copyPaletteRef = null; // #paletteRef param: decode/copy source through this palette
 
         if (args.size() >= 4 && args.get(3) instanceof Datum.PropList pl) {
             // Check for #ink property
@@ -561,10 +697,14 @@ public final class ImageMethodDispatcher {
             if (parsedInk != null) {
                 ink = parsedInk;
             }
-            // Check for #blend property
-            Datum blendDatum = getPropIgnoreCase(pl, "blend", "Blend");
-            if (!blendDatum.isVoid()) {
-                blend = percentToBlendAlpha(blendDatum);
+            Datum blendLevelDatum = getPropIgnoreCase(pl, "blendLevel", "blendlevel", "BlendLevel");
+            if (!blendLevelDatum.isVoid()) {
+                blend = byteToBlendAlpha(blendLevelDatum);
+            } else {
+                Datum blendDatum = getPropIgnoreCase(pl, "blend", "Blend");
+                if (!blendDatum.isVoid()) {
+                    blend = percentToBlendAlpha(blendDatum);
+                }
             }
             // Check for #color property (foreground color remap)
             // Resolve PaletteIndexColor through source bitmap's palette first, then
@@ -586,28 +726,25 @@ public final class ImageMethodDispatcher {
             if (maskDatum instanceof Datum.ImageRef maskRef) {
                 mask = maskRef.bitmap();
             }
+            maskOffset = maskOffsetFromPropList(pl);
+            Datum paletteDatum = getPropIgnoreCase(pl, "paletteRef", "paletteref", "PaletteRef");
+            if (!paletteDatum.isVoid()) {
+                copyPaletteRef = resolvePaletteFromDatum(paletteDatum);
+            }
         }
 
-        // Director ignores #maskImage when the source image already has native alpha in use.
-        if (src.getBitDepth() == 32 && src.isNativeAlpha()) {
-            mask = null;
+        if (copyPaletteRef != null && copyPaletteRef.palette() != null) {
+            src = copyWithPaletteRef(src, copyPaletteRef);
         }
 
         int srcW = srcRect.right() - srcRect.left();
         int srcH = srcRect.bottom() - srcRect.top();
         int destW = destRect.right() - destRect.left();
         int destH = destRect.bottom() - destRect.top();
-        if (dest.getImagePalette() == null && src.getImagePalette() != null) {
-            dest.copyPaletteMetadataFrom(src);
+        if (dest.getImagePalette() == null && shouldCarryPaletteMetadata(dest, src, ink, blend,
+                mask, colorRemap, bgColorRemap)) {
+            dest.copyPaletteReferenceFrom(src);
         }
-        if (!dest.hasAnchorPoint() && src.hasAnchorPoint()) {
-            dest.setAnchorPoint(
-                    destRect.left() + src.getAnchorX() - srcRect.left(),
-                    destRect.top() + src.getAnchorY() - srcRect.top());
-        }
-        Integer backgroundKeyRgb = ink == Palette.InkMode.BACKGROUND_TRANSPARENT
-                ? Integer.valueOf(resolveBackgroundTransparentKey(bgColorRemap))
-                : null;
         // Apply #color/#bgColor remapping only for grayscale source bitmaps.
         // Director's copyPixels remap is designed for default black/white text bitmaps
         // (e.g., title text rendered as black-on-white, remapped to white-on-teal).
@@ -618,7 +755,11 @@ public final class ImageMethodDispatcher {
         int effectiveSrcY = srcRect.top();
         boolean remapToAlphaMask = false;
         boolean grayscaleColorized = false;
-        if ((colorRemap >= 0 || bgColorRemap >= 0) && !src.hasNativeMatteAlpha()) {
+        boolean darkenBgTintCandidate = ink == Palette.InkMode.DARKEN
+                && bgColorRemap >= 0
+                && colorRemap < 0;
+        if ((colorRemap >= 0 || bgColorRemap >= 0)
+                && (!src.hasNativeMatteAlpha() || darkenBgTintCandidate)) {
             // Sample source pixels to check if they're grayscale (safe to remap)
             boolean isGrayscale = isMostlyGrayscale(src, srcRect);
 
@@ -630,8 +771,9 @@ public final class ImageMethodDispatcher {
                 int bgG = bgColorRemap >= 0 ? (bgColorRemap >> 8) & 0xFF : 255;
                 int bgB = bgColorRemap >= 0 ? bgColorRemap & 0xFF : 255;
                 boolean transparentBackground = colorRemap >= 0 && bgColorRemap < 0;
-                boolean darkenBgTint = ink == Palette.InkMode.DARKEN && bgColorRemap >= 0 && colorRemap < 0;
+                boolean darkenBgTint = darkenBgTintCandidate;
                 boolean indexedDarkenShade = usesIndexedShadeForDarken(src, mask);
+                byte[] darkenShadeIndices = indexedDarkenShade ? src.getPaletteIndicesUnsafe() : null;
 
                 effectiveSrc = new Bitmap(srcW, srcH, src.getBitDepth());
                 for (int y = 0; y < srcH; y++) {
@@ -642,7 +784,7 @@ public final class ImageMethodDispatcher {
                         int g = (pixel >> 8) & 0xFF;
                         int b = pixel & 0xFF;
                         int gray = shadeForDarken(src, srcRect.left() + x, srcRect.top() + y, r, g, b,
-                                indexedDarkenShade);
+                                indexedDarkenShade, darkenShadeIndices);
                         if (transparentBackground) {
                             int maskAlpha = (255 - gray) * alpha / 255;
                             int outR = colorRemap >= 0 ? fgR : 0;
@@ -670,6 +812,13 @@ public final class ImageMethodDispatcher {
             }
         }
 
+        Datum.Rect effectiveSrcRect = new Datum.Rect(effectiveSrcX, effectiveSrcY,
+                effectiveSrcX + srcW, effectiveSrcY + srcH);
+        Integer backgroundKeyRgb = ink == Palette.InkMode.BACKGROUND_TRANSPARENT
+                ? Integer.valueOf(resolveBackgroundTransparentKey(
+                        effectiveSrc, effectiveSrcRect, bgColorRemap, grayscaleColorized))
+                : null;
+
         if (ink == Palette.InkMode.BACKGROUND_TRANSPARENT
                 && effectiveSrc.hasNativeMatteAlpha()
                 && isInverseWhiteAlphaMask(effectiveSrc, effectiveSrcX, effectiveSrcY, srcW, srcH)) {
@@ -682,6 +831,11 @@ public final class ImageMethodDispatcher {
 
         Palette.InkMode effectiveInk = ink;
         if (remapToAlphaMask) {
+            effectiveInk = Palette.InkMode.COPY;
+        }
+        if (shouldUseImageDefaultMatte(effectiveSrc, effectiveInk)) {
+            effectiveSrc = Drawing.applyFloodFillTransparency(effectiveSrc,
+                    new Drawing.FloodFillMatte(0xFFFFFF, 0));
             effectiveInk = Palette.InkMode.COPY;
         }
         if (effectiveInk == Palette.InkMode.BACKGROUND_TRANSPARENT
@@ -711,24 +865,28 @@ public final class ImageMethodDispatcher {
             boolean preservePaletteIndices = canPreservePaletteIndices(dest, effectiveSrc,
                     effectiveInk, blend, mask, colorRemap, bgColorRemap);
             if (!preservePaletteIndices) {
-                dest.clearPaletteIndices();
+                clearPaletteIndicesBeforeNonIndexedCopy(dest);
             }
+            clearFullTextRerenderBeforeBackgroundTransparentCopy(dest, effectiveSrc,
+                    destRect.left(), destRect.top(), effectiveSrcX, effectiveSrcY,
+                    srcW, srcH, effectiveInk, blend, mask, backgroundKeyRgb);
             Drawing.copyPixels(dest, effectiveSrc,
                     destRect.left(), destRect.top(),
                     effectiveSrcX, effectiveSrcY,
-                    srcW, srcH, effectiveInk, blend, mask, backgroundKeyRgb);
+                    srcW, srcH, effectiveInk, blend, mask, backgroundKeyRgb,
+                    srcRect.left() - maskOffset.x(), srcRect.top() - maskOffset.y());
             if (preservePaletteIndices) {
                 preservePaletteIndicesOnCopy(dest, effectiveSrc,
                         destRect.left(), destRect.top(),
                         effectiveSrcX, effectiveSrcY,
                         srcW, srcH, srcW, srcH,
-                        effectiveInk, blend, mask, colorRemap, bgColorRemap);
+                        effectiveInk, blend, mask, colorRemap, bgColorRemap, backgroundKeyRgb);
             }
         } else {
             // Scaling needed - create scaled intermediate, applying mask at source coordinates
             Bitmap scaled = new Bitmap(destW, destH, effectiveSrc.getBitDepth());
             scaled.copyPaletteMetadataFrom(effectiveSrc);
-            byte[] srcPaletteIndices = effectiveSrc.getPaletteIndices();
+            byte[] srcPaletteIndices = effectiveSrc.getPaletteIndicesUnsafe();
             byte[] scaledPaletteIndices = srcPaletteIndices != null
                     && srcPaletteIndices.length >= effectiveSrc.getWidth() * effectiveSrc.getHeight()
                     ? new byte[destW * destH]
@@ -737,18 +895,20 @@ public final class ImageMethodDispatcher {
                 int sy = effectiveSrcY + (y * srcH / destH);
                 for (int x = 0; x < destW; x++) {
                     int sx = effectiveSrcX + (x * srcW / destW);
+                    if (sx < 0 || sx >= effectiveSrc.getWidth()
+                            || sy < 0 || sy >= effectiveSrc.getHeight()) {
+                        continue;
+                    }
                     // Check mask at original source coordinates during scaling
                     if (mask != null) {
-                        int origSx = srcRect.left() + (x * srcW / destW);
-                        int origSy = srcRect.top() + (y * srcH / destH);
+                        int origSx = srcRect.left() + (x * srcW / destW) - maskOffset.x();
+                        int origSy = srcRect.top() + (y * srcH / destH) - maskOffset.y();
                         if (!Drawing.maskAllowsPixel(mask, origSx, origSy)) {
                             continue; // Leave as transparent (default 0)
                         }
                     }
                     scaled.setPixelPreservePaletteIndex(x, y, effectiveSrc.getPixel(sx, sy));
-                    if (scaledPaletteIndices != null
-                            && sx >= 0 && sx < effectiveSrc.getWidth()
-                            && sy >= 0 && sy < effectiveSrc.getHeight()) {
+                    if (scaledPaletteIndices != null) {
                         scaledPaletteIndices[y * destW + x] =
                                 srcPaletteIndices[sy * effectiveSrc.getWidth() + sx];
                     }
@@ -761,8 +921,11 @@ public final class ImageMethodDispatcher {
             boolean preservePaletteIndices = canPreservePaletteIndices(dest, scaled,
                     effectiveInk, blend, null, colorRemap, bgColorRemap);
             if (!preservePaletteIndices) {
-                dest.clearPaletteIndices();
+                clearPaletteIndicesBeforeNonIndexedCopy(dest);
             }
+            clearFullTextRerenderBeforeBackgroundTransparentCopy(dest, scaled,
+                    destRect.left(), destRect.top(), 0, 0,
+                    destW, destH, effectiveInk, blend, null, backgroundKeyRgb);
             Drawing.copyPixels(dest, scaled,
                     destRect.left(), destRect.top(),
                     0, 0, destW, destH, effectiveInk, blend, null, backgroundKeyRgb);
@@ -771,17 +934,100 @@ public final class ImageMethodDispatcher {
                         destRect.left(), destRect.top(),
                         0, 0,
                         destW, destH, destW, destH,
-                        effectiveInk, blend, null, colorRemap, bgColorRemap);
+                        effectiveInk, blend, null, colorRemap, bgColorRemap, backgroundKeyRgb);
             }
         }
 
         return Datum.VOID;
     }
 
+    private static boolean shouldUseImageDefaultMatte(Bitmap src, Palette.InkMode ink) {
+        return ink == Palette.InkMode.MATTE
+                && src != null
+                && src.getBitDepth() == 32
+                && src.isScriptModified()
+                && !src.hasNativeMatteAlpha();
+    }
+
+    private static void clearFullTextRerenderBeforeBackgroundTransparentCopy(
+            Bitmap dest, Bitmap src,
+            int destX, int destY,
+            int srcX, int srcY,
+            int width, int height,
+            Palette.InkMode ink, int blend,
+            Bitmap mask,
+            Integer backgroundKeyRgb) {
+        if (dest == null || src == null
+                || ink != Palette.InkMode.BACKGROUND_TRANSPARENT
+                || blend < 255
+                || mask != null
+                || width <= 0 || height <= 0) {
+            return;
+        }
+
+        int backgroundRgb = src.getOpaqueTextRenderBackgroundRgb();
+        if (backgroundRgb < 0) {
+            return;
+        }
+        if (backgroundKeyRgb != null && (backgroundKeyRgb & 0xFFFFFF) != backgroundRgb) {
+            return;
+        }
+
+        if (destX != 0 || destY != 0
+                || width != dest.getWidth() || height != dest.getHeight()
+                || srcX != 0 || srcY != 0
+                || width != src.getWidth() || height != src.getHeight()) {
+            return;
+        }
+        if (!opaqueCornersMatch(dest, 0, 0, width, height, backgroundRgb)) {
+            return;
+        }
+
+        dest.fillRect(0, 0, width, height, 0xFF000000 | backgroundRgb);
+    }
+
+    private static void clearPaletteIndicesBeforeNonIndexedCopy(Bitmap dest) {
+        if (dest != null) {
+            dest.clearPaletteIndices();
+        }
+    }
+
+    private static Bitmap copyWithPaletteRef(Bitmap src, ResolvedPalette paletteRef) {
+        Bitmap copy = src.copy();
+        copy.remapImagePalette(paletteRef.palette());
+        if (paletteRef.ref() != null) {
+            Datum.CastMemberRef ref = paletteRef.ref();
+            copy.setPaletteRefCastMember(ref.castLibNum(), ref.memberNum());
+        } else if (paletteRef.systemName() != null) {
+            copy.setPaletteRefSystemName(paletteRef.systemName());
+        }
+        return copy;
+    }
+
+    private static boolean shouldCarryPaletteMetadata(Bitmap dest, Bitmap src,
+                                                      Palette.InkMode ink, int blend,
+                                                      Bitmap mask,
+                                                      int colorRemap, int bgColorRemap) {
+        return dest != null
+                && src != null
+                && canAcceptCopiedPaletteIndices(dest)
+                && src.getImagePalette() != null
+                && src.getBitDepth() <= 8
+                && dest.getBitDepth() <= 8
+                && dest.getBitDepth() >= src.getBitDepth()
+                && (ink == Palette.InkMode.COPY
+                    || ink == Palette.InkMode.MATTE
+                    || ink == Palette.InkMode.BACKGROUND_TRANSPARENT)
+                && blend >= 255
+                && mask == null
+                && colorRemap < 0
+                && bgColorRemap < 0;
+    }
+
     /**
      * copyPixels with quad destination (list of 4 points).
      * Director uses this for image-space transforms such as flipH/flipV and
-     * 90-degree rotations (used heavily by the Habbo window/dropdown system).
+     * 90-degree rotations.
      */
     private static Datum copyPixelsQuad(Bitmap dest, Bitmap src, Datum.List quad,
                                          Datum.Rect srcRect, List<Datum> args) {
@@ -814,19 +1060,15 @@ public final class ImageMethodDispatcher {
         int destH = maxY - minY;
         if (destW <= 0 || destH <= 0) return Datum.VOID;
 
-        // Parse optional ink/blend from propList (4th argument)
-        Palette.InkMode ink = Palette.InkMode.COPY;
-        int blend = 255;
-        if (args.size() > 3 && args.get(3) instanceof Datum.PropList pl) {
-            Datum inkDatum = getPropIgnoreCase(pl, "ink", "Ink");
-            Palette.InkMode parsedInk = inkFromDatum(inkDatum);
-            if (parsedInk != null) {
-                ink = parsedInk;
+        Datum.PropList props = args.size() > 3 && args.get(3) instanceof Datum.PropList pl ? pl : null;
+        Bitmap mask = null;
+        MaskOffset maskOffset = new MaskOffset(0, 0);
+        if (props != null) {
+            Datum maskDatum = getPropIgnoreCase(props, "maskImage", "maskimage", "MaskImage");
+            if (maskDatum instanceof Datum.ImageRef maskRef) {
+                mask = maskRef.bitmap();
             }
-            Datum blendDatum = getPropIgnoreCase(pl, "blend", "Blend");
-            if (!blendDatum.isVoid()) {
-                blend = percentToBlendAlpha(blendDatum);
-            }
+            maskOffset = maskOffsetFromPropList(props);
         }
 
         // Map Director's quad orientation back into source-space coordinates.
@@ -834,7 +1076,12 @@ public final class ImageMethodDispatcher {
         Bitmap transformed = new Bitmap(destW, destH, src.getBitDepth());
         transformed.copyPaletteMetadataFrom(src);
         transformed.setNativeAlpha(src.isNativeAlpha());
-        byte[] srcPaletteIndices = src.getPaletteIndices();
+        Bitmap transformedMask = mask != null ? new Bitmap(destW, destH, mask.getBitDepth()) : null;
+        if (transformedMask != null) {
+            transformedMask.copyPaletteMetadataFrom(mask);
+            transformedMask.setNativeAlpha(mask.isNativeAlpha());
+        }
+        byte[] srcPaletteIndices = src.getPaletteIndicesUnsafe();
         byte[] transformedIndices = srcPaletteIndices != null ? new byte[destW * destH] : null;
         boolean axisAligned =
                 (px[0] == minX || px[0] == maxX) && (py[0] == minY || py[0] == maxY)
@@ -868,6 +1115,13 @@ public final class ImageMethodDispatcher {
                             transformedIndices[y * destW + x] = srcPaletteIndices[srcY * src.getWidth() + srcX];
                         }
                     }
+                    int maskX = srcX - maskOffset.x();
+                    int maskY = srcY - maskOffset.y();
+                    if (transformedMask != null
+                            && maskX >= 0 && maskX < mask.getWidth()
+                            && maskY >= 0 && maskY < mask.getHeight()) {
+                        transformedMask.setPixel(x, y, mask.getPixel(maskX, maskY));
+                    }
                 }
             }
         } else {
@@ -887,6 +1141,13 @@ public final class ImageMethodDispatcher {
                             transformedIndices[y * destW + x] = srcPaletteIndices[srcY * src.getWidth() + srcX];
                         }
                     }
+                    int maskX = srcX - maskOffset.x();
+                    int maskY = srcY - maskOffset.y();
+                    if (transformedMask != null
+                            && maskX >= 0 && maskX < mask.getWidth()
+                            && maskY >= 0 && maskY < mask.getHeight()) {
+                        transformedMask.setPixel(x, y, mask.getPixel(maskX, maskY));
+                    }
                 }
             }
         }
@@ -894,27 +1155,34 @@ public final class ImageMethodDispatcher {
             transformed.setPaletteIndices(transformedIndices);
         }
 
-        Palette.InkMode effectiveInk = ink;
-        if (effectiveInk == Palette.InkMode.BACKGROUND_TRANSPARENT
-                && transformed.hasNativeMatteAlpha()
-                && !hasOpaqueBackgroundKeyBorder(transformed, 0, 0, destW, destH,
-                        ink == Palette.InkMode.BACKGROUND_TRANSPARENT
-                                ? Integer.valueOf(resolveBackgroundTransparentKey(-1))
-                                : null)) {
-            effectiveInk = Palette.InkMode.COPY;
-        }
-        if (blend < 255 && effectiveInk == Palette.InkMode.COPY) {
-            effectiveInk = Palette.InkMode.BLEND;
+        Datum.PropList transformedProps = transformedQuadProps(props, transformedMask);
+        java.util.List<Datum> transformedArgs = new java.util.ArrayList<>();
+        transformedArgs.add(new Datum.ImageRef(transformed));
+        transformedArgs.add(new Datum.Rect(minX, minY, maxX, maxY));
+        transformedArgs.add(new Datum.Rect(0, 0, destW, destH));
+        if (transformedProps != null && !transformedProps.isEmpty()) {
+            transformedArgs.add(transformedProps);
         }
 
-        Drawing.copyPixels(dest, transformed, minX, minY, 0, 0, destW, destH, effectiveInk, blend);
-        preservePaletteIndicesOnCopy(dest, transformed,
-                minX, minY,
-                0, 0,
-                destW, destH, destW, destH,
-                effectiveInk, blend, null, -1, -1);
+        return copyPixels(dest, transformedArgs);
+    }
 
-        return Datum.VOID;
+    private static Datum.PropList transformedQuadProps(Datum.PropList props, Bitmap transformedMask) {
+        if (props == null) {
+            if (transformedMask == null) {
+                return null;
+            }
+            Datum.PropList copy = new Datum.PropList();
+            copy.add("maskImage", new Datum.ImageRef(transformedMask), true);
+            return copy;
+        }
+        Datum.PropList copy = new Datum.PropList(props.entries());
+        copy.remove("maskImage");
+        copy.remove("maskOffset");
+        if (transformedMask != null) {
+            copy.add("maskImage", new Datum.ImageRef(transformedMask), true);
+        }
+        return copy;
     }
 
     private static void preservePaletteIndicesOnCopy(Bitmap dest, Bitmap src,
@@ -924,12 +1192,13 @@ public final class ImageMethodDispatcher {
                                                      int destW, int destH,
                                                      Palette.InkMode ink, int blend,
                                                      Bitmap mask,
-                                                     int colorRemap, int bgColorRemap) {
+                                                     int colorRemap, int bgColorRemap,
+                                                     Integer backgroundKeyRgb) {
         if (!canPreservePaletteIndices(dest, src, ink, blend, mask, colorRemap, bgColorRemap)) {
             return;
         }
 
-        byte[] srcIndices = src.getPaletteIndices();
+        byte[] srcIndices = src.getPaletteIndicesUnsafe();
         if (srcIndices == null || srcIndices.length < src.getWidth() * src.getHeight()) {
             return;
         }
@@ -943,10 +1212,7 @@ public final class ImageMethodDispatcher {
             }
         }
 
-        byte[] destIndices = dest.getPaletteIndices();
-        if (destIndices == null || destIndices.length < dest.getWidth() * dest.getHeight()) {
-            destIndices = new byte[dest.getWidth() * dest.getHeight()];
-        }
+        byte[] destIndices = dest.ensurePaletteIndices();
 
         for (int y = 0; y < destH; y++) {
             int sy = srcY + (y * srcH / destH);
@@ -961,7 +1227,7 @@ public final class ImageMethodDispatcher {
                     continue;
                 }
                 int srcPixel = src.getPixel(sx, sy);
-                if (shouldSkipPaletteIndexPreserve(srcPixel, ink, bgColorRemap)) {
+                if (shouldSkipPaletteIndexPreserve(srcPixel, ink, backgroundKeyRgb)) {
                     continue;
                 }
                 destIndices[dy * dest.getWidth() + dx] = srcIndices[sy * src.getWidth() + sx];
@@ -976,16 +1242,16 @@ public final class ImageMethodDispatcher {
             }
         }
 
-        dest.setPaletteIndices(destIndices);
     }
 
-    private static boolean shouldSkipPaletteIndexPreserve(int srcPixel, Palette.InkMode ink, int bgColorRemap) {
+    private static boolean shouldSkipPaletteIndexPreserve(int srcPixel, Palette.InkMode ink,
+                                                          Integer backgroundKeyRgb) {
         int alpha = (srcPixel >>> 24) & 0xFF;
         if (alpha == 0) {
             return true;
         }
         if (ink == Palette.InkMode.BACKGROUND_TRANSPARENT) {
-            int keyRgb = resolveBackgroundTransparentKey(bgColorRemap);
+            int keyRgb = backgroundKeyRgb != null ? backgroundKeyRgb : 0xFFFFFF;
             return (srcPixel & 0xFFFFFF) == keyRgb;
         }
         return false;
@@ -997,9 +1263,11 @@ public final class ImageMethodDispatcher {
                                                      int colorRemap, int bgColorRemap) {
         return dest != null
                 && src != null
+                && canAcceptCopiedPaletteIndices(dest)
                 && src.getBitDepth() <= 8
+                && dest.getBitDepth() <= 8
                 && dest.getBitDepth() >= src.getBitDepth()
-                && src.getPaletteIndices() != null
+                && src.getPaletteIndicesUnsafe() != null
                 && palettesAreCompatibleForIndexPreserve(dest, src)
                 && (ink == Palette.InkMode.COPY
                     || ink == Palette.InkMode.MATTE
@@ -1016,21 +1284,233 @@ public final class ImageMethodDispatcher {
         return destPalette == null || srcPalette == null || destPalette == srcPalette;
     }
 
+    private static boolean canAcceptCopiedPaletteIndices(Bitmap dest) {
+        return dest != null && (!dest.isScriptModified() || dest.getPaletteIndicesUnsafe() != null);
+    }
+
     private static int clamp(int value, int min, int max) {
         return Math.max(min, Math.min(max, value));
     }
 
-    private static int resolveBackgroundTransparentKey(int explicitBgColorRemap) {
-        if (explicitBgColorRemap >= 0) {
-            return explicitBgColorRemap;
+    private static int resolveBackgroundTransparentKey(Bitmap src, Datum.Rect srcRect, int explicitBgColorRemap,
+                                                       boolean sourceWasColorized) {
+        if (explicitBgColorRemap >= 0
+                && (sourceWasColorized
+                || (src != null && src.getBitDepth() <= 8)
+                || explicitBgColorRemap == 0xFFFFFF
+                || rgbLooksLikeRegionBackground(src, srcRect, explicitBgColorRemap))) {
+            return explicitBgColorRemap & 0xFFFFFF;
         }
-        // Director's copyPixels defaults #bgColor to white for ink 36.
+        int textBackgroundRgb = src != null ? src.getOpaqueTextRenderBackgroundRgb() : -1;
+        if (textBackgroundRgb >= 0 && rgbLooksLikeRegionBackground(src, srcRect, textBackgroundRgb)) {
+            return textBackgroundRgb;
+        }
+        Integer inferredTextBackground = inferTextLikeBackgroundKey(src, srcRect);
+        if (inferredTextBackground != null) {
+            return inferredTextBackground;
+        }
+        // Director's regular copyPixels default remains white for non-text artwork.
         return 0xFFFFFF;
+    }
+
+    private static boolean rgbLooksLikeRegionBackground(Bitmap src, Datum.Rect srcRect, int rgb) {
+        if (src == null || srcRect == null || src.getWidth() <= 0 || src.getHeight() <= 0) {
+            return false;
+        }
+
+        int left = clamp(Math.min(srcRect.left(), srcRect.right()), 0, src.getWidth());
+        int top = clamp(Math.min(srcRect.top(), srcRect.bottom()), 0, src.getHeight());
+        int right = clamp(Math.max(srcRect.left(), srcRect.right()), 0, src.getWidth());
+        int bottom = clamp(Math.max(srcRect.top(), srcRect.bottom()), 0, src.getHeight());
+        if (left >= right || top >= bottom) {
+            return false;
+        }
+
+        int keyRgb = rgb & 0xFFFFFF;
+        if (!opaqueCornersMatch(src, left, top, right, bottom, keyRgb)) {
+            return false;
+        }
+
+        int opaquePixels = 0;
+        int matchingPixels = 0;
+        for (int y = top; y < bottom; y++) {
+            for (int x = left; x < right; x++) {
+                int pixel = src.getPixel(x, y);
+                if (((pixel >>> 24) & 0xFF) == 0) {
+                    continue;
+                }
+                opaquePixels++;
+                if ((pixel & 0xFFFFFF) == keyRgb) {
+                    matchingPixels++;
+                }
+            }
+        }
+        if (opaquePixels == 0 || matchingPixels * 100 < opaquePixels * 35) {
+            return false;
+        }
+
+        int edgeRgb = dominantOpaqueEdgeRgb(src, left, top, right, bottom);
+        return edgeRgb == keyRgb;
+    }
+
+    private static Integer inferTextLikeBackgroundKey(Bitmap src, Datum.Rect srcRect) {
+        if (src == null || srcRect == null || src.getWidth() <= 0 || src.getHeight() <= 0) {
+            return null;
+        }
+
+        int left = clamp(Math.min(srcRect.left(), srcRect.right()), 0, src.getWidth());
+        int top = clamp(Math.min(srcRect.top(), srcRect.bottom()), 0, src.getHeight());
+        int right = clamp(Math.max(srcRect.left(), srcRect.right()), 0, src.getWidth());
+        int bottom = clamp(Math.max(srcRect.top(), srcRect.bottom()), 0, src.getHeight());
+        if (left >= right || top >= bottom) {
+            return null;
+        }
+
+        int edgeRgb = dominantOpaqueEdgeRgb(src, left, top, right, bottom);
+        if (edgeRgb < 0 || edgeRgb == 0xFFFFFF || !isLowSaturationRgb(edgeRgb)) {
+            return null;
+        }
+        if (!opaqueCornersMatch(src, left, top, right, bottom, edgeRgb)) {
+            return null;
+        }
+
+        int opaquePixels = 0;
+        int backgroundPixels = 0;
+        int foregroundPixels = 0;
+        int distinctForegroundColors = 0;
+        int[] foregroundColors = new int[33];
+        for (int y = top; y < bottom; y++) {
+            for (int x = left; x < right; x++) {
+                int pixel = src.getPixel(x, y);
+                if (((pixel >>> 24) & 0xFF) == 0) {
+                    continue;
+                }
+                opaquePixels++;
+                int rgb = pixel & 0xFFFFFF;
+                if (rgb == edgeRgb) {
+                    backgroundPixels++;
+                    continue;
+                }
+
+                foregroundPixels++;
+                boolean known = false;
+                for (int i = 0; i < distinctForegroundColors; i++) {
+                    if (foregroundColors[i] == rgb) {
+                        known = true;
+                        break;
+                    }
+                }
+                if (!known) {
+                    if (distinctForegroundColors >= foregroundColors.length) {
+                        return null;
+                    }
+                    foregroundColors[distinctForegroundColors++] = rgb;
+                }
+            }
+        }
+
+        if (opaquePixels == 0 || foregroundPixels == 0 || backgroundPixels == 0) {
+            return null;
+        }
+        if (foregroundPixels * 100 > opaquePixels * 60) {
+            return null;
+        }
+        return edgeRgb;
+    }
+
+    private static int dominantOpaqueEdgeRgb(Bitmap src, int left, int top, int right, int bottom) {
+        int[] colors = new int[64];
+        int[] counts = new int[64];
+        int distinct = 0;
+        int opaqueEdgePixels = 0;
+
+        for (int x = left; x < right; x++) {
+            int topPixel = src.getPixel(x, top);
+            if (((topPixel >>> 24) & 0xFF) != 0) {
+                distinct = countEdgeRgb(topPixel & 0xFFFFFF, colors, counts, distinct);
+                opaqueEdgePixels++;
+            }
+            int bottomPixel = src.getPixel(x, bottom - 1);
+            if (bottom - 1 != top && ((bottomPixel >>> 24) & 0xFF) != 0) {
+                distinct = countEdgeRgb(bottomPixel & 0xFFFFFF, colors, counts, distinct);
+                opaqueEdgePixels++;
+            }
+        }
+        for (int y = top + 1; y < bottom - 1; y++) {
+            int leftPixel = src.getPixel(left, y);
+            if (((leftPixel >>> 24) & 0xFF) != 0) {
+                distinct = countEdgeRgb(leftPixel & 0xFFFFFF, colors, counts, distinct);
+                opaqueEdgePixels++;
+            }
+            int rightPixel = src.getPixel(right - 1, y);
+            if (right - 1 != left && ((rightPixel >>> 24) & 0xFF) != 0) {
+                distinct = countEdgeRgb(rightPixel & 0xFFFFFF, colors, counts, distinct);
+                opaqueEdgePixels++;
+            }
+        }
+
+        int bestRgb = -1;
+        int bestCount = 0;
+        for (int i = 0; i < distinct; i++) {
+            if (counts[i] > bestCount) {
+                bestRgb = colors[i];
+                bestCount = counts[i];
+            }
+        }
+        if (opaqueEdgePixels == 0 || bestRgb < 0 || bestCount * 4 < opaqueEdgePixels * 3) {
+            return -1;
+        }
+        return bestRgb;
+    }
+
+    private static int countEdgeRgb(int rgb, int[] colors, int[] counts, int distinct) {
+        for (int i = 0; i < distinct; i++) {
+            if (colors[i] == rgb) {
+                counts[i]++;
+                return distinct;
+            }
+        }
+        if (distinct >= colors.length) {
+            return distinct;
+        }
+        colors[distinct] = rgb;
+        counts[distinct] = 1;
+        return distinct + 1;
+    }
+
+    private static boolean opaqueCornersMatch(Bitmap src, int left, int top, int right, int bottom, int rgb) {
+        int[] xs = {left, right - 1, left, right - 1};
+        int[] ys = {top, top, bottom - 1, bottom - 1};
+        int opaqueCorners = 0;
+        for (int i = 0; i < xs.length; i++) {
+            int pixel = src.getPixel(xs[i], ys[i]);
+            if (((pixel >>> 24) & 0xFF) == 0) {
+                continue;
+            }
+            opaqueCorners++;
+            if ((pixel & 0xFFFFFF) != rgb) {
+                return false;
+            }
+        }
+        return opaqueCorners > 0;
+    }
+
+    private static boolean isLowSaturationRgb(int rgb) {
+        int r = (rgb >> 16) & 0xFF;
+        int g = (rgb >> 8) & 0xFF;
+        int b = rgb & 0xFF;
+        int max = Math.max(r, Math.max(g, b));
+        int min = Math.min(r, Math.min(g, b));
+        return max - min <= 4;
     }
 
     private static int percentToBlendAlpha(Datum blendDatum) {
         int alpha = (int) Math.round(blendDatum.toDouble() * 255.0 / 100.0);
         return Math.max(0, Math.min(255, alpha));
+    }
+
+    private static int byteToBlendAlpha(Datum blendDatum) {
+        return Math.max(0, Math.min(255, blendDatum.toInt()));
     }
 
     private static boolean hasOpaqueBackgroundKeyBorder(Bitmap src, int srcX, int srcY,
@@ -1077,8 +1557,9 @@ public final class ImageMethodDispatcher {
             return false;
         }
 
-        int sampleStep = Math.max(1, (srcW * srcH) / 64);
-        for (int i = 0; i < srcW * srcH; i += sampleStep) {
+        int pixelCount = srcW * srcH;
+        int sampleStep = pixelCount <= 65536 ? 1 : Math.max(1, pixelCount / 2048);
+        for (int i = 0; i < pixelCount; i += sampleStep) {
             int sx = srcRect.left() + (i % srcW);
             int sy = srcRect.top() + (i / srcW);
             int p = src.getPixel(sx, sy);
@@ -1098,6 +1579,24 @@ public final class ImageMethodDispatcher {
     private static boolean isInverseWhiteAlphaMask(Bitmap src, int srcX, int srcY, int width, int height) {
         boolean hasOpaqueWhite = false;
         boolean hasTransparentInk = false;
+        int[][] corners = uniqueCorners(width, height);
+        int opaqueWhiteCorners = 0;
+        int checkedCorners = 0;
+        for (int[] corner : corners) {
+            int px = srcX + corner[0];
+            int py = srcY + corner[1];
+            if (px < 0 || px >= src.getWidth() || py < 0 || py >= src.getHeight()) {
+                continue;
+            }
+            checkedCorners++;
+            int pixel = src.getPixel(px, py);
+            if (((pixel >>> 24) & 0xFF) != 0 && (pixel & 0xFFFFFF) == 0xFFFFFF) {
+                opaqueWhiteCorners++;
+            }
+        }
+        if (checkedCorners == 0 || opaqueWhiteCorners < checkedCorners) {
+            return false;
+        }
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 int px = srcX + x;
@@ -1149,7 +1648,7 @@ public final class ImageMethodDispatcher {
     }
 
     private static Bitmap multiplyBitmapColorForDarken(Bitmap src, int tintRgb, boolean indexedShade) {
-        if (src.getPaletteIndices() != null && src.getBitDepth() <= 8) {
+        if (src.getPaletteIndicesUnsafe() != null && src.getBitDepth() <= 8) {
             return multiplyIndexedBitmapColorForDarken(src, tintRgb, indexedShade);
         }
         return multiplyBitmapColor(src, tintRgb);
@@ -1194,6 +1693,7 @@ public final class ImageMethodDispatcher {
 
         Bitmap tinted = new Bitmap(src.getWidth(), src.getHeight(), src.getBitDepth());
         tinted.copyPaletteMetadataFrom(src);
+        byte[] darkenShadeIndices = indexedShade ? src.getPaletteIndicesUnsafe() : null;
 
         for (int y = 0; y < src.getHeight(); y++) {
             for (int x = 0; x < src.getWidth(); x++) {
@@ -1211,7 +1711,7 @@ public final class ImageMethodDispatcher {
                 int b;
                 boolean customPaletteColorShade = !indexedShade && src.getImagePalette() != null;
                 if (!customPaletteColorShade) {
-                    int shade = shadeForDarken(src, x, y, srcR, srcG, srcB, indexedShade);
+                    int shade = shadeForDarken(src, x, y, srcR, srcG, srcB, indexedShade, darkenShadeIndices);
                     r = multiplyDarkenChannel(shade, tintR, indexedShade);
                     g = multiplyDarkenChannel(shade, tintG, indexedShade);
                     b = multiplyDarkenChannel(shade, tintB, indexedShade);
@@ -1231,7 +1731,7 @@ public final class ImageMethodDispatcher {
     }
 
     private static boolean usesIndexedShadeForDarken(Bitmap src, Bitmap mask) {
-        if (src == null || src.getPaletteIndices() == null || src.getBitDepth() > 8) {
+        if (src == null || src.getPaletteIndicesUnsafe() == null || src.getBitDepth() > 8) {
             return false;
         }
         if (isIndexShadePalette(src)) {
@@ -1252,8 +1752,8 @@ public final class ImageMethodDispatcher {
                 || "System Mac".equalsIgnoreCase(name);
     }
 
-    private static int shadeForDarken(Bitmap src, int x, int y, int r, int g, int b, boolean indexedShade) {
-        byte[] indices = src.getPaletteIndices();
+    private static int shadeForDarken(Bitmap src, int x, int y, int r, int g, int b,
+                                      boolean indexedShade, byte[] indices) {
         if (indexedShade
                 && indices != null
                 && x >= 0 && x < src.getWidth()
@@ -1278,6 +1778,7 @@ public final class ImageMethodDispatcher {
         if (w <= 0 || h <= 0) return Datum.VOID;
 
         Bitmap cropped = bmp.getRegion(rect.left(), rect.top(), w, h);
+        cropped.clearAnchorPoint();
         return new Datum.ImageRef(cropped);
     }
 
@@ -1291,6 +1792,17 @@ public final class ImageMethodDispatcher {
             if (val != null) return val;
         }
         return Datum.VOID;
+    }
+
+    private static MaskOffset maskOffsetFromPropList(Datum.PropList pl) {
+        Datum maskOffsetDatum = getPropIgnoreCase(pl, "maskOffset", "maskoffset", "MaskOffset");
+        if (maskOffsetDatum instanceof Datum.Point p) {
+            return new MaskOffset(p.x(), p.y());
+        }
+        if (maskOffsetDatum instanceof Datum.List list && list.items().size() >= 2) {
+            return new MaskOffset(list.items().get(0).toInt(), list.items().get(1).toInt());
+        }
+        return new MaskOffset(0, 0);
     }
 
     /**

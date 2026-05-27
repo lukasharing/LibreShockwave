@@ -45,12 +45,10 @@ public final class ImageBuiltins {
         }
 
         Bitmap bmp = new Bitmap(width, height, bitDepth);
-        // Director's image() always creates white-filled bitmaps, opaque at all bit depths.
-        // "Creates a new image object filled with white." - Director docs.
-        bmp.fill(0xFFFFFFFF);
 
-        // 4th argument: palette member reference (e.g., member("nav_ui_palette"))
-        // Store the palette on the bitmap so paletteIndex() colors can be resolved correctly.
+        // 4th argument: palette member reference (e.g., member("nav_ui_palette")).
+        // Resolve it before the initial white fill so 8-bit images also get
+        // palette-index metadata for their base pixels.
         if (args.size() >= 4) {
             Datum paletteArg = args.get(3);
             ResolvedPalette resolved = resolvePaletteFromDatum(paletteArg);
@@ -65,6 +63,16 @@ public final class ImageBuiltins {
                 bmp.setPaletteRefSystemName(resolved.systemName());
             }
         }
+
+        // Director's image() always creates white-filled bitmaps, opaque at all bit depths.
+        // "Creates a new image object filled with white." - Director docs.
+        bmp.fill(0xFFFFFFFF);
+        // Director bitmap members are registered around their image center by
+        // default. When a Lingo-created image is assigned to a runtime member,
+        // CastMember adopts this anchor unless the script explicitly pins
+        // member.regPoint. Animated runtime bitmaps rely on this for correct
+        // sprite bounds and turn points.
+        bmp.setAnchorPoint(width / 2, height / 2);
 
         return new Datum.ImageRef(bmp);
     }

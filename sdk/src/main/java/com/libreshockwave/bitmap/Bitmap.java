@@ -16,6 +16,8 @@ public class Bitmap {
     private boolean scriptModified; // Set when Lingo modifies this bitmap via image API
     private int mutationRevision;
     private boolean nativeAlpha; // True for Director-decoded 32-bit bitmaps with real alpha
+    private boolean textRenderedImage; // True for bitmaps produced by the text renderer
+    private int textRenderBackgroundColor;
     private Palette imagePalette; // Palette for 8-bit images created via image(w,h,8,paletteMember)
     private int paletteRefCastLib = -1;
     private int paletteRefMemberNum = -1;
@@ -110,6 +112,35 @@ public class Bitmap {
         this.nativeAlpha = nativeAlpha;
     }
 
+    public void markTextRenderedImage(int backgroundColor) {
+        this.textRenderedImage = true;
+        this.textRenderBackgroundColor = backgroundColor;
+    }
+
+    public boolean isTextRenderedImage() {
+        return textRenderedImage;
+    }
+
+    public int getTextRenderBackgroundColor() {
+        return textRenderBackgroundColor;
+    }
+
+    /**
+     * Returns the opaque RGB background used when this bitmap was produced by a
+     * text renderer, or -1 when no opaque text background is known.
+     */
+    public int getOpaqueTextRenderBackgroundRgb() {
+        if (!textRenderedImage || ((textRenderBackgroundColor >>> 24) & 0xFF) != 0xFF) {
+            return -1;
+        }
+        return textRenderBackgroundColor & 0xFFFFFF;
+    }
+
+    public void clearTextRenderMetadata() {
+        this.textRenderedImage = false;
+        this.textRenderBackgroundColor = 0;
+    }
+
     /**
      * Director treats 32-bit member pixels as opaque unless the member carries
      * native alpha metadata. Some decoded assets retain RGB values with zero
@@ -160,8 +191,37 @@ public class Bitmap {
         return paletteIndices;
     }
 
+    /**
+     * Internal mutable fast path for image primitives that update pixel and
+     * palette metadata together.
+     */
+    public byte[] ensurePaletteIndices() {
+        if (paletteIndices == null || paletteIndices.length != pixels.length) {
+            paletteIndices = new byte[pixels.length];
+        }
+        return paletteIndices;
+    }
+
     public void clearPaletteIndices() {
         this.paletteIndices = null;
+    }
+
+    /**
+     * Make all pixels using a palette slot transparent while preserving their RGB.
+     */
+    public int makePaletteIndexTransparent(int transparentIndex) {
+        if (paletteIndices == null || paletteIndices.length != pixels.length) {
+            return 0;
+        }
+        int changed = 0;
+        int target = transparentIndex & 0xFF;
+        for (int i = 0; i < paletteIndices.length; i++) {
+            if ((paletteIndices[i] & 0xFF) == target && (pixels[i] >>> 24) != 0) {
+                pixels[i] = pixels[i] & 0x00FFFFFF;
+                changed++;
+            }
+        }
+        return changed;
     }
 
     /**
@@ -171,6 +231,19 @@ public class Bitmap {
     public void setPixelPreservePaletteIndex(int x, int y, int argb) {
         if (x >= 0 && x < width && y >= 0 && y < height) {
             pixels[y * width + x] = argb;
+        }
+    }
+
+    /**
+     * Set a pixel with palette-index provenance, updating the visible RGB and
+     * the index used by later paletteRef remaps as one operation.
+     */
+    public void setPixelPaletteIndex(int x, int y, int index, int argb) {
+        if (x >= 0 && x < width && y >= 0 && y < height) {
+            int offset = y * width + x;
+            ensurePaletteIndices();
+            pixels[offset] = argb;
+            paletteIndices[offset] = (byte) (index & 0xFF);
         }
     }
 
@@ -352,6 +425,7 @@ public class Bitmap {
             this.paletteIndices = null;
             this.scriptModified = false;
             this.mutationRevision = 0;
+            clearTextRenderMetadata();
             clearPaletteRefMetadata();
             return;
         }
@@ -359,6 +433,8 @@ public class Bitmap {
         this.scriptModified = other.scriptModified;
         this.mutationRevision = other.mutationRevision;
         this.nativeAlpha = other.nativeAlpha;
+        this.textRenderedImage = other.textRenderedImage;
+        this.textRenderBackgroundColor = other.textRenderBackgroundColor;
         this.paletteIndices = other.paletteIndices != null
                 ? java.util.Arrays.copyOf(other.paletteIndices, other.paletteIndices.length)
                 : null;
@@ -368,6 +444,22 @@ public class Bitmap {
         this.hasAnchorPoint = other.hasAnchorPoint;
         this.anchorX = other.anchorX;
         this.anchorY = other.anchorY;
+    }
+
+    /**
+     * Copy only palette identity/ref metadata, leaving pixel-index storage,
+     * mutation state, native alpha, and anchor point untouched.
+     */
+    public void copyPaletteReferenceFrom(Bitmap other) {
+        if (other == null) {
+            this.imagePalette = null;
+            clearPaletteRefMetadata();
+            return;
+        }
+        this.imagePalette = other.imagePalette;
+        this.paletteRefCastLib = other.paletteRefCastLib;
+        this.paletteRefMemberNum = other.paletteRefMemberNum;
+        this.paletteRefSystemName = other.paletteRefSystemName;
     }
 
     /**

@@ -270,15 +270,25 @@ public final class SoftwareFrameRenderer {
         int outR, outG, outB;
 
         switch (ink) {
-            case ADD_PIN, ADD -> {
+            case ADD_PIN -> {
                 outR = Math.min(255, dstR + srcR);
                 outG = Math.min(255, dstG + srcG);
                 outB = Math.min(255, dstB + srcB);
             }
-            case SUBTRACT_PIN, SUBTRACT -> {
+            case ADD -> {
+                outR = (dstR + srcR) & 0xFF;
+                outG = (dstG + srcG) & 0xFF;
+                outB = (dstB + srcB) & 0xFF;
+            }
+            case SUBTRACT_PIN -> {
                 outR = Math.max(0, dstR - srcR);
                 outG = Math.max(0, dstG - srcG);
                 outB = Math.max(0, dstB - srcB);
+            }
+            case SUBTRACT -> {
+                outR = (dstR - srcR) & 0xFF;
+                outG = (dstG - srcG) & 0xFF;
+                outB = (dstB - srcB) & 0xFF;
             }
             case DARKEST -> {
                 outR = Math.min(dstR, srcR);

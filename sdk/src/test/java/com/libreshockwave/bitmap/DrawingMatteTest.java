@@ -86,6 +86,22 @@ class DrawingMatteTest {
         assertEquals(0x00FFFFFF, matte.getPixel(2, 2));
     }
 
+    @Test
+    void createMattePreservesInternalTransparentPixelsDuringFloodFill() {
+        Bitmap src = new Bitmap(3, 3, 32, new int[] {
+                0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
+                0xFFFFFFFF, 0x00000000, 0xFFFFFFFF,
+                0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+        });
+
+        Bitmap matte = Drawing.createMatte(src);
+
+        assertEquals(0x00FFFFFF, matte.getPixel(0, 0));
+        assertEquals(0x00FFFFFF, matte.getPixel(1, 1),
+                "Flood-fill matte extraction must not turn existing transparent holes opaque");
+        assertEquals(0x00FFFFFF, matte.getPixel(2, 2));
+    }
+
     void createMatteUsesPaletteZeroForIndexedFloodFill() {
         Bitmap src = new Bitmap(3, 3, 8, new int[] {
             0xFF000000, 0xFF000000, 0xFF000000,
@@ -449,5 +465,22 @@ class DrawingMatteTest {
         assertEquals(0xFF000000, dest.getPixel(0, 0));
         assertEquals(0xFFFFFFFF, dest.getPixel(1, 1));
         assertEquals(0xFF000000, dest.getPixel(2, 2));
+    }
+
+    @Test
+    void backgroundTransparentCopyPixelsOnlyKeysExactBackgroundColor() {
+        Bitmap dest = new Bitmap(3, 1, 32, new int[] {
+                0xFF112233, 0xFF112233, 0xFF112233
+        });
+        Bitmap src = new Bitmap(3, 1, 32, new int[] {
+                0xFFFFFFFF, 0xFFF0F0F0, 0xFF000000
+        });
+
+        Drawing.copyPixels(dest, src, 0, 0, 0, 0, 3, 1,
+                Palette.InkMode.BACKGROUND_TRANSPARENT, 255, null, 0xFFFFFF);
+
+        assertEquals(0xFF112233, dest.getPixel(0, 0));
+        assertEquals(0xFFF0F0F0, dest.getPixel(1, 0));
+        assertEquals(0xFF000000, dest.getPixel(2, 0));
     }
 }
