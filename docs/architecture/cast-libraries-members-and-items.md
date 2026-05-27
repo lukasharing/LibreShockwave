@@ -32,11 +32,18 @@ LibreShockwave reflects that. The cast subsystem is one of the most important co
 The manager does more than index libraries. It also:
 
 - resolves lookup by cast library and member identity
-- stores raw external cast bytes for reuse
+- stores raw external cast bytes for reuse before parse/install
 - coordinates external cast retargeting
 - exposes field-text and script lookup helpers
 
 This is important because cast visibility can change over time as external assets arrive.
+
+Downloaded cast bytes and visible cast contents are deliberately separate. A
+network task for `someCast.cct` may be complete and cached by filename/basename
+while no member from that file is visible yet. Visibility changes only when the
+runtime can attach those bytes to a concrete cast library slot, such as a
+preload-mode cast, a pending cast-data request, or a `castLib.fileName`
+assignment.
 
 ## 3. Stable Registry Versus Runtime Namespace
 
@@ -71,9 +78,9 @@ LibreShockwave does not treat the cast as fully static. It supports runtime-crea
 
 The current model includes:
 
-- dynamic slot allocation at high member numbers
+- Director-compatible allocation in the first visible empty slot of the target cast
 - reuse of retired dynamic slots where safe
-- preservation of dynamic members across external cast reloads
+- explicit separation between Director allocation and optional project compatibility allocation
 - explicit retirement and cleanup when a dynamic member is erased
 
 This is central to Director compatibility because many movies create or repurpose members at runtime, especially for generated images, temporary text, UI states, and item visuals.
@@ -114,9 +121,16 @@ The runtime supports retargeting a cast library's backing file. That creates tri
 
 - previously visible members may no longer be valid
 - cached resources may now describe the wrong file
-- dynamic members should often survive even if file-backed content changes
+- runtime-created members from the old cast must not leak into the new visible cast by default
 
-The current implementation addresses this by invalidating the old file-backed binding while preserving runtime-created dynamic members when appropriate.
+The Director-compatible rule is replacement, not merge. A successful `castLib.fileName` change replaces the visible slot table and discards runtime-created members that belonged to the old cast. A failed load is transactional: the old cast remains visible.
+
+If a specific project needs high-slot runtime members to survive a cast switch, that should be an explicit compatibility policy rather than the base cast semantics.
+
+When the new file has already been downloaded, `castLib.fileName` should load
+from the raw byte cache synchronously. Deferring that through another async
+browser-cache round trip creates a wrong transient state: `netDone()` is true,
+but the member table is still unavailable for immediate same-tick lookups.
 
 This is one of the more sophisticated parts of the cast system because it handles the difference between authored external assets and movie-generated runtime assets.
 

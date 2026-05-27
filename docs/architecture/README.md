@@ -26,6 +26,8 @@ That distinction matters because the project is still under active development. 
   - Input, hit testing, editable text behavior, networking, external cast loading, audio, xtras, and the WASM platform bridge.
 - `cast-libraries-members-and-items.md`
   - Cast library loading, dynamic members, sprite/member rebinding, item metadata, and how `.props`-style resources fit into the runtime.
+- `director-runtime-semantics.md`
+  - Compatibility contract for Director list, member, cast, text, rendering, loading, and memory semantics, plus open questions for manual or real-Director validation.
 
 ## Recommended Reading Order
 
@@ -35,6 +37,7 @@ That distinction matters because the project is still under active development. 
 4. Read `vm-memory-and-execution.md` if the concern is Lingo behavior, state lifetime, or cache invalidation.
 5. Read `io-audio-network-and-platform.md` for browser, desktop, or external I/O behavior.
 6. Read `cast-libraries-members-and-items.md` for furniture, props, dynamic members, and cast resolution rules.
+7. Read `director-runtime-semantics.md` before changing Director-visible semantics or adding project-specific compatibility behavior.
 
 ## Scope Notes
 
@@ -56,5 +59,6 @@ That distinction matters because the project is still under active development. 
 - VM and memory model: `8.8/10`
 - I/O and platform bridge: `8.8/10`
 - Casts, members, and item handling: `8.9/10`
+- Director runtime semantics contract: `8.7/10`
 
 Reason for score: the main execution path is well evidenced by direct inspection of core classes such as `Player`, `FrameContext`, `StageRenderer`, `FrameRenderPipeline`, `DirectorFile`, `AfterburnerReader`, `LingoVM`, `CastLibManager`, `NetManager`, `SoundManager`, `MultiuserXtra`, and the WASM bridge classes. Confidence remains lower at edges where compatibility depends on movie-specific scripts or asynchronous host behavior.
