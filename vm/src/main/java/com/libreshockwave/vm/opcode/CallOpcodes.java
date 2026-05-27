@@ -8,7 +8,6 @@ import com.libreshockwave.vm.DebugConfig;
 import com.libreshockwave.vm.HandlerRef;
 import com.libreshockwave.vm.datum.LingoException;
 import com.libreshockwave.vm.builtin.cast.CastLibProvider;
-import com.libreshockwave.vm.builtin.sprite.SpriteEventBrokerSupport;
 import com.libreshockwave.vm.builtin.sprite.SpritePropertyProvider;
 import com.libreshockwave.vm.builtin.timeout.TimeoutBuiltins;
 import com.libreshockwave.vm.builtin.xtra.XtraBuiltins;
@@ -17,7 +16,9 @@ import com.libreshockwave.vm.opcode.dispatch.ListMethodDispatcher;
 import com.libreshockwave.vm.opcode.dispatch.SoundChannelMethodDispatcher;
 import com.libreshockwave.vm.opcode.dispatch.PropListMethodDispatcher;
 import com.libreshockwave.vm.opcode.dispatch.ScriptInstanceMethodDispatcher;
+import com.libreshockwave.vm.opcode.dispatch.SpriteRefMethodDispatcher;
 import com.libreshockwave.vm.opcode.dispatch.StringMethodDispatcher;
+import com.libreshockwave.vm.util.AncestorChainWalker;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -176,28 +177,21 @@ public final class CallOpcodes {
             case Datum.XtraInstance xi -> XtraBuiltins.callHandler(xi, methodName, args);
             case Datum.ImageRef imageRef -> ImageMethodDispatcher.dispatch(imageRef, methodName, args);
             case Datum.SpriteRef sr -> {
-                // Method calls on sprite references dispatch to the sprite's scriptInstanceList behaviors.
-                // e.g., sprite(N).setcursor(#arrow) → Event Broker Behavior's on setcursor handler
+                // Method calls on sprite references dispatch to authored behaviors
+                // attached through scriptInstanceList.
                 SpritePropertyProvider spriteProvider = SpritePropertyProvider.getProvider();
                 if (spriteProvider != null) {
                     Datum listDatum = spriteProvider.getSpriteProp(sr.channelNum(), "scriptinstancelist");
                     if (listDatum instanceof Datum.List scriptList) {
                         for (Datum item : scriptList.items()) {
-                            if (item instanceof Datum.ScriptInstance si) {
-                                Datum r = ScriptInstanceMethodDispatcher.dispatch(ctx, si, methodName, args);
-                                if (!r.isVoid()) {
-                                    yield r;
-                                }
+                            if (item instanceof Datum.ScriptInstance si
+                                    && AncestorChainWalker.hasHandler(si, methodName)) {
+                                yield ScriptInstanceMethodDispatcher.dispatch(ctx, si, methodName, args);
                             }
                         }
                     }
-                    Datum brokerResult = SpriteEventBrokerSupport.dispatchSpriteMethod(
-                            sr.channelNum(), methodName, args);
-                    if (!brokerResult.isVoid()) {
-                        yield brokerResult;
-                    }
                 }
-                yield Datum.VOID;
+                yield SpriteRefMethodDispatcher.dispatch(sr.channelNum(), methodName, args);
             }
             case Datum.CastLibRef clr -> {
                 if (("getpropref".equalsIgnoreCase(methodName) || "getprop".equalsIgnoreCase(methodName))

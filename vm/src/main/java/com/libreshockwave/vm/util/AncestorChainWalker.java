@@ -231,10 +231,13 @@ public final class AncestorChainWalker {
      * @param value The value to set
      */
     public static void setProperty(Datum.ScriptInstance instance, String propName, Datum value) {
-        // Match dirplayer-rs: ancestor can only be set to a ScriptInstance, not VOID.
-        // In Director, setting ancestor to VOID is a no-op (type validation fails).
-        if (propName.equals(Datum.PROP_ANCESTOR) && !(value instanceof Datum.ScriptInstance)) {
-            return; // Skip — ancestor must be a ScriptInstance
+        if (propName.equalsIgnoreCase(Datum.PROP_ANCESTOR)) {
+            if (!(value instanceof Datum.ScriptInstance)) {
+                return;
+            }
+            String actualKey = findActualKey(instance, propName);
+            instance.properties().put(actualKey, value);
+            return;
         }
 
         Datum.ScriptInstance owner = findOwner(instance, propName);
