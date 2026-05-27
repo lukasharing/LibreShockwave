@@ -869,7 +869,7 @@ public final class ImageMethodDispatcher {
             }
             clearFullTextRerenderBeforeBackgroundTransparentCopy(dest, effectiveSrc,
                     destRect.left(), destRect.top(), effectiveSrcX, effectiveSrcY,
-                    srcW, srcH, effectiveInk, blend, mask, backgroundKeyRgb);
+                    srcW, srcH, ink, blend, mask, backgroundKeyRgb);
             Drawing.copyPixels(dest, effectiveSrc,
                     destRect.left(), destRect.top(),
                     effectiveSrcX, effectiveSrcY,
@@ -925,7 +925,7 @@ public final class ImageMethodDispatcher {
             }
             clearFullTextRerenderBeforeBackgroundTransparentCopy(dest, scaled,
                     destRect.left(), destRect.top(), 0, 0,
-                    destW, destH, effectiveInk, blend, null, backgroundKeyRgb);
+                    destW, destH, ink, blend, null, backgroundKeyRgb);
             Drawing.copyPixels(dest, scaled,
                     destRect.left(), destRect.top(),
                     0, 0, destW, destH, effectiveInk, blend, null, backgroundKeyRgb);
@@ -965,7 +965,7 @@ public final class ImageMethodDispatcher {
             return;
         }
 
-        int backgroundRgb = src.getOpaqueTextRenderBackgroundRgb();
+        int backgroundRgb = textRenderBackgroundRgb(src);
         if (backgroundRgb < 0) {
             return;
         }
@@ -984,6 +984,13 @@ public final class ImageMethodDispatcher {
         }
 
         dest.fillRect(0, 0, width, height, 0xFF000000 | backgroundRgb);
+    }
+
+    private static int textRenderBackgroundRgb(Bitmap src) {
+        if (src == null || !src.isTextRenderedImage()) {
+            return -1;
+        }
+        return src.getTextRenderBackgroundColor() & 0xFFFFFF;
     }
 
     private static void clearPaletteIndicesBeforeNonIndexedCopy(Bitmap dest) {
