@@ -7,7 +7,6 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -72,7 +71,7 @@ class PropListMethodDispatcherTest {
     @Test
     void getAtStringKeyMatchesCaseInsensitivePropertyName() {
         Datum.PropList propList = new Datum.PropList();
-        propList.add("room_interface", Datum.of(1), true);
+        propList.add("room_interface", Datum.of(1), false);
 
         Datum result = PropListMethodDispatcher.dispatch(
                 propList, "getAt", List.of(Datum.of("Room_interface")));
@@ -81,18 +80,18 @@ class PropListMethodDispatcherTest {
     }
 
     @Test
-    void getAtCrossesSymbolAndStringKeysByPropertyName() {
+    void getAtDoesNotCrossSymbolAndStringKeysByPropertyName() {
         Datum.PropList propList = new Datum.PropList();
         propList.add("color", Datum.of(255), false);
 
         Datum result = PropListMethodDispatcher.dispatch(
                 propList, "getAt", List.of(new Datum.Symbol("color")));
 
-        assertEquals(255, result.toInt());
+        assertTrue(result.isVoid());
     }
 
     @Test
-    void getAtReturnsFirstCompatibleDuplicateAcrossSymbolAndStringKeys() {
+    void getAtKeepsDuplicateSymbolAndStringKeysSeparate() {
         Datum.PropList propList = new Datum.PropList();
         propList.add("key", Datum.of(1), true);   // symbol #key
         propList.add("key", Datum.of(2), false);   // string "key"
@@ -103,7 +102,7 @@ class PropListMethodDispatcherTest {
                 propList, "getAt", List.of(Datum.of("key")));
 
         assertEquals(1, symResult.toInt());
-        assertEquals(1, strResult.toInt());
+        assertEquals(2, strResult.toInt());
     }
 
     @Test
@@ -217,6 +216,35 @@ class PropListMethodDispatcherTest {
     }
 
     @Test
+    void methodSetAtWithSymbolKeyMatchesBracketAssignment() {
+        Datum.PropList propList = new Datum.PropList();
+
+        PropListMethodDispatcher.dispatch(
+                propList, "setAt", List.of(Datum.symbol("room_interface"), Datum.of("object")));
+
+        assertEquals(1, propList.size());
+        assertTrue(propList.entries().getFirst().isSymbolKey());
+        assertEquals("object", PropListMethodDispatcher.dispatch(
+                propList, "getAt", List.of(Datum.symbol("room_interface"))).toStr());
+    }
+
+    @Test
+    void methodSetAtAllowsSymbolThreadAndStringWindowIdsToCoexist() {
+        Datum.PropList propList = new Datum.PropList();
+
+        PropListMethodDispatcher.dispatch(
+                propList, "setAt", List.of(Datum.symbol("room_interface"), Datum.of("thread")));
+        PropListMethodDispatcher.dispatch(
+                propList, "setAt", List.of(Datum.of("Room_interface"), Datum.of("window")));
+
+        assertEquals(2, propList.size());
+        assertEquals("thread", PropListMethodDispatcher.dispatch(
+                propList, "getAt", List.of(Datum.symbol("room_interface"))).toStr());
+        assertEquals("window", PropListMethodDispatcher.dispatch(
+                propList, "getAt", List.of(Datum.of("Room_interface"))).toStr());
+    }
+
+    @Test
     void getPropAndFindPosPreservePointKeys() {
         Datum.PropList propList = new Datum.PropList();
         Datum.Point point = new Datum.Point(14, 149);
@@ -286,7 +314,7 @@ class PropListMethodDispatcherTest {
     }
 
     @Test
-    void deletePropRemovesFirstCompatibleSymbolOrStringKey() {
+    void deletePropRemovesMatchingSymbolOrStringKeyOnly() {
         Datum.PropList propList = new Datum.PropList();
         propList.add("room_interface", Datum.of(1), true);   // symbol #room_interface
         propList.add("room_interface", Datum.of(2), false);  // string "room_interface"
@@ -295,8 +323,8 @@ class PropListMethodDispatcherTest {
                 propList, "deleteProp", List.of(Datum.of("room_interface")));
 
         assertEquals(1, propList.size());
-        assertFalse(propList.entries().getFirst().isSymbolKey());
-        assertEquals(2, propList.entries().getFirst().value().toInt());
+        assertTrue(propList.entries().getFirst().isSymbolKey());
+        assertEquals(1, propList.entries().getFirst().value().toInt());
     }
 
     @Test

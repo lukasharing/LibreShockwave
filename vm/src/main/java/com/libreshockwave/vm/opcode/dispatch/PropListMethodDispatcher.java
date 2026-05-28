@@ -68,7 +68,7 @@ public final class PropListMethodDispatcher {
                 if (args.isEmpty()) yield Datum.VOID;
                 Datum keyOrIndex = args.get(0);
                 if (keyOrIndex instanceof Datum.Str || keyOrIndex instanceof Datum.Symbol) {
-                    yield propList.getOrDefault(keyOrIndex, Datum.VOID);
+                    yield getTypedKeyOrDefault(propList, keyOrIndex, Datum.VOID);
                 }
                 if (keyOrIndex instanceof Datum.Int || keyOrIndex instanceof Datum.Float) {
                     int index = keyOrIndex.toInt() - 1;
@@ -102,12 +102,12 @@ public final class PropListMethodDispatcher {
                         throw new LingoException("setAt index out of range: " + keyOrIndex.toInt());
                     }
                 }
-                LingoVM vm = LingoVM.getCurrentVM();
-                if (vm != null && vm.isPropListSetAtByKeyCompatibilityEnabled()) {
-                    propList.put(keyOrIndex, value);
-                    yield Datum.VOID;
-                }
-                throw new LingoException("setAt requires a numeric index for property lists");
+                // Bytecode for property-list bracket assignment is emitted as an
+                // object-method setAt call: set pList[#key] to value. Keep the
+                // global setAt(propList, key, value) strict in ListBuiltins; this
+                // method path must preserve Director's bracket-assignment behavior.
+                propList.putTyped(keyOrIndex, value);
+                yield Datum.VOID;
             }
             case "getone" -> {
                 // getOne(propList, value) - find the property NAME where the value matches
@@ -124,7 +124,7 @@ public final class PropListMethodDispatcher {
             case "deleteprop" -> {
                 if (args.isEmpty()) yield Datum.VOID;
                 Datum keyDatum = args.get(0);
-                propList.remove(keyDatum);
+                removeTypedKey(propList, keyDatum);
                 yield Datum.VOID;
             }
             case "findpos" -> {
@@ -157,9 +157,31 @@ public final class PropListMethodDispatcher {
         };
     }
 
+    private static Datum getTypedKeyOrDefault(Datum.PropList propList, Datum keyDatum, Datum defaultValue) {
+        Datum value;
+        if (keyDatum instanceof Datum.Symbol symbol) {
+            value = propList.get(symbol.name(), true);
+        } else if (keyDatum instanceof Datum.Str string) {
+            value = propList.get(string.value(), false);
+        } else {
+            value = propList.get(keyDatum);
+        }
+        return value != null ? value : defaultValue;
+    }
+
+    private static void removeTypedKey(Datum.PropList propList, Datum keyDatum) {
+        if (keyDatum instanceof Datum.Symbol symbol) {
+            propList.remove(symbol.name(), true);
+        } else if (keyDatum instanceof Datum.Str string) {
+            propList.remove(string.value(), false);
+        } else {
+            propList.remove(keyDatum);
+        }
+    }
+
     private static Datum getPropListValueByKeyOrIndex(Datum.PropList propList, Datum keyOrIndex) {
         if (keyOrIndex instanceof Datum.Str || keyOrIndex instanceof Datum.Symbol) {
-            return propList.getOrDefault(keyOrIndex, Datum.VOID);
+            return getTypedKeyOrDefault(propList, keyOrIndex, Datum.VOID);
         }
         int index = keyOrIndex.toInt() - 1;
         if (index >= 0 && index < propList.size()) {
