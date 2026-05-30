@@ -13,9 +13,11 @@
  * The main thread owns only the canvas and the animation loop. All rendering,
  * WASM calls, and network I/O happen in the worker. Each tick, the worker
  * sends a pre-composited RGBA frame buffer which the main thread blits via
- * putImageData — no per-sprite drawing on the main thread.
+ * putImageData; no per-sprite drawing on the main thread.
  */
 var LibreShockwave = (function() {
+    var _domDocument = document;
+    var _ImageData = ImageData;
 
     // Fetch with timeout (prevents hanging requests on mobile)
     function _fetchWithTimeout(url, opts, timeoutMs) {
@@ -23,14 +25,26 @@ var LibreShockwave = (function() {
         var controller = new AbortController();
         var timer = setTimeout(function() { controller.abort(); }, timeoutMs);
         opts = opts || {};
+        if (opts.cache === undefined && _isLocalDevUrl(url)) {
+            opts.cache = 'no-store';
+        }
         opts.signal = controller.signal;
         return fetch(url, opts).finally(function() { clearTimeout(timer); });
+    }
+
+    function _isLocalDevUrl(url) {
+        try {
+            var u = new URL(String(url), _domDocument.baseURI);
+            return u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '::1';
+        } catch (e) {
+            return false;
+        }
     }
 
     // Auto-detect base path from <script src="...shockwave-lib.js">
     var _autoBasePath = '';
     (function() {
-        var scripts = document.getElementsByTagName('script');
+        var scripts = _domDocument.getElementsByTagName('script');
         for (var i = scripts.length - 1; i >= 0; i--) {
             var src = scripts[i].src || '';
             if (src.indexOf('shockwave-lib.js') !== -1) {
@@ -51,11 +65,19 @@ var LibreShockwave = (function() {
      * @param {Object} [options]
      * @param {string}  [options.basePath]  - Directory containing WASM files.
      * @param {Object}  [options.params]    - External parameters (e.g. { sw1: "..." }).
+     * @param {Object}  [options.initialBuiltinVariables] - Variables to seed into authored variable managers.
      * @param {boolean} [options.autoplay]  - Start playing after load (default: true).
      * @param {boolean} [options.remember]  - Persist params/URL in localStorage (default: false).
      * @param {Function} [options.onLoad]   - Called with { width, height, frameCount, tempo }.
      * @param {Function} [options.onError]  - Called with error message string.
      * @param {Function} [options.onFrame]  - Called with (frame, total) on each frame.
+     * @param {string}   [options.tcpWebSocketUrl] - Optional WebSocket-to-TCP URL template for browser-hosted sockets.
+     * @param {string}   [options.musWebSocketUrl] - Compatibility alias for tcpWebSocketUrl.
+     * @param {string[]} [options.musSecureHosts] - Hostnames that should default to wss:// for Multiuser sockets.
+     * @param {number}   [options.vmHandlerTimeoutMs] - Per-Lingo-handler wall timeout. 0 disables it.
+     * @param {boolean}  [options.compatPropListSetAtByKey] - Compatibility mode for legacy setAt(propList, key, value) bytecode.
+     * @param {number}   [options.fastBootstrapMinTicks] - Minimum startup ticks before normal scheduling.
+     * @param {number}   [options.fastBootstrapMaxTicks] - Safety cap for startup ticks.
      * @returns {ShockwavePlayer}
      */
     function create(canvas, options) {
@@ -63,18 +85,26 @@ var LibreShockwave = (function() {
     }
 
     function ShockwavePlayer(canvas, opts) {
-        var el = typeof canvas === 'string' ? document.getElementById(canvas) : canvas;
+        var el = typeof canvas === 'string' ? _domDocument.getElementById(canvas) : canvas;
         if (!el) throw new Error('LibreShockwave: canvas "' + canvas + '" not found');
 
         this._opts        = opts;
         this._basePath    = opts.basePath || _autoBasePath;
+        this._cacheBust   = opts.cacheBust || '';
         this._params      = opts.params ? _clone(opts.params) : {};
+        this._initialBuiltinVariables = opts.initialBuiltinVariables ? _clone(opts.initialBuiltinVariables) : {};
+        this._runMode = opts.runMode || '';
+        this._musWebSocketUrl = opts.tcpWebSocketUrl || opts.musWebSocketUrl || '';
+        this._musSecureHosts = Array.isArray(opts.musSecureHosts) ? opts.musSecureHosts.slice(0) : [];
+        this._traceMusPackets = !!opts.traceMusPackets;
+        this._vmHandlerTimeoutMs = Math.max(0, Number(opts.vmHandlerTimeoutMs == null ? 0 : opts.vmHandlerTimeoutMs) || 0);
+        this._compatPropListSetAtByKey = !!opts.compatPropListSetAtByKey;
+        this._pauseOnScriptError = !!opts.pauseOnScriptError;
+        this._pauseOnAuthoredMajor = !!opts.pauseOnAuthoredMajor;
         this._autoplay    = opts.autoplay !== false;
         this._remember    = !!opts.remember;
         this._canvas      = el;
         this._ctx         = el.getContext('2d');
-        this._animFrameId = null;
-        this._lastFrameTime = 0;
 
         // Worker state
         this._worker      = null;
@@ -92,10 +122,11 @@ var LibreShockwave = (function() {
         this._tempoOverride = 0;
         this._lastFrame   = 0;
         this._lastFrameCount = 0;
-        this._stageWidth  = 640;
-        this._stageHeight = 480;
         this._blockedGotoNetPages = Object.create(null);
         this._loadedMovieUrl = null;
+        this._bootstrapDone = true;
+        this._lastNetworkBusy = false;
+        this._networkIdleTicks = 0;
 
         if (opts.websocketMode) {
             var websocketMode = String(opts.websocketMode).toLowerCase();
@@ -116,13 +147,15 @@ var LibreShockwave = (function() {
         // Load deduplication: each load() increments this; stale loads bail out
         this._loadSeq     = 0;
 
-        // Restore remembered params
+        // Restore remembered params. Saved embed params must replace the
+        // page defaults; otherwise edited sw2/sw4 connection targets revert
+        // on reload while later saved sw6/sw7 values still apply.
         if (this._remember) {
             try {
                 var saved = JSON.parse(localStorage.getItem('ls_extParams'));
                 if (saved && typeof saved === 'object') {
                     for (var k in saved) {
-                        if (!(k in this._params)) this._params[k] = saved[k];
+                        this._params[k] = saved[k];
                     }
                 }
             } catch(e) {}
@@ -137,11 +170,11 @@ var LibreShockwave = (function() {
 
     ShockwavePlayer.prototype._initAbout = function(canvas) {
         // --- Context menu ---
-        var menu = document.createElement('div');
+        var menu = _domDocument.createElement('div');
         menu.style.cssText = 'position:fixed;display:none;background:#fff;border:1px solid #999;padding:2px 0;z-index:10000;font-family:Verdana,Arial,Helvetica,sans-serif;font-size:11px;color:#333;min-width:160px;box-shadow:2px 2px 6px rgba(0,0,0,0.2);';
 
         function addMenuItem(label) {
-            var item = document.createElement('div');
+            var item = _domDocument.createElement('div');
             item.textContent = label;
             item.style.cssText = 'padding:4px 12px;cursor:pointer;';
             item.addEventListener('mouseenter', function() { item.style.background = '#336699'; item.style.color = '#fff'; });
@@ -151,16 +184,16 @@ var LibreShockwave = (function() {
         }
 
         var saveItem = addMenuItem('Save image as...');
-        var sep = document.createElement('div');
+        var sep = _domDocument.createElement('div');
         sep.style.cssText = 'border-top:1px solid #ccc;margin:2px 0;';
         menu.appendChild(sep);
         var aboutItem = addMenuItem('About LibreShockwave');
-        document.body.appendChild(menu);
+        _domDocument.body.appendChild(menu);
 
         function hideMenu() { menu.style.display = 'none'; }
 
-        document.addEventListener('click', hideMenu);
-        document.addEventListener('contextmenu', function(e) {
+        _domDocument.addEventListener('click', hideMenu);
+        _domDocument.addEventListener('contextmenu', function(e) {
             if (e.target !== canvas) hideMenu();
         });
 
@@ -172,23 +205,23 @@ var LibreShockwave = (function() {
         });
 
         // --- About dialog ---
-        var overlay = document.createElement('div');
+        var overlay = _domDocument.createElement('div');
         overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);display:none;align-items:center;justify-content:center;z-index:9999;';
 
-        var win = document.createElement('div');
+        var win = _domDocument.createElement('div');
         win.style.cssText = 'background:#fff;border:1px solid #999;width:360px;max-width:90%;font-family:Verdana,Arial,Helvetica,sans-serif;font-size:11px;color:#333;';
 
-        var titlebar = document.createElement('div');
+        var titlebar = _domDocument.createElement('div');
         titlebar.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:#336699;color:#fff;font-weight:bold;font-size:11px;';
         titlebar.innerHTML = '<span>About LibreShockwave</span>';
 
-        var closeBtn = document.createElement('button');
+        var closeBtn = _domDocument.createElement('button');
         closeBtn.textContent = 'X';
         closeBtn.style.cssText = 'background:#eee;border:1px solid #999;color:#333;font-size:10px;font-weight:bold;padding:0 5px;cursor:pointer;font-family:Verdana,Arial,Helvetica,sans-serif;line-height:16px;';
         closeBtn.addEventListener('click', function() { overlay.style.display = 'none'; });
         titlebar.appendChild(closeBtn);
 
-        var body = document.createElement('div');
+        var body = _domDocument.createElement('div');
         body.style.cssText = 'text-align:center;padding:16px 20px;line-height:1.6;';
         body.innerHTML =
             '<div style="font-size:16px;font-weight:bold;color:#336699;margin-bottom:8px;">LibreShockwave</div>' +
@@ -199,7 +232,7 @@ var LibreShockwave = (function() {
         win.appendChild(titlebar);
         win.appendChild(body);
         overlay.appendChild(win);
-        document.body.appendChild(overlay);
+        _domDocument.body.appendChild(overlay);
 
         overlay.addEventListener('click', function(e) {
             if (e.target === overlay) overlay.style.display = 'none';
@@ -208,7 +241,7 @@ var LibreShockwave = (function() {
         saveItem.addEventListener('click', function() {
             hideMenu();
             try {
-                var link = document.createElement('a');
+                var link = _domDocument.createElement('a');
                 link.download = 'screenshot.png';
                 link.href = canvas.toDataURL('image/png');
                 link.click();
@@ -249,22 +282,22 @@ var LibreShockwave = (function() {
             /Android|iPhone|iPad|iPod|Mobile|IEMobile|Opera Mini/i.test(ua));
         var mobileKeyboardInput = null;
         var lastMobileKeyDownTime = 0;
-        if (isLikelyMobile && document.body) {
+        if (isLikelyMobile && _domDocument.body) {
             // A tiny hidden textarea keeps mobile virtual keyboard behavior reliable.
-            mobileKeyboardInput = document.createElement('textarea');
+            mobileKeyboardInput = _domDocument.createElement('textarea');
             mobileKeyboardInput.setAttribute('autocapitalize', 'off');
             mobileKeyboardInput.setAttribute('autocomplete', 'off');
             mobileKeyboardInput.setAttribute('autocorrect', 'off');
             mobileKeyboardInput.setAttribute('spellcheck', 'false');
             mobileKeyboardInput.setAttribute('inputmode', 'text');
             mobileKeyboardInput.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none;z-index:-1;padding:0;border:0;resize:none;';
-            document.body.appendChild(mobileKeyboardInput);
+            _domDocument.body.appendChild(mobileKeyboardInput);
         }
         self._mobileKeyboardInput = mobileKeyboardInput;
 
         function hasPlayerFocus() {
-            return document.activeElement === canvas ||
-                (!!mobileKeyboardInput && document.activeElement === mobileKeyboardInput);
+            return _domDocument.activeElement === canvas ||
+                (!!mobileKeyboardInput && _domDocument.activeElement === mobileKeyboardInput);
         }
 
         function focusKeyboardTarget() {
@@ -342,7 +375,7 @@ var LibreShockwave = (function() {
             });
         }
 
-        // Track whether the canvas/input bridge has focus - suppress input when it doesn't
+        // Track whether the canvas/input bridge has focus for keyboard and button release events.
         self._canvasFocused = hasPlayerFocus();
         function notifyBlurRelease(forceRelease) {
             if (!forceRelease && hasPlayerFocus()) {
@@ -389,9 +422,18 @@ var LibreShockwave = (function() {
             });
         }
         window.addEventListener('blur', function() { notifyBlurRelease(true); });
-        document.addEventListener('visibilitychange', function() {
-            if (document.hidden) notifyBlurRelease(true);
+        _domDocument.addEventListener('visibilitychange', function() {
+            if (_domDocument.hidden) notifyBlurRelease(true);
         });
+
+        function traceBrowserInput(eventName, x, y, button) {
+            if (!self._opts.debugPlayback || !self._opts.onDebugLog) return;
+            self._opts.onDebugLog('[BrowserInput] event=' + eventName
+                + ' x=' + x + ' y=' + y
+                + ' button=' + button
+                + ' ready=' + (!!self._worker && !!self._workerReady)
+                + ' focused=' + !!self._canvasFocused);
+        }
 
         canvas.addEventListener('mousemove', function(e) {
             var pt = getCanvasPoint(e.clientX, e.clientY);
@@ -400,29 +442,30 @@ var LibreShockwave = (function() {
             self._mouseX = x;
             self._mouseY = y;
             self._cursorDirty = true;
-            if (!self._canvasFocused) return;
             if (!self._worker || !self._workerReady) return;
             self._worker.postMessage({ type: 'mouseMove', x: x, y: y });
         });
 
         canvas.addEventListener('mousedown', function(e) {
-            if (!self._worker || !self._workerReady) return;
             // Left-click only (right-click handled by context menu)
             if (e.button !== 0 && e.button !== 2) return;
             focusKeyboardTarget();
             var pt = getCanvasPoint(e.clientX, e.clientY);
             var x = pt.x;
             var y = pt.y;
+            traceBrowserInput('mouseDown', x, y, e.button);
+            if (!self._worker || !self._workerReady) return;
             self._worker.postMessage({ type: 'mouseDown', x: x, y: y, button: e.button });
         });
 
         canvas.addEventListener('mouseup', function(e) {
-            if (!self._canvasFocused) return;
-            if (!self._worker || !self._workerReady) return;
             if (e.button !== 0 && e.button !== 2) return;
             var pt = getCanvasPoint(e.clientX, e.clientY);
             var x = pt.x;
             var y = pt.y;
+            traceBrowserInput('mouseUp', x, y, e.button);
+            if (!self._canvasFocused) return;
+            if (!self._worker || !self._workerReady) return;
             self._worker.postMessage({ type: 'mouseUp', x: x, y: y, button: e.button });
         });
 
@@ -497,7 +540,7 @@ var LibreShockwave = (function() {
         canvas.addEventListener('keyup', handleKeyUp);
 
         // Clipboard paste support
-        document.addEventListener('paste', function(e) {
+        _domDocument.addEventListener('paste', function(e) {
             if (!self._canvasFocused) return;
             var text = (e.clipboardData || window.clipboardData).getData('text');
             if (text && self._worker && self._workerReady) {
@@ -512,7 +555,7 @@ var LibreShockwave = (function() {
     ShockwavePlayer.prototype._initWorker = function() {
         var self = this;
         // Make the base path absolute so importScripts() in the worker resolves it correctly
-        var absBase = new URL(this._basePath, document.baseURI).href;
+        var absBase = new URL(this._basePath, _domDocument.baseURI).href;
 
         function setupWorker(worker) {
             self._worker = worker;
@@ -524,7 +567,15 @@ var LibreShockwave = (function() {
             var initMessage = {
                 type: 'init',
                 basePath: absBase,
-                pageProtocol: location.protocol
+                cacheBust: self._cacheBust,
+                pageProtocol: location.protocol,
+                musWebSocketUrl: self._musWebSocketUrl,
+                musSecureHosts: self._musSecureHosts,
+                traceMusPackets: self._traceMusPackets,
+                vmHandlerTimeoutMs: self._vmHandlerTimeoutMs,
+                pauseOnScriptError: self._pauseOnScriptError,
+                pauseOnAuthoredMajor: self._pauseOnAuthoredMajor,
+                compatPropListSetAtByKey: self._compatPropListSetAtByKey
             };
             self._initSharedFrameTransport(initMessage);
             // Send init with absolute base path so importScripts/fetch work from the worker.
@@ -533,7 +584,8 @@ var LibreShockwave = (function() {
 
         // Create worker from file URL (most reliable, works on all mobile browsers).
         // Bundled deployments override this to try blob URL first with file URL fallback.
-        setupWorker(new Worker(absBase + 'shockwave-worker.js'));
+        var workerSuffix = self._cacheBust ? '?v=' + encodeURIComponent(self._cacheBust) : '';
+        setupWorker(new Worker(absBase + 'shockwave-worker.js' + workerSuffix));
     };
 
     ShockwavePlayer.prototype._initSharedFrameTransport = function(initMessage) {
@@ -668,13 +720,25 @@ var LibreShockwave = (function() {
             return;
         }
 
-        console.error('[LS] gotoNetPage request:', {
+        var requestedUrl = this._parseGotoNetPageUrl(url);
+        var requestLog = {
             url: String(url),
             rawTarget: rawTarget,
             normalizedTarget: normalizedTarget,
+            resolvedUrl: requestedUrl ? requestedUrl.href : String(url),
             frame: this._lastFrame,
             frameCount: this._lastFrameCount
-        });
+        };
+
+        if (this._isClientReloadNavigation(requestedUrl)) {
+            console.info('[LS] gotoNetPage client reload handled internally:', requestLog);
+            if (typeof this._opts.onGotoNetPage === 'function') {
+                this._opts.onGotoNetPage(url, normalizedTarget);
+            }
+            return;
+        }
+
+        console.info('[LS] gotoNetPage request:', requestLog);
 
         if (this._maybeHandleMovieResetNavigation(url, normalizedTarget)) {
             return;
@@ -724,6 +788,22 @@ var LibreShockwave = (function() {
         if (lowered === 'parent' || lowered === '_parent') return '_parent';
         if (lowered === 'top' || lowered === '_top') return '_top';
         return raw;
+    };
+
+    ShockwavePlayer.prototype._parseGotoNetPageUrl = function(url) {
+        try {
+            return new URL(String(url), window.location.href);
+        } catch (e) {
+            return null;
+        }
+    };
+
+    ShockwavePlayer.prototype._isClientReloadNavigation = function(requestedUrl) {
+        if (!requestedUrl) return false;
+
+        var path = requestedUrl.pathname.replace(/\/+$/, '').toLowerCase();
+        var reloadAction = (requestedUrl.searchParams.get('x') || '').toLowerCase();
+        return path.endsWith('/client/beta') && reloadAction === 'reauthenticate';
     };
 
     ShockwavePlayer.prototype._maybeHandleMovieResetNavigation = function(url, normalizedTarget) {
@@ -778,7 +858,7 @@ var LibreShockwave = (function() {
             || params.has('neterr_res');
     };
 
-    // Simple one-shot resolver map: type → resolve function
+    // Simple one-shot resolver map: type -> resolve function
     ShockwavePlayer.prototype._resolveMovieNavigationUrl = function(url) {
         var rawUrl = url == null ? '' : String(url);
         if (!rawUrl) return '';
@@ -889,7 +969,7 @@ var LibreShockwave = (function() {
                 source.start();
                 self._audioChannels[ch] = { source: source, gain: gainNode };
             }).catch(function(err) {
-                // Decoding failed — silently ignore
+                // Decoding failed; silently ignore.
             });
         }
     };
@@ -964,13 +1044,22 @@ var LibreShockwave = (function() {
         this._stopLoop();
         this._playing = false;
         this._pending = null;
-        this._lastSpriteCount = 0; // Reset so fast loop doesn't skip immediately
+        this._lastSpriteCount = 0;
+        this._bootstrapDone = false;
         this._loadStartTime = performance.now();
         this._loadedMovieUrl = (typeof basePath === 'string' && basePath.indexOf('://') !== -1)
             ? basePath
             : null;
         var mySeq = this._loadSeq;
-        // Send movie bytes to worker (transfer ownership — zero copy)
+        this._worker.postMessage({ type: 'clearInitialBuiltinVariables' });
+        for (var initialKey in this._initialBuiltinVariables) {
+            this._worker.postMessage({
+                type: 'setInitialBuiltinVariable',
+                key: initialKey,
+                value: this._initialBuiltinVariables[initialKey]
+            });
+        }
+        // Send movie bytes to worker (transfer ownership, zero copy).
         this._worker.postMessage({ type: 'loadMovie', data: buf, basePath: basePath },
                                  [buf]);
         var info = await this._waitFor('movieLoaded');
@@ -982,8 +1071,6 @@ var LibreShockwave = (function() {
         }
         console.log('[LS] Movie loaded:', info.width + 'x' + info.height +
                     ', ' + info.frameCount + ' frames');
-        this._stageWidth  = info.width;
-        this._stageHeight = info.height;
         this._lastTempo   = info.tempo;
         this._canvas.width  = info.width;
         this._canvas.height = info.height;
@@ -997,12 +1084,26 @@ var LibreShockwave = (function() {
         for (var k in this._params) {
             this._worker.postMessage({ type: 'setParam', key: k, value: this._params[k] });
         }
+        if (this._runMode) {
+            this._worker.postMessage({ type: 'setRunMode', value: this._runMode });
+        }
+        if (this._compatPropListSetAtByKey) {
+            this._worker.postMessage({ type: 'setPropListSetAtByKeyCompatibility', enabled: true });
+        }
 
-        // Send debug playback toggle to worker
+        // Send debug playback toggle to worker. Worker/browser logs are cheap;
+        // Lingo-side debug logging runs inside WASM and can perturb memory-heavy
+        // clients, so it is opt-in via lingoDebugPlayback.
         var dbg = this._opts.debugPlayback !== undefined
             ? !!this._opts.debugPlayback
             : !!this._opts.onDebugLog;
-        this._worker.postMessage({ type: 'setDebugPlayback', enabled: dbg });
+        this._worker.postMessage({
+            type: 'setDebugPlayback',
+            enabled: dbg,
+            lingoEnabled: !!this._opts.lingoDebugPlayback,
+            pauseOnScriptError: this._pauseOnScriptError,
+            pauseOnAuthoredMajor: this._pauseOnAuthoredMajor
+        });
 
         // Restore trace handlers after movie load
         if (this._traceHandlers && this._traceHandlers.length > 0) {
@@ -1018,9 +1119,9 @@ var LibreShockwave = (function() {
         this._relayCache = {};
         this._prefetchRelayCache(mySeq);
 
-        // Preload external casts before starting. The worker queues async fetches
-        // and returns immediately; completed network responses are delivered on
-        // subsequent ticks so HTTP I/O does not block rendering or input.
+        // Preload only casts required before frame one. After-frame and
+        // script-requested casts are loaded by the normal player lifecycle so a
+        // large external catalog does not block the first visible frame.
         this._worker.postMessage({ type: 'preloadCasts' });
         await this._waitFor('castsDone');
         if (this._loadSeq !== mySeq) return;
@@ -1034,9 +1135,13 @@ var LibreShockwave = (function() {
         if (this._autoplay && !this._playing) this.play();
     };
 
-    // Parse all sw1-sw9 params for URLs (key=value;key=value format)
+    // Parse all sw1-sw9 params for concrete resource URLs (key=value;key=value format).
+    // Base URLs such as site.url, url.prefix, and dynamic.download.url are used
+    // by authored scripts to compose later requests; prefetching those roots
+    // only creates CORS/404 noise and does not seed useful relay-cache data.
     function _parseSwUrls(params) {
         var urls = [];
+        var seen = {};
         for (var i = 1; i <= 9; i++) {
             var sw = params['sw' + i] || params['SW' + i] || '';
             if (!sw) continue;
@@ -1045,10 +1150,26 @@ var LibreShockwave = (function() {
                 var eq = pair.indexOf('=');
                 if (eq < 0) return;
                 var val = pair.substring(eq + 1).trim();
-                if (val.indexOf('://') !== -1) urls.push(val);
+                if (val.indexOf('://') === -1 || !_isPrefetchableResourceUrl(val) || seen[val]) return;
+                seen[val] = true;
+                urls.push(val);
             });
         }
         return urls;
+    }
+
+    function _isPrefetchableResourceUrl(value) {
+        try {
+            var url = new URL(value, window.location.href);
+            var path = url.pathname || '';
+            if (!path || path === '/' || path.charAt(path.length - 1) === '/') {
+                return false;
+            }
+            var fileName = path.substring(path.lastIndexOf('/') + 1);
+            return /\.[A-Za-z0-9]{1,8}$/.test(fileName);
+        } catch (e) {
+            return false;
+        }
     }
 
     ShockwavePlayer.prototype._prefetchRelayCache = function(loadSeq) {
@@ -1062,11 +1183,19 @@ var LibreShockwave = (function() {
                 .then(function(buf) {
                     if (loadSeq !== undefined && self._loadSeq !== loadSeq) return;
                     self._relayCache[url] = buf;
+                    if (self._worker && self._workerReady) {
+                        var workerBuf = buf.slice(0);
+                        self._worker.postMessage({
+                            type: 'seedNetCache',
+                            url: url,
+                            data: workerBuf
+                        }, [workerBuf]);
+                    }
                     console.log('[LS] Pre-fetched: ' + url + ' (' + buf.byteLength + ' bytes)');
                 })
                 .catch(function(e) {
                     if (!e || !e.message) e = { message: String(e) };
-                    console.warn('[LS] Pre-fetch failed: ' + url + ' — ' + e.message);
+                    console.warn('[LS] Pre-fetch failed: ' + url + ' - ' + e.message);
                 });
         });
     };
@@ -1074,13 +1203,23 @@ var LibreShockwave = (function() {
     // --- Playback control ---
 
     ShockwavePlayer.prototype.play = function() {
+        if (this._opts.fastBootstrap !== false && this._opts.fastBootstrapClock === true
+                && !this._bootstrapDone && this._worker && this._workerReady) {
+            this._worker.postMessage({
+                type: 'setFastMovieClock',
+                enabled: true,
+                multiplier: this._opts.fastBootstrapClockMultiplier || 20
+            });
+        }
         this._worker.postMessage({ type: 'play' });
         this._playing = true;
-        this._lastFrameTime = 0;
         this._startLoop();
     };
 
     ShockwavePlayer.prototype.pause = function() {
+        if (this._worker && this._workerReady) {
+            this._worker.postMessage({ type: 'setFastMovieClock', enabled: false });
+        }
         this._worker.postMessage({ type: 'pause' });
         this._playing = false;
         this._stopLoop();
@@ -1088,6 +1227,9 @@ var LibreShockwave = (function() {
     };
 
     ShockwavePlayer.prototype.stop = function() {
+        if (this._worker && this._workerReady) {
+            this._worker.postMessage({ type: 'setFastMovieClock', enabled: false });
+        }
         this._worker.postMessage({ type: 'stop' });
         this._playing = false;
         this._stopLoop();
@@ -1130,7 +1272,13 @@ var LibreShockwave = (function() {
 
     ShockwavePlayer.prototype.setDebugPlayback = function(enabled) {
         if (this._worker && this._workerReady) {
-            this._worker.postMessage({ type: 'setDebugPlayback', enabled: enabled });
+            this._worker.postMessage({
+                type: 'setDebugPlayback',
+                enabled: enabled,
+                lingoEnabled: !!this._opts.lingoDebugPlayback,
+                pauseOnScriptError: this._pauseOnScriptError,
+                pauseOnAuthoredMajor: this._pauseOnAuthoredMajor
+            });
         }
     };
 
@@ -1275,26 +1423,104 @@ var LibreShockwave = (function() {
 
     ShockwavePlayer.prototype._startLoop = function() {
         this._stopLoop();
-        this._loadingPhase = false;
         this._tickCount = 0;
         this._lastRenderTime = 0;
+        this._skippedRenderTicks = 0;
+        this._lastNetworkBusy = true;
+        this._networkIdleTicks = 0;
         this._loopSeq = this._loadSeq;
-        this._startNormalLoop();
+        if (this._opts.fastBootstrap !== false) {
+            this._loadingPhase = true;
+            this._startFastLoadingLoop();
+        } else {
+            this._loadingPhase = false;
+            this._bootstrapDone = true;
+            if (this._worker && this._workerReady) {
+                this._worker.postMessage({ type: 'setFastMovieClock', enabled: false });
+            }
+            this._startNormalLoop();
+        }
+    };
+
+    ShockwavePlayer.prototype._startFastLoadingLoop = function() {
+        var self = this;
+        var ticking = false;
+        var startedAt = performance.now();
+        var minTicks = this._opts.fastBootstrapMinTicks || 4;
+        var maxTicks = this._opts.fastBootstrapMaxTicks || 2000;
+        var idleTicks = this._opts.fastBootstrapIdleTicks || 2;
+        function finish() {
+            self._fastTimerId = null;
+            self._loadingPhase = false;
+            self._bootstrapDone = true;
+            if (self._opts.debugPlayback) {
+                console.log('[LS] fast bootstrap finished ticks=' + self._tickCount +
+                    ' ms=' + Math.round(performance.now() - startedAt) +
+                    ' frame=' + self._lastFrame +
+                    ' sprites=' + self._lastSpriteCount);
+            }
+            if (self._worker && self._workerReady) {
+                self._worker.postMessage({ type: 'setFastMovieClock', enabled: false });
+            }
+            if (self._playing && self._loopSeq === self._loadSeq) {
+                self._startNormalLoop();
+            }
+        }
+
+        function shouldFinish() {
+            if (!self._playing || self._loopSeq !== self._loadSeq) return true;
+            if (self._tickCount >= maxTicks) return true;
+            if (self._tickCount < minTicks) return false;
+            if (self._lastNetworkBusy) {
+                self._networkIdleTicks = 0;
+                return false;
+            }
+            self._networkIdleTicks++;
+            return self._networkIdleTicks >= idleTicks;
+        }
+
+        function loop() {
+            if (shouldFinish()) {
+                finish();
+                return;
+            }
+            if (!ticking) {
+                ticking = true;
+                self._tickCount++;
+                var renderThisTick = !self._baseFrame || self._tickCount <= 2 || self._shouldRenderTick();
+                self._doTick(!renderThisTick).then(function() {
+                    ticking = false;
+                    if (shouldFinish()) {
+                        finish();
+                    } else {
+                        self._fastTimerId = setTimeout(loop, 0);
+                    }
+                }).catch(function(err) {
+                    ticking = false;
+                    console.error('[LS] fast tick error:', err);
+                    finish();
+                });
+            }
+        }
+
+        this._fastTimerId = setTimeout(loop, 0);
     };
 
     ShockwavePlayer.prototype._startNormalLoop = function() {
         var self = this;
         var ticking = false;
         function loop() {
-            if (!self._playing) return;
+            if (!self._playing || self._loopSeq !== self._loadSeq) return;
             var tempo = self._lastTempo || 15;
             var ms = 1000.0 / (tempo > 0 ? tempo : 15);
             if (!ticking) {
                 var tickStart = performance.now();
                 ticking = true;
-                self._doTick().then(function() {
+                self._tickCount++;
+                var renderThisTick = self._shouldRenderTick();
+                self._doTick(!renderThisTick).then(function() {
                     ticking = false;
-                    if (self._playing) {
+                    if (self._playing && self._loopSeq === self._loadSeq) {
                         // Compensate only for the work done in this tick.
                         var elapsed = performance.now() - tickStart;
                         var delay = Math.max(0, ms - elapsed);
@@ -1303,7 +1529,7 @@ var LibreShockwave = (function() {
                 }).catch(function(err) {
                     ticking = false;
                     console.error('[LS] tick error:', err);
-                    if (self._playing) {
+                    if (self._playing && self._loopSeq === self._loadSeq) {
                         self._normalTimerId = setTimeout(loop, ms);
                     }
                 });
@@ -1312,11 +1538,27 @@ var LibreShockwave = (function() {
         this._normalTimerId = setTimeout(loop, 0);
     };
 
-    ShockwavePlayer.prototype._stopLoop = function() {
-        if (this._animFrameId) {
-            cancelAnimationFrame(this._animFrameId);
-            this._animFrameId = null;
+    ShockwavePlayer.prototype._shouldRenderTick = function() {
+        var now = performance.now();
+        if (!this._baseFrame) return true;
+        if (!this._lastNetworkBusy) {
+            this._skippedRenderTicks = 0;
+            return true;
         }
+
+        var interval = this._opts.busyRenderIntervalMs || 120;
+        var maxSkipped = this._opts.busyRenderMaxSkippedTicks || 3;
+
+        if ((now - this._lastRenderTime) >= interval || this._skippedRenderTicks >= maxSkipped) {
+            this._skippedRenderTicks = 0;
+            return true;
+        }
+
+        this._skippedRenderTicks++;
+        return false;
+    };
+
+    ShockwavePlayer.prototype._stopLoop = function() {
         if (this._fastTimerId) {
             clearTimeout(this._fastTimerId);
             this._fastTimerId = null;
@@ -1329,10 +1571,8 @@ var LibreShockwave = (function() {
 
     // --- Tick: send work to the worker, await the frame response, then render ---
 
-    ShockwavePlayer.prototype._doTick = async function() {
-        // Always render — the fast-loading loop completes in few ticks so
-        // skipping frames would hide the loading screen (Sulake logo).
-        var skipRender = false;
+    ShockwavePlayer.prototype._doTick = async function(skipRender) {
+        skipRender = !!skipRender;
         this._worker.postMessage({ type: 'tick', skipRender: skipRender });
         var result = await this._waitFor('frame');
         if (!result) return;
@@ -1341,22 +1581,44 @@ var LibreShockwave = (function() {
         this._lastTempo       = result.tempo       || this._lastTempo;
         this._lastFrame       = result.lastFrame   || this._lastFrame;
         this._lastFrameCount  = result.frameCount  || this._lastFrameCount;
+        this._lastNetworkBusy = !!result.networkBusy;
+
+        if (skipRender || !result.rendered) {
+            this._lastFrameRendered = false;
+            if (result.debugLog && this._opts.onDebugLog) {
+                this._opts.onDebugLog(result.debugLog);
+            }
+            if (this._opts.onFrame) {
+                this._opts.onFrame(this._lastFrame, this._lastFrameCount);
+            }
+            this._handleTickPlaybackState(result);
+            return;
+        }
+
         this._lastSpriteCount = result.spriteCount || 0;
+        this._lastFrameRendered = true;
+        this._lastRenderTime = performance.now();
+        this._skippedRenderTicks = 0;
 
         // Cache the base frame (no cursor) for 60fps cursor compositing.
         if (result.sharedFrame && this._sharedFrameBytes && result.width > 0 && result.height > 0) {
             var sharedLen = result.width * result.height * 4;
             var sharedSeq = Atomics.load(this._sharedFrameControl, 0);
             if (sharedSeq === result.sharedSeq && sharedLen <= this._sharedFrameCapacity) {
-                this._baseFrame = new ImageData(
-                    new Uint8ClampedArray(this._sharedFrameBuffer, 0, sharedLen),
+                // ImageData cannot wrap a SharedArrayBuffer-backed view in
+                // browsers, so keep this copy even though the worker transport
+                // itself uses shared memory.
+                var frameBytes = new Uint8ClampedArray(sharedLen);
+                frameBytes.set(new Uint8ClampedArray(this._sharedFrameBuffer, 0, sharedLen));
+                this._baseFrame = new _ImageData(
+                    frameBytes,
                     result.width,
                     result.height
                 );
                 this._cursorDirty = true;
             }
         } else if (result.rgba && result.width > 0 && result.height > 0) {
-            this._baseFrame = new ImageData(result.rgba, result.width, result.height);
+            this._baseFrame = new _ImageData(result.rgba, result.width, result.height);
             this._cursorDirty = true;
         }
 
@@ -1410,10 +1672,17 @@ var LibreShockwave = (function() {
             this._opts.onFrame(this._lastFrame, this._lastFrameCount);
         }
 
+        this._handleTickPlaybackState(result);
+    };
+
+    ShockwavePlayer.prototype._handleTickPlaybackState = function(result) {
         // Mirror worker's playing flag to drive our loop
         if (!result.playing && !result.enginePlaying && this._playing) {
-            console.log('[LS] _doTick: stopping — playing=' + result.playing + ' enginePlaying=' + result.enginePlaying);
+            console.log('[LS] _doTick: stopping - playing=' + result.playing + ' enginePlaying=' + result.enginePlaying);
             this._playing = false;
+            if (this._worker && this._workerReady) {
+                this._worker.postMessage({ type: 'setFastMovieClock', enabled: false });
+            }
             this._stopLoop();
             this._stopCursorLoop();
         }
@@ -1431,7 +1700,7 @@ var LibreShockwave = (function() {
         var cur = this._cursorBitmap;
 
         if (!cur && !this._caretInfo && !this._selectionRects) {
-            // No bitmap cursor, text caret, or selection — just blit the base frame
+            // No bitmap cursor, text caret, or selection; just blit the base frame.
             this._ctx.putImageData(base, 0, 0);
             this._cursorDirty = false;
             return;
@@ -1529,7 +1798,7 @@ var LibreShockwave = (function() {
      */
     ShockwavePlayer.prototype._startCursorLoop = function() {
         if (this._cursorRafId) return; // already running
-        if (!this._cursorBitmap) return; // no custom cursor — nothing to do
+        if (!this._cursorBitmap) return; // no custom cursor, nothing to do
         var self = this;
         if (this._cursorFps > 0) {
             // Fixed interval mode

@@ -6,7 +6,9 @@ function _relayWorkerLog(type, args) {
     var msg = Array.prototype.slice.call(args).join(' ');
     if (!msg) return;
     if (type === 'error') {
-        self.postMessage({ type: 'error', msg: msg });
+        if (_debugLogsEnabled) {
+            self.postMessage({ type: 'debugLog', msg: msg });
+        }
         return;
     }
     if (!_debugLogsEnabled) {
@@ -20,6 +22,12 @@ function _relayWorkerLog(type, args) {
             || msg.indexOf('[NetManager]') >= 0
             || msg.indexOf('[MUS]') >= 0
             || msg.indexOf('[EH]') >= 0
+            || msg.indexOf('[MouseHit]') >= 0
+            || msg.indexOf('[InputDispatch]') >= 0
+            || msg.indexOf('[TextFocus]') >= 0
+            || msg.indexOf('[EventHandler]') >= 0
+            || msg.indexOf('[EventBroker]') >= 0
+            || msg.indexOf('[FrameActor]') >= 0
             || msg.indexOf('[EventDispatcher]') >= 0
             || msg.indexOf('[HitTest]') >= 0
             || msg.indexOf('[DEBUG') >= 0) {
@@ -71,9 +79,9 @@ function _musPreview(data) {
 }
 
 /**
- * LibreShockwave Web Worker — runs the WASM engine off the main thread.
+ * LibreShockwave Web Worker - runs the WASM engine off the main thread.
  *
- * Message protocol (main → worker):
+ * Message protocol (main -> worker):
  *   {type:'init',    basePath}
  *   {type:'loadMovie', data:ArrayBuffer, basePath}
  *   {type:'setParam',  key, value}
@@ -90,7 +98,7 @@ function _musPreview(data) {
  *   {type:'keyDown',    keyCode, key, modifiers}  (modifiers: 1=shift,2=ctrl,4=alt)
  *   {type:'keyUp',      keyCode, key, modifiers}
  *
- * Message protocol (worker → main):
+ * Message protocol (worker -> main):
  *   {type:'ready'}
  *   {type:'movieLoaded',  info:{width,height,frameCount,tempo} | null}
  *   {type:'castsDone'}
@@ -114,11 +122,15 @@ var _musPendingSends = {}; // instanceId -> [Uint8Array] waiting for WebSocket.O
 var _musConnected = {};    // instanceId -> true (pending connect notifications)
 var _musDisconnected = {}; // instanceId -> true (pending disconnect notifications)
 var _musErrors = {};       // instanceId -> errorCode
+var _musDisconnectDetails = {}; // instanceId -> {code, reason, wasClean, url}
+var _musErrorDetails = {};      // instanceId -> string
 
 function _musClearInstanceState(instId) {
     delete _musConnected[instId];
     delete _musDisconnected[instId];
     delete _musErrors[instId];
+    delete _musDisconnectDetails[instId];
+    delete _musErrorDetails[instId];
     delete _musInbound[instId];
     delete _musPendingSends[instId];
 }
@@ -141,12 +153,15 @@ function _musCloseAllSockets() {
     _musConnected = {};
     _musDisconnected = {};
     _musErrors = {};
+    _musDisconnectDetails = {};
+    _musErrorDetails = {};
 }
 
 // --- Non-blocking fetch delivery queue ---
 var _fetchQueue = [];   // [{taskId, data: ArrayBuffer}] or [{taskId, error: number}]
 var _fetchInFlight = 0;
 var _fetchInFlightByKey = {};
+var _fetchResponseCache = {};
 var _jpegDecodeQueue = []; // [{id, width, height, data: Uint8Array}]
 var _jpegDecodeInFlight = {}; // id -> true
 var _jpegDecodeSeq = 0; // increments per movie load to ignore stale async decodes
@@ -166,8 +181,20 @@ function _fetchWithTimeout(url, opts, timeoutMs) {
     var controller = new AbortController();
     var timer = setTimeout(function() { controller.abort(); }, timeoutMs);
     opts = opts || {};
+    if (opts.cache === undefined && _isLocalDevUrl(url)) {
+        opts.cache = 'no-store';
+    }
     opts.signal = controller.signal;
     return fetch(url, opts).finally(function() { clearTimeout(timer); });
+}
+
+function _isLocalDevUrl(url) {
+    try {
+        var u = new URL(String(url), self.location && self.location.href ? self.location.href : undefined);
+        return u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '::1';
+    } catch (e) {
+        return false;
+    }
 }
 
 function _refreshTempoCache() {
@@ -199,7 +226,63 @@ function _flushWasmDiagnostics() {
     _drainGotoNetPages();
 }
 
+function _sleep(ms) {
+    return new Promise(function(resolve) { setTimeout(resolve, ms); });
+}
+
+async function _drainStartupFetches(timeoutMs) {
+    if (!_e || !_e.exports) return { delivered: 0, fired: 0, timedOut: false };
+
+    var deadline = performance.now() + timeoutMs;
+    var deliveredTotal = 0;
+    var firedTotal = 0;
+    var timedOut = false;
+
+    while (true) {
+        try {
+            deliveredTotal += _e.deliverQueuedResults({ maxResults: 12, budgetMs: 16 });
+            _e.deliverJpegDecodeResults(4);
+        } catch (deliverErr) {
+            console.error(_formatWorkerError('[WORKER] startup deliver error', deliverErr));
+            break;
+        }
+
+        try {
+            firedTotal += _e.pumpNetworkFire();
+        } catch (pumpErr) {
+            console.error(_formatWorkerError('[WORKER] startup pump error', pumpErr));
+            break;
+        }
+
+        if (_fetchInFlight <= 0 && _fetchQueue.length === 0) {
+            break;
+        }
+        if (performance.now() >= deadline) {
+            timedOut = true;
+            break;
+        }
+        await _sleep(5);
+    }
+
+    try {
+        deliveredTotal += _e.deliverQueuedResults({ maxResults: 12, budgetMs: 16 });
+        _e.deliverJpegDecodeResults(4);
+    } catch (finalDeliverErr) {
+        console.error(_formatWorkerError('[WORKER] startup final deliver error', finalDeliverErr));
+    }
+
+    return { delivered: deliveredTotal, fired: firedTotal, timedOut: timedOut };
+}
+
 function _relayLastError() {
+    var errMsg = _readLastError();
+    if (errMsg) {
+        self.postMessage({ type: 'error', msg: errMsg });
+    }
+    return errMsg;
+}
+
+function _readLastError() {
     if (!_e || !_e.exports) return;
     try {
         var errLen = _e.exports.getLastError(); _e._clearEx();
@@ -208,11 +291,51 @@ function _relayLastError() {
         }
         var errAddr = _e.exports.getStringBufferAddress(); _e._clearEx();
         var errMsg = _e._readString(errAddr, errLen);
-        if (errMsg) {
-            self.postMessage({ type: 'error', msg: errMsg });
-        }
+        return errMsg || '';
     } catch (errRead) {}
 }
+
+function _consumeScriptErrorPauseRequest() {
+    if (!_e || !_e.exports || !_e.exports.consumeScriptErrorPauseRequest) return false;
+    try {
+        var shouldPause = _e.exports.consumeScriptErrorPauseRequest(); _e._clearEx();
+        if (shouldPause) {
+            _e.playing = false;
+            if (_debugLogsEnabled) {
+                self.postMessage({
+                    type: 'debugLog',
+                    msg: '[WORKER] auto-paused on script error before pumping disconnect/network requests\n'
+                });
+            }
+            return true;
+        }
+    } catch (pauseErr) {}
+    return false;
+}
+
+function _formatWorkerError(prefix, err) {
+    var msg = prefix + ': ' + err;
+    if (_e && _e._lastRenderStage && prefix.indexOf('render') >= 0) {
+        msg += '\nrenderStage=' + _e._lastRenderStage;
+    }
+    if (_e && _e.exports && prefix.indexOf('render') >= 0 && _e.exports.getRenderPipelineStage) {
+        try {
+            var stageLen = _e.exports.getRenderPipelineStage();
+            _e._clearEx();
+            if (stageLen > 0) {
+                var stageAddr = _e.exports.getStringBufferAddress();
+                _e._clearEx();
+                msg += '\npipelineStage=' + _e._readString(stageAddr, stageLen);
+            }
+        } catch (stageErr) {}
+    }
+    if (err && err.stack) {
+        msg += '\n' + err.stack;
+    }
+    var lastError = _readLastError();
+    return lastError ? msg + '\n' + lastError : msg;
+}
+
 function _drainGotoNetPages() {
     if (!_e || !_e.exports) return;
     try {
@@ -247,14 +370,8 @@ function _drainGotoNetMovies() {
     } catch (navErr) {}
 }
 
-// --- External params stored locally for pre-fetch access ---
-var _params = {};
-
-// --- Diagnostic tick counter ---
-var _tickNum = 0;
-
 // ============================================================
-// WasmEngine — mirrors the main-thread version but without Canvas
+// WasmEngine - mirrors the main-thread version but without Canvas
 // ============================================================
 
 function WasmEngine() {
@@ -320,6 +437,64 @@ WasmEngine.prototype.clearExternalParams = function() {
     this.exports.clearExternalParams(); this._clearEx();
 };
 
+WasmEngine.prototype.setInitialBuiltinVariable = function(key, value) {
+    if (!this.exports.setInitialBuiltinVariable) return;
+    var kb = new TextEncoder().encode(key), vb = new TextEncoder().encode(String(value == null ? '' : value));
+    var totalLen = kb.length + vb.length;
+    var strAddr = this.exports.ensureStringBufferCapacity
+        ? this.exports.ensureStringBufferCapacity(totalLen)
+        : this.exports.getStringBufferAddress();
+    this._clearEx();
+    var sbuf = new Uint8Array(this._mem(), strAddr, totalLen);
+    sbuf.set(kb); sbuf.set(vb, kb.length);
+    this.exports.setInitialBuiltinVariable(kb.length, vb.length);
+    this._clearEx();
+};
+
+WasmEngine.prototype.clearInitialBuiltinVariables = function() {
+    if (!this.exports.clearInitialBuiltinVariables) return;
+    this.exports.clearInitialBuiltinVariables();
+    this._clearEx();
+};
+
+WasmEngine.prototype.seedNetCache = function(url, data) {
+    if (!this.exports.seedNetCache || !data) return;
+    var ub = new TextEncoder().encode(url || '');
+    var bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+    var totalLen = ub.length + bytes.length;
+    var strAddr = this.exports.ensureStringBufferCapacity
+        ? this.exports.ensureStringBufferCapacity(totalLen)
+        : this.exports.getStringBufferAddress();
+    this._clearEx();
+    var sbuf = new Uint8Array(this._mem(), strAddr, totalLen);
+    sbuf.set(ub, 0);
+    sbuf.set(bytes, ub.length);
+    this.exports.seedNetCache(ub.length, bytes.length);
+    this._clearEx();
+};
+
+WasmEngine.prototype.setFastMovieClockEnabled = function(enabled, multiplier) {
+    if (this.exports.setFastMovieClockEnabled) {
+        this.exports.setFastMovieClockEnabled(enabled ? 1 : 0, multiplier || 1);
+        this._clearEx();
+    }
+};
+
+WasmEngine.prototype.setRunMode = function(value) {
+    var vb = new TextEncoder().encode(value || '');
+    var sbuf = new Uint8Array(this._mem(), this.exports.getStringBufferAddress(), 4096);
+    sbuf.set(vb);
+    this.exports.setRunMode(vb.length);
+    this._clearEx();
+};
+
+WasmEngine.prototype.setPropListSetAtByKeyCompatibility = function(enabled) {
+    if (this.exports.setPropListSetAtByKeyCompatibility) {
+        this.exports.setPropListSetAtByKeyCompatibility(enabled ? 1 : 0);
+        this._clearEx();
+    }
+};
+
 WasmEngine.prototype.addTraceHandler = function(name) {
     var nb = new TextEncoder().encode(name);
     var sbuf = new Uint8Array(this._mem(), this.exports.getStringBufferAddress(), 4096);
@@ -354,23 +529,46 @@ WasmEngine.prototype.tick = function() {
  * Returns { w, h, rgba: Uint8ClampedArray } or null on failure.
  */
 WasmEngine.prototype.renderFrame = function() {
-    var len = this.exports.render(); this._clearEx();
+    this._lastRenderStage = 'render';
+    var len = this.exports.render(this._lastFrame || 0); this._clearEx();
     if (len <= 0) return null;
 
-    var w = this.exports.getStageWidth();
-    var h = this.exports.getStageHeight();
+    // Address.ofData() points at TeaVM-managed memory. Copy the frame bytes
+    // before any further Java export can allocate or trigger GC and move it.
+    this._lastRenderStage = 'getRenderBufferAddress';
+    var ptr = this.exports.getRenderBufferAddress();
+    this._lastRenderStage = 'copyRenderBuffer';
+    var memory = this._mem();
+    if (ptr === 0) return null;
+    if (ptr < 0 || ptr + len > memory.byteLength) {
+        console.error('[WORKER] render buffer out of bounds: ptr=' + ptr + ' len=' + len
+            + ' memory=' + memory.byteLength);
+        return null;
+    }
+    var frameBytes = new Uint8ClampedArray(len);
+    frameBytes.set(new Uint8ClampedArray(memory, ptr, len));
+
+    this._lastRenderStage = 'getRenderBufferWidth';
+    var w = this.exports.getRenderBufferWidth(); this._clearEx();
+    this._lastRenderStage = 'getRenderBufferHeight';
+    var h = this.exports.getRenderBufferHeight(); this._clearEx();
     if (w <= 0 || h <= 0) return null;
 
-    var ptr = this.exports.getRenderBufferAddress(); this._clearEx();
-    if (ptr === 0) return null;
+    this._lastRenderStage = 'validateRenderBuffer';
+    var expectedLen = w * h * 4;
+    if (len < expectedLen) {
+        console.error('[WORKER] render buffer too small: ptr=' + ptr + ' len=' + len
+            + ' expected=' + expectedLen + ' stage=' + w + 'x' + h);
+        return null;
+    }
+    var rgba = frameBytes.length === expectedLen ? frameBytes : frameBytes.slice(0, expectedLen);
 
-    // Update cached frame metadata
+    // Update cached frame metadata after the raw pixel copy is complete.
+    this._lastRenderStage = 'getFrameMetadata';
     this._lastFrame      = this.exports.getCurrentFrame();
     this._lastFrameCount = this.exports.getFrameCount();
 
-    // Copy RGBA out of WASM heap (buffer may move after GC)
-    var rgba = new Uint8ClampedArray(w * h * 4);
-    rgba.set(new Uint8ClampedArray(this._mem(), ptr, rgba.length));
+    this._lastRenderStage = 'done';
     return { w: w, h: h, rgba: rgba };
 };
 
@@ -448,7 +646,7 @@ WasmEngine.prototype._drainRequests = function() {
  */
 
 WasmEngine.prototype._deliverResult = function(taskId, arrayBuffer, url) {
-    // Deliver all fetch results uniformly — cast file detection and caching
+    // Deliver all fetch results uniformly; cast file detection and caching
     // is handled on the Java side in deliverFetchResult.
     try {
         var bytes = new Uint8Array(arrayBuffer);
@@ -458,6 +656,28 @@ WasmEngine.prototype._deliverResult = function(taskId, arrayBuffer, url) {
         this._clearEx();
     } catch (e) {
         console.error('[WORKER] deliverFetchResult error for taskId=' + taskId + ': ' + e);
+        this._clearEx();
+    }
+};
+
+WasmEngine.prototype._deliverStatus = function(taskId, arrayBuffer, url) {
+    try {
+        var text = String(url || '');
+        var bytes = new TextEncoder().encode(text);
+        var addr;
+        if (this.exports.ensureStringBufferCapacity) {
+            addr = this.exports.ensureStringBufferCapacity(bytes.length); this._clearEx();
+        } else {
+            addr = this.exports.getStringBufferAddress(); this._clearEx();
+        }
+        if (bytes.length > 0) {
+            new Uint8Array(this._mem(), addr, bytes.length).set(bytes);
+        }
+        var byteCount = arrayBuffer ? arrayBuffer.byteLength : 0;
+        this.exports.deliverFetchStatus(taskId, bytes.length, byteCount);
+        this._clearEx();
+    } catch (e) {
+        console.error('[WORKER] deliverFetchStatus error for taskId=' + taskId + ': ' + e);
         this._clearEx();
     }
 };
@@ -602,42 +822,57 @@ function _writeU32BE(bytes, offset, value) {
 }
 
 /**
- * Deliver queued fetch results into WASM.
- * Non-cast results are delivered one at a time to simulate real network latency.
- * Cast file results (.cct/.cst) are delivered immediately so cast members are
- * available when Lingo sets castLib.fileName on the same or next tick.
+ * Deliver queued fetch results into WASM with an event-loop budget.
+ * Cast file results are prioritized, but still rate-limited: parsing a cast can
+ * execute substantial Lingo-side work, so delivering many in one tick blocks
+ * rendering, input and multiuser keepalives.
  * @return number of results delivered
  */
-WasmEngine.prototype.deliverQueuedResults = function() {
+WasmEngine.prototype.deliverQueuedResults = function(options) {
     if (_fetchQueue.length === 0) return 0;
-    var delivered = 0;
-    // First pass: deliver all cast file results immediately
-    for (var i = _fetchQueue.length - 1; i >= 0; i--) {
-        var item = _fetchQueue[i];
-        if (item.data !== undefined && item.url && _isCastFileUrl(item.url)) {
-            _fetchQueue.splice(i, 1);
-            this._deliverResult(item.taskId, item.data, item.url);
-            delivered++;
-        }
+    var limit;
+    var budgetMs = 0;
+    if (typeof options === 'object' && options !== null) {
+        limit = options.maxResults === undefined ? 1 : Math.max(1, options.maxResults | 0);
+        budgetMs = Math.max(0, Number(options.budgetMs) || 0);
+    } else {
+        limit = options === undefined ? 1 : Math.max(1, options | 0);
     }
-    // Second pass: deliver one non-cast result (rate-limited)
-    if (_fetchQueue.length > 0) {
-        var item = _fetchQueue.shift();
+    var deadline = budgetMs > 0 ? performance.now() + budgetMs : 0;
+    var delivered = 0;
+    while (_fetchQueue.length > 0 && delivered < limit) {
+        var index = 0;
+        for (var i = 0; i < _fetchQueue.length; i++) {
+            var queued = _fetchQueue[i];
+            if (queued.data !== undefined && queued.url && _isCastFileUrl(queued.url)) {
+                index = i;
+                break;
+            }
+        }
+        var item = _fetchQueue.splice(index, 1)[0];
         if (item.data !== undefined) {
-            this._deliverResult(item.taskId, item.data, item.url);
+            if (item.url && _isCastFileUrl(item.url) && !this._shouldDeliverFetchData(item.taskId, item.url)) {
+                this._deliverStatus(item.taskId, item.data, item.url);
+            } else {
+                this._deliverResult(item.taskId, item.data, item.url);
+            }
         } else {
             this._deliverError(item.taskId, item.error);
         }
-        _flushWasmDiagnostics();
         delivered++;
+        if (deadline > 0 && performance.now() >= deadline) {
+            break;
+        }
     }
+    if (delivered > 0) _flushWasmDiagnostics();
     return delivered;
 };
 
-WasmEngine.prototype.deliverJpegDecodeResults = function() {
+WasmEngine.prototype.deliverJpegDecodeResults = function(maxResults) {
     if (_jpegDecodeQueue.length === 0) return 0;
+    var limit = maxResults === undefined ? 1 : Math.max(1, maxResults | 0);
     var delivered = 0;
-    while (_jpegDecodeQueue.length > 0) {
+    while (_jpegDecodeQueue.length > 0 && delivered < limit) {
         var item = _jpegDecodeQueue.shift();
         try {
             if (item.data.length > 0) {
@@ -717,6 +952,73 @@ function _isCastFileUrl(url) {
     return lower.endsWith('.cct') || lower.endsWith('.cst');
 }
 
+function _fetchCacheKeys(url) {
+    var keys = [];
+    if (!url) return keys;
+    try {
+        var absolute = new URL(url, self.location.href).href;
+        keys.push(absolute.toLowerCase());
+        var path = new URL(absolute).pathname || '';
+        var fileName = path.substring(path.lastIndexOf('/') + 1);
+        if (fileName) {
+            keys.push(fileName.toLowerCase());
+            var dot = fileName.lastIndexOf('.');
+            if (dot > 0) {
+                keys.push(fileName.substring(0, dot).toLowerCase());
+            }
+        }
+    } catch(e) {
+        keys.push(String(url).toLowerCase());
+    }
+    return keys;
+}
+
+function _rememberFetchResponse(url, data) {
+    if (!url || !data) return;
+    var keys = _fetchCacheKeys(url);
+    for (var i = 0; i < keys.length; i++) {
+        _fetchResponseCache[keys[i]] = data;
+    }
+}
+
+function _cachedFetchResponse(url, fallbacks) {
+    var candidates = [url];
+    if (fallbacks && fallbacks.length) {
+        for (var i = 0; i < fallbacks.length; i++) candidates.push(fallbacks[i]);
+    }
+    for (var c = 0; c < candidates.length; c++) {
+        var keys = _fetchCacheKeys(candidates[c]);
+        for (var k = 0; k < keys.length; k++) {
+            var data = _fetchResponseCache[keys[k]];
+            if (data) return data.slice(0);
+        }
+    }
+    return null;
+}
+
+WasmEngine.prototype._shouldDeliverFetchData = function(taskId, url) {
+    if (!url || !_isCastFileUrl(url) || !this.exports.shouldDeliverFetchData) {
+        return true;
+    }
+    try {
+        var bytes = new TextEncoder().encode(String(url));
+        var addr;
+        if (this.exports.ensureStringBufferCapacity) {
+            addr = this.exports.ensureStringBufferCapacity(bytes.length); this._clearEx();
+        } else {
+            addr = this.exports.getStringBufferAddress(); this._clearEx();
+        }
+        if (bytes.length > 0) {
+            new Uint8Array(this._mem(), addr, bytes.length).set(bytes);
+        }
+        var result = this.exports.shouldDeliverFetchData(taskId, bytes.length); this._clearEx();
+        return result !== 0;
+    } catch(e) {
+        this._clearEx();
+        return true;
+    }
+};
+
 /**
  * Drain pending requests from WASM and fire them all non-blocking.
  * Checks JS-side cache first to avoid duplicate fetches.
@@ -726,12 +1028,36 @@ WasmEngine.prototype.pumpNetworkFire = function() {
     var reqs = this._drainRequests();
     if (!reqs) return 0;
     var seq = _networkSeq;
+    var engine = this;
     for (var i = 0; i < reqs.length; i++) {
         let req = reqs[i];
-        this._fetchWithFallbacks(req.taskId, req.url, req.method, req.postData, req.fallbacks || [])
+        if ((req.method || 'GET') === 'GET') {
+            let cachedData = _cachedFetchResponse(req.url, req.fallbacks || []);
+            if (cachedData) {
+                _fetchQueue.push({ taskId: req.taskId, data: cachedData, url: req.url });
+                continue;
+            }
+        }
+        let fetchKey = String(req.method || 'GET') + '\n' + String(req.url || '') + '\n' + String(req.postData || '');
+        let pendingFetch = _fetchInFlightByKey[fetchKey];
+        if (!pendingFetch) {
+            _fetchInFlight++;
+            pendingFetch = engine._fetchWithFallbacks(req.taskId, req.url, req.method, req.postData, req.fallbacks || [])
+                .finally(function() {
+                    if (_fetchInFlightByKey[fetchKey] === pendingFetch) {
+                        delete _fetchInFlightByKey[fetchKey];
+                    }
+                    _fetchInFlight = Math.max(0, _fetchInFlight - 1);
+                });
+            _fetchInFlightByKey[fetchKey] = pendingFetch;
+        }
+        pendingFetch
             .then(function(result) {
                 if (seq !== _networkSeq) return;
                 if (result && result.data) {
+                    if (_isCastFileUrl(result.url || req.url)) {
+                        _rememberFetchResponse(result.url || req.url, result.data);
+                    }
                     _fetchQueue.push({ taskId: req.taskId, data: result.data, url: result.url || req.url });
                 } else {
                     _fetchQueue.push({ taskId: req.taskId, error: result && result.status ? result.status : 0 });
@@ -746,14 +1072,14 @@ WasmEngine.prototype.pumpNetworkFire = function() {
 };
 
 // ============================================================
-// Multiuser Xtra — WebSocket bridge
+// Multiuser Xtra - WebSocket bridge
 // ============================================================
 
 /**
  * Drain pending MUS requests from WASM and act on them:
- *   type 0 = connect → open WebSocket
- *   type 1 = send    → send on existing WebSocket
- *   type 2 = disconnect → close WebSocket
+ *   type 0 = connect -> open WebSocket
+ *   type 1 = send    -> send on existing WebSocket
+ *   type 2 = disconnect -> close WebSocket
  *
  * By default the WebSocket URL is built from the Lingo host/port, but
  * websocket.mode can force ws:// or wss:// from the player options.
@@ -765,8 +1091,6 @@ WasmEngine.prototype.pumpMusRequests = function() {
         count = this.exports.getMusPendingCount(); this._clearEx();
     } catch(e) { return; }
     if (count === 0) return;
-
-    var strAddr = this.exports.getStringBufferAddress(); this._clearEx();
 
     for (var i = 0; i < count; i++) {
         var type = this.exports.getMusPendingType(i); this._clearEx();
@@ -785,7 +1109,7 @@ WasmEngine.prototype.pumpMusRequests = function() {
             this._musConnect(instId, wsUrl);
 
         } else if (type === 1) {
-            // SEND — raw content bytes (must be binary frame for websockify)
+            // SEND - raw content bytes (must be binary frame for websockify)
             var dataLen = this.exports.getMusPendingSendData(i); this._clearEx();
             var strAddr = this.exports.getStringBufferAddress(); this._clearEx();
             var data = this._readBytes(strAddr, dataLen);
@@ -821,11 +1145,18 @@ function _musSendOrQueue(instId, data, dataLen) {
     }
 
     if (!ws || ws.readyState !== WebSocket.CONNECTING) {
-        _musDebug('send dropped instance=' + instId
+        var readyState = ws ? ws.readyState : 'missing';
+        var terminalKnown = _musDisconnected[instId] || _musErrors[instId] !== undefined
+            || (ws && (ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED));
+        _musDebug((terminalKnown ? 'send ignored after terminal state instance=' : 'send dropped instance=') + instId
             + ' readyState=' + (ws ? ws.readyState : 'missing')
             + ' bytes=' + dataLen);
+        if (terminalKnown) {
+            return;
+        }
         if (_musErrors[instId] === undefined) {
             _musErrors[instId] = -2;
+            _musErrorDetails[instId] = 'send dropped: socket readyState=' + readyState;
         }
         return;
     }
@@ -867,22 +1198,38 @@ function _musFlushQueuedSends(instId) {
 function _buildMusWebSocketUrl(host, port) {
     var hostString = String(host || '').trim();
     var portString = String(port || '').trim();
+    var wsUrl;
     if (_musWebSocketUrl) {
-        return _musWebSocketUrl
+        wsUrl = _musWebSocketUrl
             .replace(/\{host\}/g, encodeURIComponent(hostString))
             .replace(/\{port\}/g, encodeURIComponent(portString));
+        return _appendMusTraceParam(wsUrl);
     }
     if (/^wss?:\/\//i.test(hostString)) {
         try {
             var url = new URL(hostString);
             if (!url.port && port) url.port = String(port);
-            return url.href;
+            return _appendMusTraceParam(url.href);
         } catch(e) {
-            return hostString;
+            return _appendMusTraceParam(hostString);
         }
     }
     var protocol = _shouldUseSecureMusWebSocket(host, port) ? 'wss' : 'ws';
-    return protocol + '://' + hostString + ':' + portString;
+    wsUrl = protocol + '://' + hostString + ':' + portString;
+    return _appendMusTraceParam(wsUrl);
+}
+
+function _appendMusTraceParam(wsUrl) {
+    if (!_musTracePackets) {
+        return wsUrl;
+    }
+    try {
+        var url = new URL(wsUrl);
+        url.searchParams.set('traceMusPackets', '1');
+        return url.href;
+    } catch(e) {
+        return wsUrl + (wsUrl.indexOf('?') >= 0 ? '&' : '?') + 'traceMusPackets=1';
+    }
 }
 
 function _shouldUseSecureMusWebSocket(host, port) {
@@ -922,15 +1269,18 @@ WasmEngine.prototype._musConnect = function(instId, wsUrl) {
     } catch(e) {
         _musDebug('WebSocket constructor failed instance=' + instId + ' url=' + wsUrl + ' error=' + e.message);
         _musErrors[instId] = -3; // connection refused
+        _musErrorDetails[instId] = 'constructor failed url=' + wsUrl + ' error=' + (e && e.message ? e.message : e);
         return;
     }
     ws.binaryType = 'arraybuffer';
     _musSockets[instId] = ws;
+    var engine = this;
 
     ws.onopen = function() {
         _musDebug('open instance=' + instId + ' url=' + wsUrl);
         _musConnected[instId] = true;
         _musFlushQueuedSends(instId);
+        engine._musPumpImmediate('open');
     };
 
     ws.onmessage = function(evt) {
@@ -944,19 +1294,40 @@ WasmEngine.prototype._musConnect = function(instId, wsUrl) {
         }
         _musPacketDebug('message instance=' + instId + ' bytes=' + data.length + _musPreview(data));
         _musInbound[instId].push(data);
+        engine._musPumpImmediate('message');
     };
 
     ws.onclose = function(evt) {
         _musDebug('close instance=' + instId + ' code=' + (evt && evt.code) + ' reason=' + (evt && evt.reason ? evt.reason : '') + ' wasClean=' + (evt && evt.wasClean));
         _musDisconnected[instId] = true;
+        _musDisconnectDetails[instId] = {
+            code: evt && evt.code ? evt.code : 0,
+            reason: evt && evt.reason ? evt.reason : '',
+            wasClean: !!(evt && evt.wasClean),
+            url: wsUrl
+        };
         delete _musSockets[instId];
         delete _musPendingSends[instId];
     };
 
-    ws.onerror = function() {
+    ws.onerror = function(evt) {
         _musDebug('error instance=' + instId + ' url=' + wsUrl);
         _musErrors[instId] = -2; // network error
+        _musErrorDetails[instId] = 'websocket error url=' + wsUrl
+            + (evt && evt.message ? ' message=' + evt.message : '');
     };
+};
+
+WasmEngine.prototype._writeStringForExport = function(text) {
+    var bytes = new TextEncoder().encode(text || '');
+    var addr;
+    if (this.exports.ensureStringBufferCapacity) {
+        addr = this.exports.ensureStringBufferCapacity(bytes.length); this._clearEx();
+    } else {
+        addr = this.exports.getStringBufferAddress(); this._clearEx();
+    }
+    new Uint8Array(this._mem(), addr, bytes.length).set(bytes);
+    return bytes.length;
 };
 
 /**
@@ -1064,34 +1435,86 @@ WasmEngine.prototype.deliverMusEvents = function() {
     // instances that delivered data this tick; pumpMusRequests() may clear them
     // if the script closes/reconnects while handling that data.
     var remainingErrors = {};
+    var remainingErrorDetails = {};
     var terminalDeliveredFor = {};
     for (var eid in _musErrors) {
         if (deliveredInboundFor[eid]) {
             remainingErrors[eid] = _musErrors[eid];
+            if (_musErrorDetails[eid]) {
+                remainingErrorDetails[eid] = _musErrorDetails[eid];
+            }
             continue;
         }
         try {
-            this.exports.musDeliverError(parseInt(eid), _musErrors[eid]); this._clearEx();
+            var errorDetail = _musErrorDetails[eid] || '';
+            if (this.exports.musDeliverErrorDetail && errorDetail) {
+                var errLen = this._writeStringForExport(errorDetail);
+                this.exports.musDeliverErrorDetail(parseInt(eid), _musErrors[eid], errLen); this._clearEx();
+            } else {
+                this.exports.musDeliverError(parseInt(eid), _musErrors[eid]); this._clearEx();
+            }
             terminalDeliveredFor[eid] = true;
         } catch(e) {}
     }
     _musErrors = remainingErrors;
+    _musErrorDetails = remainingErrorDetails;
 
     // Deliver disconnect notifications
     var remainingDisconnected = {};
+    var remainingDisconnectDetails = {};
     for (var did in _musDisconnected) {
         if (deliveredInboundFor[did]) {
             remainingDisconnected[did] = true;
+            if (_musDisconnectDetails[did]) {
+                remainingDisconnectDetails[did] = _musDisconnectDetails[did];
+            }
             continue;
         }
         if (terminalDeliveredFor[did]) {
             continue;
         }
         try {
-            this.exports.musDeliverDisconnected(parseInt(did)); this._clearEx();
+            var detail = _musDisconnectDetails[did] || {};
+            var reason = 'close code=' + (detail.code || 0)
+                + ' wasClean=' + (detail.wasClean ? 'true' : 'false')
+                + (detail.reason ? ' reason=' + detail.reason : '')
+                + (detail.url ? ' url=' + detail.url : '');
+            if (this.exports.musDeliverDisconnectedDetail) {
+                var reasonLen = this._writeStringForExport(reason);
+                this.exports.musDeliverDisconnectedDetail(parseInt(did), detail.code || 0,
+                        detail.wasClean ? 1 : 0, reasonLen); this._clearEx();
+            } else {
+                this.exports.musDeliverDisconnected(parseInt(did)); this._clearEx();
+            }
         } catch(e) {}
     }
     _musDisconnected = remainingDisconnected;
+    _musDisconnectDetails = remainingDisconnectDetails;
+};
+
+WasmEngine.prototype._musPumpImmediate = function(reason) {
+    if (this._wasmDead || _isTicking) {
+        return;
+    }
+    try {
+        this.deliverMusEvents();
+    } catch (deliverErr) {
+        console.error(_formatWorkerError('[WORKER] MUS immediate deliver error', deliverErr));
+        return;
+    }
+    try {
+        if (this.exports.processXtraCallbacks) {
+            this.exports.processXtraCallbacks(); this._clearEx();
+        }
+    } catch (callbackErr) {
+        console.error(_formatWorkerError('[WORKER] MUS immediate callback error', callbackErr));
+        return;
+    }
+    try {
+        this.pumpMusRequests();
+    } catch (pumpErr) {
+        console.error(_formatWorkerError('[WORKER] MUS immediate pump error', pumpErr));
+    }
 };
 
 // ============================================================
@@ -1138,22 +1561,32 @@ self.onmessage = async function(e) {
                     _pageProtocol = (self.location.href.indexOf('https:') !== -1) ? 'https:' : '';
                 }
                 // importScripts is synchronous; TeaVM.wasm.load is async
-                importScripts(msg.basePath + 'player-wasm.wasm-runtime.js');
-                var instance = await TeaVM.wasm.load(msg.basePath + 'player-wasm.wasm');
+                importScripts(msg.basePath + 'player-wasm.wasm-runtime.js' + cacheBustSuffix);
+                var instance = await TeaVM.wasm.load(msg.basePath + 'player-wasm.wasm' + cacheBustSuffix);
                 await instance.main([]);
                 _e = new WasmEngine();
                 _e.teavm   = instance;
                 _e.exports = instance.instance.exports;
+                if (_e.exports.setVmHandlerTimeoutMs) {
+                    _e.exports.setVmHandlerTimeoutMs(Math.max(0, Number(msg.vmHandlerTimeoutMs) || 0));
+                }
+                if (_e.exports.setPauseOnScriptErrorEnabled) {
+                    _e.exports.setPauseOnScriptErrorEnabled(msg.pauseOnScriptError ? 1 : 0);
+                }
+                if (_e.exports.setPauseOnAuthoredMajorEnabled) {
+                    _e.exports.setPauseOnAuthoredMajorEnabled(msg.pauseOnAuthoredMajor ? 1 : 0);
+                }
+                _e.setPropListSetAtByKeyCompatibility(!!msg.compatPropListSetAtByKey);
                 self.postMessage({ type: 'ready' });
                 break;
             }
 
             case 'loadMovie': {
-                _tickNum = 0;
                 _networkSeq++;
                 _fetchQueue = [];
                 _fetchInFlight = 0;
                 _fetchInFlightByKey = {};
+                _fetchResponseCache = {};
                 _musCloseAllSockets();
                 _jpegDecodeSeq++;
                 _jpegDecodeQueue = [];
@@ -1167,12 +1600,29 @@ self.onmessage = async function(e) {
 
             case 'setParam':
                 _e.setExternalParam(msg.key, msg.value);
-                _params[msg.key] = msg.value; // Store locally for pre-fetch
+                break;
+
+            case 'setInitialBuiltinVariable':
+                _e.setInitialBuiltinVariable(msg.key, msg.value);
+                break;
+
+            case 'clearInitialBuiltinVariables':
+                _e.clearInitialBuiltinVariables();
+                break;
+
+            case 'seedNetCache':
+                _e.seedNetCache(msg.url, msg.data);
                 break;
 
             case 'setDebugPlayback':
                 _debugLogsEnabled = !!msg.enabled;
-                _e.exports.setDebugPlaybackEnabled(msg.enabled ? 1 : 0);
+                _e.exports.setDebugPlaybackEnabled(msg.lingoEnabled ? 1 : 0);
+                if (_e.exports.setPauseOnScriptErrorEnabled && msg.pauseOnScriptError !== undefined) {
+                    _e.exports.setPauseOnScriptErrorEnabled(msg.pauseOnScriptError ? 1 : 0);
+                }
+                if (_e.exports.setPauseOnAuthoredMajorEnabled && msg.pauseOnAuthoredMajor !== undefined) {
+                    _e.exports.setPauseOnAuthoredMajorEnabled(msg.pauseOnAuthoredMajor ? 1 : 0);
+                }
                 _e._clearEx();
                 break;
 
@@ -1190,17 +1640,34 @@ self.onmessage = async function(e) {
 
             case 'clearParams':
                 _e.clearExternalParams();
-                _params = {};
+                break;
+
+            case 'setFastMovieClock':
+                _e.setFastMovieClockEnabled(!!msg.enabled, msg.multiplier || 1);
+                break;
+
+            case 'setRunMode':
+                _e.setRunMode(msg.value);
+                break;
+
+            case 'setPropListSetAtByKeyCompatibility':
+                _e.setPropListSetAtByKeyCompatibility(!!msg.enabled);
                 break;
 
             case 'preloadCasts': {
                 var castT0 = performance.now();
-                _loadStartTime = castT0;
                 var n = _e.preloadCasts();
                 console.log('[WORKER] preloadCasts: ' + n + ' casts queued');
                 var fired = _e.pumpNetworkFire();
                 console.log('[WORKER] preloadCasts fired ' + fired + ' async fetches in ' +
                             Math.round(performance.now() - castT0) + 'ms');
+                var preloadWaitMs = n > 0 ? Math.min(15000, Math.max(3000, n * 1500)) : 500;
+                var drained = await _drainStartupFetches(preloadWaitMs);
+                console.log('[WORKER] preloadCasts drained delivered=' + drained.delivered +
+                            ' fired=' + drained.fired +
+                            ' inFlight=' + _fetchInFlight +
+                            ' timedOut=' + drained.timedOut +
+                            ' total=' + Math.round(performance.now() - castT0) + 'ms');
 
                 _flushWasmDiagnostics();
                 self.postMessage({ type: 'castsDone' });
@@ -1208,7 +1675,7 @@ self.onmessage = async function(e) {
             }
 
             case 'play':
-                console.log('[WORKER] play() — starting animation');
+                console.log('[WORKER] play() - starting animation');
                 _e.exports.play(); _e._clearEx(); _e.playing = true; _refreshTempoCache();
                 _drainGotoNetPages();
                 break;
@@ -1325,6 +1792,8 @@ self.onmessage = async function(e) {
                         tempo: _e ? _e._lastTempo : 15,
                         lastFrame: _e ? _e._lastFrame : 0,
                         frameCount: _e ? _e._lastFrameCount : 0,
+                        rendered: false,
+                        networkBusy: true,
                         rgba: null, width: 0, height: 0, spriteCount: 0
                     });
                     return;
@@ -1333,38 +1802,45 @@ self.onmessage = async function(e) {
                 try {
                     var stillPlaying = true;
                     var frame = null;
-                    _tickNum++;
 
                     // Phase 1: deliver completed network results from previous ticks.
                     // This runs BEFORE tick() so netDone() returns true for finished fetches.
                     // Cast files are automatically detected and cached in CastLibManager
                     // when delivered, so they're available when Lingo sets castLib.fileName.
-                    var nDelivered = 0;
                     if (!_e._wasmDead) {
                         try {
-                            nDelivered = _e.deliverQueuedResults();
-                            _e.deliverJpegDecodeResults();
+                            _e.deliverQueuedResults({
+                                maxResults: msg.skipRender ? 12 : 8,
+                                budgetMs: msg.skipRender ? 16 : 8
+                            });
+                            _e.deliverJpegDecodeResults(msg.skipRender ? 4 : 2);
                         } catch (deliverErr) {
-                            console.error('[WORKER] deliver error: ' + deliverErr);
+                            console.error(_formatWorkerError('[WORKER] deliver error', deliverErr));
                         }
                     }
 
                     // Phase 1.8: deliver pending Multiuser Xtra events (WebSocket)
                     if (!_e._wasmDead) {
                         try { _e.deliverMusEvents(); }
-                        catch (musErr) { console.error('[WORKER] MUS deliver error: ' + musErr); }
+                        catch (musErr) { console.error(_formatWorkerError('[WORKER] MUS deliver error', musErr)); }
                     }
+                    var autoPausedOnScriptError = _consumeScriptErrorPauseRequest();
 
                     // Phase 2: advance WASM by one Lingo frame
-                    if (_e._wasmDead) {
+                    if (autoPausedOnScriptError) {
+                        stillPlaying = false;
+                    } else if (_e._wasmDead) {
                         console.error('[WORKER] WASM instance is dead, skipping tick');
                         stillPlaying = false;
                     } else {
-                        var tickT0 = performance.now();
                         try {
                             stillPlaying = _e.tick();
+                            if (_consumeScriptErrorPauseRequest()) {
+                                autoPausedOnScriptError = true;
+                                stillPlaying = false;
+                            }
                         } catch (tickErr) {
-                            console.error('[WORKER] tick() error: ' + tickErr);
+                            console.error(_formatWorkerError('[WORKER] tick() error', tickErr));
                             // Check if WASM is still alive
                             try { _e.exports.getStringBufferAddress(); _e._clearEx(); } catch(e) {
                                 console.error('[WORKER] WASM instance dead after tick error');
@@ -1377,16 +1853,19 @@ self.onmessage = async function(e) {
                     // Results are queued asynchronously and delivered at the start of
                     // the next tick. This decouples network I/O from frame execution,
                     // preventing deadlocks when Lingo polls netDone() in update loops.
-                    var nFired = 0;
-                    try {
-                        nFired = _e.pumpNetworkFire();
-                    } catch (netErr) {
-                        console.error('[WORKER] pump error: ' + netErr);
+                    if (!autoPausedOnScriptError) {
+                        try {
+                            _e.pumpNetworkFire();
+                        } catch (netErr) {
+                            console.error(_formatWorkerError('[WORKER] pump error', netErr));
+                        }
                     }
 
                     // Phase 3.5: pump Multiuser Xtra WebSocket requests
-                    try { _e.pumpMusRequests(); }
-                    catch (musErr2) { console.error('[WORKER] MUS pump error: ' + musErr2); }
+                    if (!autoPausedOnScriptError) {
+                        try { _e.pumpMusRequests(); }
+                        catch (musErr2) { console.error(_formatWorkerError('[WORKER] MUS pump error', musErr2)); }
+                    }
 
                     // Phase 3.6: pump audio commands and send to main thread
                     try { _e.pumpAudioCommands(); }
@@ -1396,77 +1875,84 @@ self.onmessage = async function(e) {
                     try { _e.pumpJpegDecodeRequests(); }
                     catch (jpegErr) { console.error('[WORKER] JPEG pump error: ' + jpegErr); }
 
-                    // Always update frame metadata from WASM (needed for fast-loop detection)
+                    // Keep frame metadata current even when this tick skips visible rendering.
                     try {
                         _e._lastFrame      = _e.exports.getCurrentFrame();
                         _e._lastFrameCount = _e.exports.getFrameCount();
                         _e._lastTempo      = _e.exports.getTempo();
                     } catch (ignore) {}
 
-                    // Phase 4: render (skip during fast-loading for performance)
+                    // Phase 4: render only when the main-thread scheduler asks
+                    // for a visible frame. Ticks without rendering still advance
+                    // Lingo, network delivery, audio, and Xtra callbacks.
                     if (!msg.skipRender) {
                         try {
                             frame = _e.renderFrame();
                             _e.pumpJpegDecodeRequests();
                         } catch (renderErr) {
-                            console.error('[WORKER] render() error: ' + renderErr);
+                            console.error(_formatWorkerError('[WORKER] render() error', renderErr));
                         }
                     }
 
-                    // Always read sprite count (needed for fast-loop detection on main thread)
                     var spriteCount = 0;
-                    try { spriteCount = _e.exports.getSpriteCount(); _e._clearEx(); } catch(e4) {}
+                    if (!msg.skipRender) {
+                        try { spriteCount = _e.exports.getSpriteCount(); _e._clearEx(); } catch(e4) {}
+                    }
 
-                    // Read cursor type for current mouse position
                     var cursorType = 0;
-                    try { cursorType = _e.exports.getCursorType(); _e._clearEx(); } catch(e5) {}
+                    if (!msg.skipRender) {
+                        try { cursorType = _e.exports.getCursorType(); _e._clearEx(); } catch(e5) {}
+                    }
 
-                    // Read cursor bitmap data (composited on main thread at 60fps)
                     var cursorBitmap = null;
-                    try {
-                        var hasCursor = _e.exports.updateCursorBitmap(); _e._clearEx();
-                        if (hasCursor) {
-                            var cw = _e.exports.getCursorBitmapWidth();
-                            var ch = _e.exports.getCursorBitmapHeight();
-                            var cLen = _e.exports.getCursorBitmapLength();
-                            var cAddr = _e.exports.getCursorBitmapAddress(); _e._clearEx();
-                            if (cAddr && cLen > 0) {
-                                var cRgba = new Uint8ClampedArray(cLen);
-                                cRgba.set(new Uint8ClampedArray(_e._mem(), cAddr, cLen));
-                                cursorBitmap = {
-                                    rgba: cRgba,
-                                    w: cw,
-                                    h: ch,
-                                    regX: _e.exports.getCursorRegPointX(),
-                                    regY: _e.exports.getCursorRegPointY()
-                                };
+                    if (!msg.skipRender) {
+                        try {
+                            var hasCursor = _e.exports.updateCursorBitmap(); _e._clearEx();
+                            if (hasCursor) {
+                                var cw = _e.exports.getCursorBitmapWidth();
+                                var ch = _e.exports.getCursorBitmapHeight();
+                                var cLen = _e.exports.getCursorBitmapLength();
+                                var cAddr = _e.exports.getCursorBitmapAddress();
+                                if (cAddr && cLen > 0) {
+                                    var cRgba = new Uint8ClampedArray(cLen);
+                                    cRgba.set(new Uint8ClampedArray(_e._mem(), cAddr, cLen));
+                                    _e._clearEx();
+                                    cursorBitmap = {
+                                        rgba: cRgba,
+                                        w: cw,
+                                        h: ch,
+                                        regX: _e.exports.getCursorRegPointX(),
+                                        regY: _e.exports.getCursorRegPointY()
+                                    };
+                                }
                             }
-                        }
-                    } catch(e6) {}
+                        } catch(e6) {}
+                    }
 
-                    // Read text caret info for blinking cursor overlay
                     var caretInfo = null;
                     var selectionRects = null;
-                    try {
-                        if (_e.exports.isCaretVisible()) {
-                            caretInfo = { x: _e.exports.getCaretX(), y: _e.exports.getCaretY(),
-                                          h: _e.exports.getCaretHeight() };
-                        }
-                        _e._clearEx();
-                        var selCount = _e.exports.getSelectionRectCount(); _e._clearEx();
-                        if (selCount > 0) {
-                            selectionRects = [];
-                            for (var si = 0; si < selCount; si++) {
-                                selectionRects.push({
-                                    x: _e.exports.getSelectionRectX(si),
-                                    y: _e.exports.getSelectionRectY(si),
-                                    w: _e.exports.getSelectionRectW(si),
-                                    h: _e.exports.getSelectionRectH(si)
-                                });
+                    if (!msg.skipRender) {
+                        try {
+                            if (_e.exports.isCaretVisible()) {
+                                caretInfo = { x: _e.exports.getCaretX(), y: _e.exports.getCaretY(),
+                                              h: _e.exports.getCaretHeight() };
                             }
                             _e._clearEx();
-                        }
-                    } catch(e7) {}
+                            var selCount = _e.exports.getSelectionRectCount(); _e._clearEx();
+                            if (selCount > 0) {
+                                selectionRects = [];
+                                for (var si = 0; si < selCount; si++) {
+                                    selectionRects.push({
+                                        x: _e.exports.getSelectionRectX(si),
+                                        y: _e.exports.getSelectionRectY(si),
+                                        w: _e.exports.getSelectionRectW(si),
+                                        h: _e.exports.getSelectionRectH(si)
+                                    });
+                                }
+                                _e._clearEx();
+                            }
+                        } catch(e7) {}
+                    }
 
                     var debugLog = null;
                     if (_debugLogsEnabled) {
@@ -1481,6 +1967,11 @@ self.onmessage = async function(e) {
 
                     _relayLastError();
                     _drainGotoNetPages();
+
+                    var pendingFetches = 0;
+                    try { pendingFetches = _e.exports.getPendingFetchCount(); _e._clearEx(); } catch(e8) {}
+                    var networkBusy = pendingFetches > 0 || _fetchInFlight > 0 || _fetchQueue.length > 0 ||
+                        _jpegDecodeQueue.length > 0 || Object.keys(_jpegDecodeInFlight).length > 0;
 
                     var sharedFrame = false;
                     var sharedSeq = 0;
@@ -1506,6 +1997,7 @@ self.onmessage = async function(e) {
                         tempo:         _e._lastTempo,
                         lastFrame:     _e._lastFrame,
                         frameCount:    _e._lastFrameCount,
+                        rendered:      !!frame,
                         rgba:          frame && !sharedFrame ? frame.rgba : null,
                         sharedFrame:   sharedFrame,
                         sharedSeq:     sharedSeq,
@@ -1516,6 +2008,7 @@ self.onmessage = async function(e) {
                         cursorBitmap:  cursorBitmap,
                         caretInfo:     caretInfo,
                         selectionRects: selectionRects,
+                        networkBusy:   networkBusy,
                         debugLog:      debugLog
                     }, transferList);
 
