@@ -74,6 +74,7 @@ class HitTesterTest {
 
         assertEquals(43, HitTester.hitTest(renderer, 1, 11, 11, channel -> channel == 43));
         assertEquals(List.of(43, 40), HitTester.hitTestAll(renderer, 1, 11, 11, channel -> channel == 43));
+        assertEquals(List.of(40), HitTester.hitTestAll(renderer, 1, 11, 11, channel -> false));
     }
 
     @Test

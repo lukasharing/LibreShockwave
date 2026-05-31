@@ -6,6 +6,7 @@ import com.libreshockwave.bitmap.Bitmap;
 import com.libreshockwave.chunks.ScriptChunk;
 import com.libreshockwave.chunks.ScriptNamesChunk;
 import com.libreshockwave.player.behavior.BehaviorManager;
+import com.libreshockwave.player.cast.CastLib;
 import com.libreshockwave.player.cast.CastLibManager;
 import com.libreshockwave.player.event.EventDispatcher;
 import com.libreshockwave.player.frame.FrameContext;
@@ -118,6 +119,7 @@ public class Player implements UpdateProvider {
     private final java.util.List<ExternalCastLoadHandler> externalCastLoadHandlers = new java.util.ArrayList<>();
     private final List<Datum> updatingObjects = new ArrayList<>();
     private final Map<String, Datum> initialBuiltinVariables = new LinkedHashMap<>();
+    private boolean eagerExternalCastPreloadEnabled = true;
 
     // External parameters (Shockwave PARAM tags)
     private final Map<String, String> externalParams = new LinkedHashMap<>();
@@ -589,6 +591,14 @@ public class Player implements UpdateProvider {
         return timeoutManager;
     }
 
+    public long getMovieTimeMs() {
+        return System.currentTimeMillis();
+    }
+
+    public void setEagerExternalCastPreloadEnabled(boolean enabled) {
+        eagerExternalCastPreloadEnabled = enabled;
+    }
+
     /**
      * Register a builtin variable value that should exist before authored movie
      * startup handlers run. This is launcher/bootstrap configuration, not movie
@@ -622,12 +632,23 @@ public class Player implements UpdateProvider {
      * @return The number of casts that were queued for loading
      */
     public int preloadAllCasts() {
+        return preloadExternalCasts(castLib -> true);
+    }
+
+    public int preloadExternalCastsByMode(int mode) {
+        return preloadExternalCasts(castLib -> castLib.getPreloadMode() == mode);
+    }
+
+    private int preloadExternalCasts(java.util.function.Predicate<CastLib> predicate) {
         NetBuiltins.NetProvider provider = overrideNetProvider != null ? overrideNetProvider : netManager;
         if (provider == null) return 0;
         int count = 0;
         for (var entry : castLibManager.getCastLibs().entrySet()) {
             var castLib = entry.getValue();
-            if (castLib.isExternal() && !castLib.isLoaded() && !castLib.isFetching()) {
+            if (castLib.isExternal()
+                    && !castLib.isLoaded()
+                    && !castLib.isFetching()
+                    && predicate.test(castLib)) {
                 String rawPath = castLib.getFileName();
                 if (rawPath != null && !rawPath.isEmpty()) {
                     // Normalize Mac colon-separated paths (e.g. "Sulake:...:mobiles.cct") to just filename
@@ -1205,8 +1226,13 @@ public class Player implements UpdateProvider {
         try {
             applyInitialBuiltinVariables();
 
-            // 0. Initiate fetch of all external casts (async network requests)
-            preloadAllCasts();
+            // 0. Initiate fetch of all external casts when running in eager
+            // desktop/debug mode. WASM can disable this and preload only the
+            // authored before-frame-one casts to avoid retaining the whole
+            // hotel catalog in memory during bootstrap.
+            if (eagerExternalCastPreloadEnabled) {
+                preloadAllCasts();
+            }
 
             // 1. Preload casts with preloadMode=2 (BeforeFrameOne / MovieLoaded)
             // dirplayer-rs: Mode 2 = BeforeFrameOne, Mode 1 = AfterFrameOne

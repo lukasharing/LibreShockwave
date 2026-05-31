@@ -5,6 +5,7 @@ import com.libreshockwave.chunks.ScriptChunk;
 import com.libreshockwave.chunks.ScriptContextChunk;
 import com.libreshockwave.id.ChunkId;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -35,18 +36,48 @@ public final class ScriptLookup {
      * @return The script chunk, or null if not found
      */
     public ScriptChunk getByContextId(int scriptId) {
-        ensureIndex();
-        ScriptChunk cached = scriptByContextId.get(scriptId);
-        if (cached != null) return cached;
+        List<ScriptChunk> matches = getAllByContextId(scriptId);
+        if (!matches.isEmpty()) {
+            return matches.get(0);
+        }
+
+        return null;
+    }
+
+    /**
+     * Get all scripts matching a context ID across all Lctx chunks.
+     * Older Afterburner movies can carry multiple script contexts whose local
+     * indices overlap, so a cast member's scriptId is not globally unique.
+     */
+    public List<ScriptChunk> getAllByContextId(int scriptId) {
+        List<ScriptChunk> matches = new ArrayList<>();
+        // scriptId from cast members is 1-based, Lctx entries are 0-based
+        int index = scriptId - 1;
+
+        // Search through all script contexts (there can be one per cast library)
+        for (ScriptContextChunk ctx : scriptContexts) {
+            if (index >= 0 && index < ctx.entries().size()) {
+                var entry = ctx.entries().get(index);
+                if (entry.id().value() > 0) {
+                    for (ScriptChunk script : scripts) {
+                        if (script.id().equals(entry.id())) {
+                            matches.add(script);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
 
         // Fallback: try direct match by ID (scriptId is 1-based context index)
         for (ScriptChunk script : scripts) {
             if (script.id().value() == scriptId) {
-                return script;
+                matches.add(script);
+                break;
             }
         }
 
-        return null;
+        return matches;
     }
 
     /**

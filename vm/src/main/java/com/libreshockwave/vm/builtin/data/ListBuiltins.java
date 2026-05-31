@@ -59,7 +59,7 @@ public final class ListBuiltins {
      */
     private static Datum duplicate(LingoVM vm, List<Datum> args) {
         if (args.isEmpty()) return Datum.VOID;
-        return args.get(0).deepCopy();
+        return Datum.valueOrVoid(args.get(0)).deepCopy();
     }
 
     /**
@@ -74,7 +74,7 @@ public final class ListBuiltins {
         if (container instanceof Datum.List l) {
             int index = keyOrIndex.toInt() - 1;
             if (index >= 0 && index < l.items().size()) {
-                return l.items().get(index);
+                return Datum.valueOrVoid(l.items().get(index));
             }
             return Datum.VOID;
         }
@@ -139,7 +139,7 @@ public final class ListBuiltins {
         if (args.size() < 3) return Datum.VOID;
         Datum container = args.get(0);
         Datum keyOrIndex = args.get(1);
-        Datum value = args.get(2);
+        Datum value = Datum.valueOrVoid(args.get(2));
         if (container instanceof Datum.List l) {
             int index = keyOrIndex.toInt() - 1;
             if (index >= 0) {
@@ -192,7 +192,7 @@ public final class ListBuiltins {
         if (args.size() < 2) return Datum.VOID;
         Datum datum = args.get(0);
         if (datum instanceof Datum.List list) {
-            list.items().add(args.get(1));
+            list.items().add(Datum.valueOrVoid(args.get(1)));
         }
         return Datum.VOID;
     }
@@ -207,7 +207,7 @@ public final class ListBuiltins {
             return Datum.VOID;
         }
         int position = args.get(1).toInt() - 1;
-        Datum value = args.get(2);
+        Datum value = Datum.valueOrVoid(args.get(2));
         if (position < 0) position = 0;
         if (position > list.items().size()) position = list.items().size();
         list.items().add(position, value);
@@ -317,11 +317,11 @@ public final class ListBuiltins {
     private static Datum getOne(LingoVM vm, List<Datum> args) {
         if (args.size() < 2) return Datum.ZERO;
         Datum container = args.get(0);
-        Datum target = args.get(1);
+        Datum target = Datum.valueOrVoid(args.get(1));
 
         if (container instanceof Datum.List l) {
             for (int i = 0; i < l.items().size(); i++) {
-                if (l.items().get(i).lingoEquals(target)) {
+                if (Datum.valueOrVoid(l.items().get(i)).lingoEquals(target)) {
                     return Datum.of(i + 1);
                 }
             }
@@ -335,11 +335,11 @@ public final class ListBuiltins {
     private static Datum deleteOne(LingoVM vm, List<Datum> args) {
         if (args.size() < 2) return Datum.VOID;
         Datum container = args.get(0);
-        Datum target = args.get(1);
+        Datum target = Datum.valueOrVoid(args.get(1));
 
         if (container instanceof Datum.List l) {
             for (int i = 0; i < l.items().size(); i++) {
-                if (l.items().get(i).lingoEquals(target)) {
+                if (Datum.valueOrVoid(l.items().get(i)).lingoEquals(target)) {
                     l.items().remove(i);
                     break;
                 }
@@ -356,11 +356,11 @@ public final class ListBuiltins {
         Datum container = args.get(0);
         if (container instanceof Datum.List l) {
             l.items().sort((a, b) -> {
-                if (a instanceof Datum.Int ai && b instanceof Datum.Int bi) {
-                    return Integer.compare(ai.value(), bi.value());
-                }
-                return a.toStr().compareToIgnoreCase(b.toStr());
-            });
+                    if (a instanceof Datum.Int ai && b instanceof Datum.Int bi) {
+                        return Integer.compare(ai.value(), bi.value());
+                    }
+                    return Datum.valueOrVoid(a).toStr().compareToIgnoreCase(Datum.valueOrVoid(b).toStr());
+                });
         }
         return Datum.VOID;
     }
@@ -390,7 +390,7 @@ public final class ListBuiltins {
         Datum container = args.get(0);
         if (container instanceof Datum.List l) {
             if (l.items().isEmpty()) return Datum.VOID;
-            return l.items().get(l.items().size() - 1);
+            return Datum.valueOrVoid(l.items().get(l.items().size() - 1));
         }
         if (container instanceof Datum.PropList pl) {
             if (pl.isEmpty()) return Datum.VOID;

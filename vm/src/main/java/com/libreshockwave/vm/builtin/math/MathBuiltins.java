@@ -70,7 +70,7 @@ public final class MathBuiltins {
      */
     private static Datum integer(LingoVM vm, List<Datum> args) {
         if (args.isEmpty()) return Datum.ZERO;
-        Datum arg = args.get(0);
+        Datum arg = Datum.valueOrVoid(args.get(0));
 
         if (arg instanceof Datum.Str str) {
             String trimmed = str.value().trim();

@@ -37,6 +37,7 @@ public class WasmPlayer {
 
         netProvider = new QueuedNetProvider(basePath);
         player = new Player(file, netProvider, castDataRequestCallback);
+        player.setEagerExternalCastPreloadEnabled(false);
         player.getMovieProperties().setGotoNetPageHandler(WasmEntry::enqueueGotoNetPage);
         player.getMovieProperties().setGotoNetMovieHandler(WasmEntry::enqueueGotoNetMovie);
         player.setErrorListener(WasmEntry::reportScriptError);
@@ -135,7 +136,7 @@ public class WasmPlayer {
      */
     public int preloadCasts() {
         if (player == null) return 0;
-        return player.preloadAllCasts();
+        return player.preloadExternalCastsByMode(2);
     }
 
     public void play() {

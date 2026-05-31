@@ -259,7 +259,7 @@ public final class ScriptInstanceMethodDispatcher {
             // List: use index (1-based)
             int index = subKey.toInt() - 1;
             if (index >= 0 && index < list.items().size()) {
-                return list.items().get(index);
+                return Datum.valueOrVoid(list.items().get(index));
             }
             return Datum.VOID;
         }
@@ -288,7 +288,7 @@ public final class ScriptInstanceMethodDispatcher {
                 while (list.items().size() <= index) {
                     list.items().add(Datum.VOID);
                 }
-                list.items().set(index, value);
+                list.items().set(index, Datum.valueOrVoid(value));
             }
             return;
         }

@@ -118,7 +118,7 @@ public sealed interface Datum {
     /** Linear list [a, b, c] */
     record List(java.util.List<Datum> items) implements Datum {
         public List {
-            items = items instanceof OwnedList ? items : new ArrayList<>(items);
+            items = normalizeDatumItems(items);
         }
         @Override
         public String toString() {
@@ -139,6 +139,65 @@ public sealed interface Datum {
         public OwnedList(int initialCapacity) {
             super(initialCapacity);
         }
+
+        @Override
+        public boolean add(Datum datum) {
+            return super.add(valueOrVoid(datum));
+        }
+
+        @Override
+        public void add(int index, Datum element) {
+            super.add(index, valueOrVoid(element));
+        }
+
+        @Override
+        public Datum set(int index, Datum element) {
+            return super.set(index, valueOrVoid(element));
+        }
+
+        @Override
+        public boolean addAll(java.util.Collection<? extends Datum> c) {
+            if (c == null || c.isEmpty()) {
+                return false;
+            }
+            boolean changed = false;
+            for (Datum datum : c) {
+                changed |= add(datum);
+            }
+            return changed;
+        }
+
+        @Override
+        public boolean addAll(int index, java.util.Collection<? extends Datum> c) {
+            if (c == null || c.isEmpty()) {
+                return false;
+            }
+            int cursor = index;
+            for (Datum datum : c) {
+                add(cursor++, datum);
+            }
+            return true;
+        }
+    }
+
+    static Datum valueOrVoid(Datum value) {
+        return value != null ? value : Datum.VOID;
+    }
+
+    static java.util.List<Datum> normalizeDatumItems(java.util.List<Datum> values) {
+        if (values instanceof OwnedList owned) {
+            for (int i = 0; i < owned.size(); i++) {
+                if (owned.get(i) == null) {
+                    owned.set(i, Datum.VOID);
+                }
+            }
+            return owned;
+        }
+        OwnedList normalized = new OwnedList(values != null ? values.size() : 0);
+        if (values != null) {
+            normalized.addAll(values);
+        }
+        return normalized;
     }
 
     /** Key-value entry in a PropList. */
@@ -818,6 +877,9 @@ public sealed interface Datum {
     /** Argument list for function calls (expects return value).
      *  No defensive copy — popArgs() already creates a fresh ArrayList. */
     record ArgList(java.util.List<Datum> items) implements Datum {
+        public ArgList {
+            items = normalizeDatumItems(items);
+        }
         public int count() { return items.size(); }
         @Override
         public String toString() { return "<arglist:" + items.size() + ">"; }
@@ -826,6 +888,9 @@ public sealed interface Datum {
     /** Argument list for function calls (no return value expected).
      *  No defensive copy — popArgs() already creates a fresh ArrayList. */
     record ArgListNoRet(java.util.List<Datum> items) implements Datum {
+        public ArgListNoRet {
+            items = normalizeDatumItems(items);
+        }
         public int count() { return items.size(); }
         @Override
         public String toString() { return "<arglist-noret:" + items.size() + ">"; }
@@ -897,7 +962,13 @@ public sealed interface Datum {
     }
 
     static Datum list(Datum... items) {
-        return new List(java.util.List.of(items));
+        OwnedList values = new OwnedList(items != null ? items.length : 0);
+        if (items != null) {
+            for (Datum item : items) {
+                values.add(item);
+            }
+        }
+        return new List(values);
     }
 
     static Datum list(java.util.List<Datum> items) {
@@ -1180,7 +1251,7 @@ public sealed interface Datum {
             case List list -> {
                 java.util.List<Datum> copiedItems = new ArrayList<>(list.items().size());
                 for (Datum item : list.items()) {
-                    copiedItems.add(item.deepCopy());
+                    copiedItems.add(valueOrVoid(item).deepCopy());
                 }
                 yield new List(copiedItems);
             }
@@ -1197,14 +1268,14 @@ public sealed interface Datum {
             case ArgList al -> {
                 java.util.List<Datum> copiedItems = new ArrayList<>(al.items().size());
                 for (Datum item : al.items()) {
-                    copiedItems.add(item.deepCopy());
+                    copiedItems.add(valueOrVoid(item).deepCopy());
                 }
                 yield new ArgList(copiedItems);
             }
             case ArgListNoRet al -> {
                 java.util.List<Datum> copiedItems = new ArrayList<>(al.items().size());
                 for (Datum item : al.items()) {
-                    copiedItems.add(item.deepCopy());
+                    copiedItems.add(valueOrVoid(item).deepCopy());
                 }
                 yield new ArgListNoRet(copiedItems);
             }

@@ -139,6 +139,21 @@ class InkProcessorTest {
     }
 
     @Test
+    void backgroundTransparentKeysOpaqueBorderColorEvenWithNativeAlpha() {
+        Bitmap src = new Bitmap(3, 2, 32, new int[] {
+            0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
+            0x00000000, 0xFF336699, 0x00000000
+        });
+        src.setNativeAlpha(true);
+
+        Bitmap result = InkProcessor.applyInk(src, InkMode.BACKGROUND_TRANSPARENT,
+                0xFFFFFF, true, null);
+
+        assertEquals(0x00000000, result.getPixel(0, 0));
+        assertEquals(0xFF336699, result.getPixel(1, 1));
+    }
+
+    @Test
     void darkenKeepsOpaqueWhitePixelsFor32BitBitmapWithoutNativeAlpha() {
         Bitmap src = new Bitmap(3, 1, 32, new int[] {
             0xFFFFFFFF,
@@ -298,6 +313,31 @@ class InkProcessorTest {
         assertEquals(0x00000000, result.getPixel(0, 0));
         assertEquals(0xFF6794A7, result.getPixel(1, 1));
         assertEquals(0x00000000, result.getPixel(2, 2));
+    }
+
+    @Test
+    void matteUsesDominantIndexedEdgeColorAndPreservesInteriorWhiteContent() {
+        Bitmap src = new Bitmap(4, 4, 8, new int[] {
+            0xFFFFCC00, 0xFFFFCC00, 0xFFFFCC00, 0xFFFFCC00,
+            0xFFFFCC00, 0xFFFFFFFF, 0xFFCCCCCC, 0xFFFFCC00,
+            0xFFFFCC00, 0xFF000000, 0xFFFFFFFF, 0xFFFFCC00,
+            0xFFFFCC00, 0xFFFFCC00, 0xFFFFCC00, 0xFFFFCC00
+        });
+        src.setPaletteIndices(new byte[] {
+            (byte) 200, (byte) 200, (byte) 200, (byte) 200,
+            (byte) 200, 0, 1, (byte) 200,
+            (byte) 200, (byte) 255, 0, (byte) 200,
+            (byte) 200, (byte) 200, (byte) 200, (byte) 200
+        });
+
+        Bitmap result = InkProcessor.applyInk(src, InkMode.MATTE, 0, false, null);
+
+        assertEquals(0x00000000, result.getPixel(0, 0));
+        assertEquals(0xFFFFFFFF, result.getPixel(1, 1));
+        assertEquals(0xFFCCCCCC, result.getPixel(2, 1));
+        assertEquals(0xFF000000, result.getPixel(1, 2));
+        assertEquals(0xFFFFFFFF, result.getPixel(2, 2));
+        assertEquals(0x00000000, result.getPixel(3, 3));
     }
 
     @Test

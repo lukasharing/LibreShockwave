@@ -461,6 +461,7 @@ public class SpriteProperties implements SpritePropertyProvider {
     }
 
     private static void setColorValue(Datum value, java.util.function.IntConsumer setter) {
+        value = Datum.valueOrVoid(value);
         if (!value.isVoid()) {
             if (value instanceof Datum.Color c) {
                 setter.accept((c.r() << 16) | (c.g() << 8) | c.b());

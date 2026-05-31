@@ -45,8 +45,8 @@ public final class Scope {
         this.script = script;
         this.handler = handler;
         this.instructions = handler.instructions();
-        this.originalArguments = arguments;  // trust callers — avoid List.copyOf allocation
-        this.receiver = receiver != null ? receiver : Datum.VOID;
+        this.originalArguments = Datum.normalizeDatumItems(arguments);
+        this.receiver = Datum.valueOrVoid(receiver);
         this.bytecodeIndex = 0;
         this.returnValue = Datum.VOID;
         this.returned = false;
@@ -136,10 +136,11 @@ public final class Scope {
         if (stackTop >= stack.length) {
             stack = Arrays.copyOf(stack, stack.length * 2);
         }
-        stack[stackTop++] = value;
+        stack[stackTop++] = Datum.valueOrVoid(value);
     }
 
     public void replaceTop(Datum value) {
+        value = Datum.valueOrVoid(value);
         if (stackTop <= 0) {
             push(value);
             return;
@@ -148,6 +149,7 @@ public final class Scope {
     }
 
     public void replaceTopTwo(Datum value) {
+        value = Datum.valueOrVoid(value);
         if (stackTop >= 2) {
             stack[stackTop - 2] = value;
             stack[--stackTop] = null;
@@ -170,16 +172,16 @@ public final class Scope {
         if (stackTop <= 0) return Datum.VOID;
         Datum val = stack[--stackTop];
         stack[stackTop] = null; // help GC
-        return val;
+        return Datum.valueOrVoid(val);
     }
 
     public Datum peek() {
-        return stackTop > 0 ? stack[stackTop - 1] : Datum.VOID;
+        return stackTop > 0 ? Datum.valueOrVoid(stack[stackTop - 1]) : Datum.VOID;
     }
 
     public Datum peek(int depth) {
         int idx = stackTop - 1 - depth;
-        return (idx >= 0 && idx < stackTop) ? stack[idx] : Datum.VOID;
+        return (idx >= 0 && idx < stackTop) ? Datum.valueOrVoid(stack[idx]) : Datum.VOID;
     }
 
     public int stackSize() {
@@ -250,12 +252,13 @@ public final class Scope {
         }
         // Otherwise return original argument with offset
         if (actualIndex >= 0 && actualIndex < originalArguments.size()) {
-            return originalArguments.get(actualIndex);
+            return Datum.valueOrVoid(originalArguments.get(actualIndex));
         }
         return Datum.VOID;
     }
 
     public void setParam(int index, Datum value) {
+        value = Datum.valueOrVoid(value);
         if (modifiedParams == null) {
             // Lazy allocation on first SET_PARAM
             int size = Math.max(index + 1, originalArguments.size());
@@ -277,7 +280,7 @@ public final class Scope {
 
     public void setLocal(int index, Datum value) {
         if (index >= 0 && index < locals.length) {
-            locals[index] = value;
+            locals[index] = Datum.valueOrVoid(value);
         }
         // Silently ignore out-of-bounds — matches previous HashMap behavior
     }
@@ -297,7 +300,7 @@ public final class Scope {
     }
 
     public void setReturnValue(Datum value) {
-        this.returnValue = value;
+        this.returnValue = Datum.valueOrVoid(value);
         this.returned = true;
     }
 

@@ -4,6 +4,7 @@ import com.libreshockwave.vm.datum.Datum;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -84,6 +85,39 @@ class DatumTest {
         assertTrue(list.isList());
         assertEquals(3, ((Datum.List) list).items().size());
         assertEquals("[1, 2, 3]", list.toString());
+    }
+
+    @Test
+    void testListValuesNormalizeJavaNullsToVoid() {
+        ArrayList<Datum> raw = new ArrayList<>();
+        raw.add(null);
+        raw.add(Datum.of(7));
+
+        Datum.List list = new Datum.List(raw);
+
+        assertSame(Datum.VOID, list.items().get(0));
+        assertEquals(7, list.items().get(1).toInt());
+
+        list.items().add(null);
+        list.items().set(1, null);
+
+        assertSame(Datum.VOID, list.items().get(1));
+        assertSame(Datum.VOID, list.items().get(2));
+        assertEquals("[<Void>, <Void>, <Void>]", list.toString());
+    }
+
+    @Test
+    void testArgListsNormalizeJavaNullsToVoid() {
+        ArrayList<Datum> raw = new ArrayList<>();
+        raw.add(null);
+
+        Datum.ArgList args = new Datum.ArgList(raw);
+        Datum.ArgListNoRet noRetArgs = new Datum.ArgListNoRet(raw);
+
+        assertSame(Datum.VOID, args.items().get(0));
+        assertSame(Datum.VOID, noRetArgs.items().get(0));
+        assertDoesNotThrow(args::deepCopy);
+        assertDoesNotThrow(noRetArgs::deepCopy);
     }
 
     @Test

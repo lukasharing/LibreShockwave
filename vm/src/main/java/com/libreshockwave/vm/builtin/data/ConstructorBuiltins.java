@@ -196,7 +196,7 @@ public final class ConstructorBuiltins {
         if (args.isEmpty()) {
             return new Datum.PaletteIndexColor(0);
         }
-        return new Datum.PaletteIndexColor(args.get(0).toInt() & 0xFF);
+        return new Datum.PaletteIndexColor(Datum.valueOrVoid(args.get(0)).toInt() & 0xFF);
     }
 
     /**

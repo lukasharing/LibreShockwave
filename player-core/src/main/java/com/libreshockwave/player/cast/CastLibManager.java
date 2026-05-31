@@ -74,8 +74,19 @@ public class CastLibManager implements CastLibProvider {
                 // Cast lib number is 1-based index
                 int castLibNumber = i + 1;
 
-                CastChunk castChunk = findCastChunkForListEntry(casts, assignedCastChunks, listEntry);
                 boolean isExternal = listEntry.path() != null && !listEntry.path().isEmpty();
+
+                // Internal cast entries in older Afterburner movies can have
+                // non-positional CASp chunks. Score lookup already maps those
+                // by MCsL member count; use that mapping for internal cast
+                // libraries so broad member("name") lookup sees the same
+                // namespace as score sprites.
+                CastChunk castChunk = !isExternal ? file.getMappedCastChunk(castLibNumber) : null;
+                if (castChunk != null) {
+                    markAssignedCastChunk(casts, assignedCastChunks, castChunk);
+                } else {
+                    castChunk = findCastChunkForListEntry(casts, assignedCastChunks, listEntry);
+                }
 
                 CastLib castLib = new CastLib(castLibNumber, castChunk, listEntry);
 
@@ -124,6 +135,15 @@ public class CastLibManager implements CastLibProvider {
             }
         }
         return null;
+    }
+
+    private static void markAssignedCastChunk(List<CastChunk> casts, boolean[] assignedCastChunks, CastChunk castChunk) {
+        for (int i = 0; i < casts.size(); i++) {
+            if (casts.get(i) == castChunk) {
+                assignedCastChunks[i] = true;
+                return;
+            }
+        }
     }
 
     /**
@@ -907,6 +927,17 @@ public class CastLibManager implements CastLibProvider {
         return loaded;
     }
 
+    public boolean setExternalCastDataByUrl(String url, byte[] data) {
+        ensureInitialized();
+        cacheExternalData(url, data);
+
+        boolean loadedAny = false;
+        for (CastLib castLib : findCastLibsByUrl(url)) {
+            loadedAny |= setExternalCastData(castLib.getNumber(), data);
+        }
+        return loadedAny;
+    }
+
     private DirectorFile findReusableExternalSource(int targetCastLibNumber, byte[] data) {
         if (data == null || data.length == 0) {
             return null;
@@ -941,6 +972,16 @@ public class CastLibManager implements CastLibProvider {
             if (isRequestedExternalLoad(castLib, url)) {
                 slots.add(castLib.getNumber());
             }
+        }
+        return slots;
+    }
+
+    public java.util.List<Integer> getMatchingCastLibNumbersByUrl(String url) {
+        ensureInitialized();
+
+        java.util.List<Integer> slots = new java.util.ArrayList<>();
+        for (CastLib castLib : findCastLibsByUrl(url)) {
+            slots.add(castLib.getNumber());
         }
         return slots;
     }

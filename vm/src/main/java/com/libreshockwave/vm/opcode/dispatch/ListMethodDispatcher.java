@@ -22,13 +22,13 @@ public final class ListMethodDispatcher {
             if (index < 0 || index >= items.size()) {
                 return Datum.VOID;
             }
-            return items.get(index);
+            return Datum.valueOrVoid(items.get(index));
         }
         if ("setAt".equalsIgnoreCase(methodName)) {
             if (args.size() < 2) return Datum.VOID;
             Datum indexDatum = args.get(0);
             int index = (indexDatum instanceof Datum.Int i ? i.value() : indexDatum.toInt()) - 1;
-            Datum value = args.get(1);
+            Datum value = Datum.valueOrVoid(args.get(1));
             if (index < 0) return Datum.VOID;
             if (index < items.size()) {
                 items.set(index, value);
@@ -43,7 +43,7 @@ public final class ListMethodDispatcher {
         if ("count".equalsIgnoreCase(methodName)) return Datum.of(items.size());
         if ("append".equalsIgnoreCase(methodName) || "add".equalsIgnoreCase(methodName)) {
             if (!args.isEmpty()) {
-                items.add(args.get(0));
+                items.add(Datum.valueOrVoid(args.get(0)));
             }
             return Datum.VOID;
         }
@@ -51,7 +51,7 @@ public final class ListMethodDispatcher {
             if (args.size() < 2) return Datum.VOID;
             Datum indexDatum = args.get(0);
             int index = (indexDatum instanceof Datum.Int i ? i.value() : indexDatum.toInt()) - 1;
-            Datum value = args.get(1);
+            Datum value = Datum.valueOrVoid(args.get(1));
             if (index < 0) index = 0;
             if (index >= items.size()) {
                 items.add(value);
@@ -68,14 +68,14 @@ public final class ListMethodDispatcher {
                 if (index < 0 || index >= items.size()) {
                     yield Datum.VOID;
                 }
-                yield items.get(index);
+                yield Datum.valueOrVoid(items.get(index));
             }
             case "setat" -> {
                 // setAt(list, position, value) - set value at position (1-indexed)
                 // Like dirplayer-rs: pads with VOID if index > current length
                 if (args.size() < 2) yield Datum.VOID;
                 int index = args.get(0).toInt() - 1; // Convert to 0-indexed
-                Datum value = args.get(1);
+                Datum value = Datum.valueOrVoid(args.get(1));
                 if (index < 0) yield Datum.VOID;
                 if (index < items.size()) {
                     items.set(index, value);
@@ -90,14 +90,14 @@ public final class ListMethodDispatcher {
             }
             case "append", "add" -> {
                 if (args.isEmpty()) yield Datum.VOID;
-                items.add(args.get(0));
+                items.add(Datum.valueOrVoid(args.get(0)));
                 yield Datum.VOID;
             }
             case "addat" -> {
                 // addAt(list, position, value) - insert value at position (1-indexed)
                 if (args.size() < 2) yield Datum.VOID;
                 int index = args.get(0).toInt() - 1; // Convert to 0-indexed
-                Datum value = args.get(1);
+                Datum value = Datum.valueOrVoid(args.get(1));
                 if (index < 0) index = 0;
                 if (index >= items.size()) {
                     items.add(value);
@@ -117,9 +117,9 @@ public final class ListMethodDispatcher {
             case "getone", "findpos", "getpos" -> {
                 // Find 1-based index of value, returns 0 if not found
                 if (args.isEmpty()) yield Datum.ZERO;
-                Datum value = args.get(0);
+                Datum value = Datum.valueOrVoid(args.get(0));
                 for (int i = 0; i < items.size(); i++) {
-                    if (items.get(i).lingoEquals(value)) {
+                    if (Datum.valueOrVoid(items.get(i)).lingoEquals(value)) {
                         yield Datum.of(i + 1);
                     }
                 }
@@ -128,15 +128,15 @@ public final class ListMethodDispatcher {
             case "getlast" -> {
                 // getLast(list) - return the last element
                 if (items.isEmpty()) yield Datum.VOID;
-                yield items.get(items.size() - 1);
+                yield Datum.valueOrVoid(items.get(items.size() - 1));
             }
             case "deleteone" -> {
                 // deleteOne(list, value) - remove first matching element
                 if (args.isEmpty()) yield Datum.FALSE;
-                Datum value = args.get(0);
+                Datum value = Datum.valueOrVoid(args.get(0));
                 boolean found = false;
                 for (int i = 0; i < items.size(); i++) {
-                    if (items.get(i).lingoEquals(value)) {
+                    if (Datum.valueOrVoid(items.get(i)).lingoEquals(value)) {
                         items.remove(i);
                         found = true;
                         break;
@@ -150,7 +150,7 @@ public final class ListMethodDispatcher {
                 StringBuilder sb = new StringBuilder();
                 for (int i = 0; i < items.size(); i++) {
                     if (i > 0) sb.append(separator);
-                    sb.append(items.get(i).toStr());
+                    sb.append(Datum.valueOrVoid(items.get(i)).toStr());
                 }
                 yield Datum.of(sb.toString());
             }
@@ -160,7 +160,7 @@ public final class ListMethodDispatcher {
                     if (a instanceof Datum.Int ai && b instanceof Datum.Int bi) {
                         return Integer.compare(ai.value(), bi.value());
                     }
-                    return a.toStr().compareToIgnoreCase(b.toStr());
+                    return Datum.valueOrVoid(a).toStr().compareToIgnoreCase(Datum.valueOrVoid(b).toStr());
                 });
                 yield Datum.VOID;
             }

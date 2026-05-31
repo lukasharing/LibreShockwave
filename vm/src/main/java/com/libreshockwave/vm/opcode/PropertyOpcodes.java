@@ -633,7 +633,7 @@ public final class PropertyOpcodes {
                     // Lingo uses 1-based indexing
                     int zeroIndex = numericIndex - 1;
                     if (zeroIndex >= 0 && zeroIndex < list.items().size()) {
-                        yield list.items().get(zeroIndex);
+                        yield Datum.valueOrVoid(list.items().get(zeroIndex));
                     }
                     yield Datum.VOID;
                 }

@@ -541,6 +541,7 @@ public class CastMember {
     public int getTextFontSize() { return textFontSize; }
     public String getTextFontStyle() { return textFontStyle; }
     public int getTextFixedLineSpace() { return textFixedLineSpace; }
+    public int getTextLineAdvance() { return textFixedLineSpace; }
     public boolean isTextWordWrap() { return textWordWrap; }
 
     /**
@@ -557,6 +558,7 @@ public class CastMember {
     }
 
     public String getTextAlignment() { return textAlignment; }
+    public String getTextAlignmentForWidth(int fieldWidth) { return textAlignment; }
     public int getTextBgColor() { return textBgColor; }
 
     public boolean isLoaded() {

@@ -3,6 +3,7 @@ package com.libreshockwave.vm;
 import com.libreshockwave.vm.datum.Datum;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -51,6 +52,21 @@ class MathBuiltinsReferenceCoercionTest {
         assertEquals(0xFFFFFF, white.toInt());
         assertTrue(accent.isInt());
         assertEquals(0x00CC66, accent.toInt());
+    }
+
+    @Test
+    void integerAndPaletteIndexCoerceJavaNullArgumentsLikeVoid() {
+        LingoVM vm = new LingoVM(null);
+        ArrayList<Datum> args = new ArrayList<>();
+        args.add(null);
+
+        Datum integer = vm.callHandler("integer", args);
+        Datum paletteIndex = vm.callHandler("paletteIndex", args);
+
+        assertTrue(integer.isInt());
+        assertEquals(0, integer.toInt());
+        assertTrue(paletteIndex instanceof Datum.PaletteIndexColor);
+        assertEquals(0, ((Datum.PaletteIndexColor) paletteIndex).index());
     }
 
     @Test

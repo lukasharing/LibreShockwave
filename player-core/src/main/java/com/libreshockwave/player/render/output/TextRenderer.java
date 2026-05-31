@@ -51,6 +51,11 @@ public interface TextRenderer {
     int getLineHeight(String fontName, int fontSize, String fontStyle,
                       int fixedLineSpace);
 
+    default int[] getCaretBounds(String fontName, int fontSize, String fontStyle,
+                                 int fixedLineSpace) {
+        return new int[] {0, getLineHeight(fontName, fontSize, fontStyle, fixedLineSpace)};
+    }
+
     /**
      * Render XMED styled text to a bitmap image.
      * Dedicated path for Director 7+ Text Asset Xtra members, separate from STXT.

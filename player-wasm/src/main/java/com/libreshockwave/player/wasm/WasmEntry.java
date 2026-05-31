@@ -44,6 +44,7 @@ public class WasmEntry {
     private static byte[] netBuffer;
     private static final Queue<String[]> pendingGotoNetPages = new ArrayDeque<>();
     private static final Queue<String> pendingGotoNetMovies = new ArrayDeque<>();
+    private static final Map<String, Datum> pendingInitialBuiltinVariables = new LinkedHashMap<>();
     private static int nextGotoNetMovieRequestId = 1;
 
     private static final Set<String> failedCasts = new HashSet<>();
@@ -120,10 +121,35 @@ public class WasmEntry {
 
     @Export(name = "setInitialBuiltinSymbol")
     public static void setInitialBuiltinSymbol(int keyLen, int valueLen) {
-        if (wasmPlayer == null || wasmPlayer.getPlayer() == null || keyLen <= 0 || valueLen <= 0) return;
+        if (keyLen <= 0 || valueLen <= 0) return;
         String key = new String(stringBuffer, 0, keyLen, StandardCharsets.UTF_8);
         String value = new String(stringBuffer, keyLen, valueLen, StandardCharsets.UTF_8);
-        wasmPlayer.getPlayer().setInitialBuiltinVariable(key, Datum.symbol(value));
+        setInitialBuiltinDatum(key, Datum.symbol(value));
+    }
+
+    @Export(name = "setInitialBuiltinVariable")
+    public static void setInitialBuiltinVariable(int keyLen, int valueLen) {
+        if (keyLen <= 0) return;
+        String key = new String(stringBuffer, 0, keyLen, StandardCharsets.UTF_8);
+        String value = new String(stringBuffer, keyLen, Math.max(0, valueLen), StandardCharsets.UTF_8);
+        setInitialBuiltinDatum(key, Datum.of(value));
+    }
+
+    @Export(name = "clearInitialBuiltinVariables")
+    public static void clearInitialBuiltinVariables() {
+        pendingInitialBuiltinVariables.clear();
+        if (wasmPlayer != null && wasmPlayer.getPlayer() != null) {
+            wasmPlayer.getPlayer().setInitialBuiltinVariables(pendingInitialBuiltinVariables);
+        }
+    }
+
+    private static void setInitialBuiltinDatum(String key, Datum value) {
+        if (key == null || key.isEmpty()) return;
+        Datum safeValue = Datum.valueOrVoid(value);
+        pendingInitialBuiltinVariables.put(key, safeValue);
+        if (wasmPlayer != null && wasmPlayer.getPlayer() != null) {
+            wasmPlayer.getPlayer().setInitialBuiltinVariable(key, safeValue);
+        }
     }
 
     @Export(name = "setMovieProperty")
@@ -232,6 +258,9 @@ public class WasmEntry {
                 })) {
             return 0;
         }
+        if (wasmPlayer.getPlayer() != null) {
+            wasmPlayer.getPlayer().setInitialBuiltinVariables(pendingInitialBuiltinVariables);
+        }
 
         // Wire up error handler depth tracing
         if (wasmPlayer.getPlayer() != null) {
@@ -252,6 +281,20 @@ public class WasmEntry {
     public static void setVmStepLimit(int limit) {
         if (wasmPlayer != null && wasmPlayer.getPlayer() != null) {
             wasmPlayer.getPlayer().getVM().setStepLimit(limit);
+        }
+    }
+
+    @Export(name = "setRunMode")
+    public static void setRunMode(int valueLen) {
+        if (wasmPlayer == null || wasmPlayer.getPlayer() == null || valueLen <= 0) return;
+        String value = new String(stringBuffer, 0, valueLen, StandardCharsets.UTF_8);
+        wasmPlayer.getPlayer().getMovieProperties().setRunMode(value);
+    }
+
+    @Export(name = "setPropListSetAtByKeyCompatibility")
+    public static void setPropListSetAtByKeyCompatibility(int enabled) {
+        if (wasmPlayer != null && wasmPlayer.getPlayer() != null) {
+            wasmPlayer.getPlayer().getVM().setPropListSetAtByKeyCompatibilityEnabled(enabled != 0);
         }
     }
 
@@ -477,6 +520,16 @@ public class WasmEntry {
     @Export(name = "getRenderBufferAddress")
     public static int getRenderBufferAddress() {
         return renderBuffer != null ? Address.ofData(renderBuffer).toInt() : 0;
+    }
+
+    @Export(name = "getRenderBufferWidth")
+    public static int getRenderBufferWidth() {
+        return getStageWidth();
+    }
+
+    @Export(name = "getRenderBufferHeight")
+    public static int getRenderBufferHeight() {
+        return getStageHeight();
     }
 
     // === Cursor bitmap exports (composited on main thread at 60fps) ===

@@ -135,10 +135,19 @@ public class CastLib {
             return;
         }
 
-        if (isExternal()) {
-            // External cast slots in the root movie may still carry placeholder
-            // castChunk metadata. Once external bytes are hydrated, the real
-            // members must come from the loaded CCT/CST itself.
+        if (sourceFile != null && isExternal()) {
+            // Once an external cast has been fetched, its own cast table is
+            // authoritative. The parent movie may only carry a placeholder
+            // mapping whose chunk IDs do not exist in the external file.
+            if (!sourceFile.getCasts().isEmpty()) {
+                loadFromExternalFile();
+            }
+            scanXmedFonts();
+            state = State.LOADED;
+            return;
+        }
+
+        if (castChunk == null && sourceFile != null) {
             if (!sourceFile.getCasts().isEmpty()) {
                 loadFromExternalFile();
             }
