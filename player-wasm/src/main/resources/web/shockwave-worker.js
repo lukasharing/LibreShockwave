@@ -859,7 +859,8 @@ WasmEngine.prototype.deliverQueuedResults = function(options) {
         var index = 0;
         for (var i = 0; i < _fetchQueue.length; i++) {
             var queued = _fetchQueue[i];
-            if (queued.data !== undefined && queued.url && _isCastFileUrl(queued.url)) {
+            var isCastPayload = queued.data !== undefined && queued.url && _isCastFileUrl(queued.url);
+            if (!isCastPayload) {
                 index = i;
                 break;
             }
