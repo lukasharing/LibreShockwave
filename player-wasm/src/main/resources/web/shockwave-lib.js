@@ -265,9 +265,13 @@ var LibreShockwave = (function() {
             var r = canvas.getBoundingClientRect();
             var scaleX = r.width > 0 ? (canvas.width / r.width) : 1;
             var scaleY = r.height > 0 ? (canvas.height / r.height) : 1;
+            var x = Math.floor((clientX - r.left) * scaleX);
+            var y = Math.floor((clientY - r.top) * scaleY);
+            x = Math.max(0, Math.min(canvas.width - 1, x));
+            y = Math.max(0, Math.min(canvas.height - 1, y));
             return {
-                x: Math.round((clientX - r.left) * scaleX),
-                y: Math.round((clientY - r.top) * scaleY)
+                x: x,
+                y: y
             };
         }
 
@@ -1105,6 +1109,26 @@ var LibreShockwave = (function() {
             pauseOnAuthoredMajor: this._pauseOnAuthoredMajor
         });
 
+        if (this._opts.initialBuiltinSymbols) {
+            for (var symKey in this._opts.initialBuiltinSymbols) {
+                this._worker.postMessage({
+                    type: 'setInitialBuiltinSymbol',
+                    key: symKey,
+                    value: this._opts.initialBuiltinSymbols[symKey]
+                });
+            }
+        }
+
+        if (this._opts.initialMovieProperties) {
+            for (var propKey in this._opts.initialMovieProperties) {
+                this._worker.postMessage({
+                    type: 'setMovieProperty',
+                    key: propKey,
+                    value: this._opts.initialMovieProperties[propKey]
+                });
+            }
+        }
+
         // Restore trace handlers after movie load
         if (this._traceHandlers && this._traceHandlers.length > 0) {
             for (var i = 0; i < this._traceHandlers.length; i++) {
@@ -1384,6 +1408,36 @@ var LibreShockwave = (function() {
             };
             self._worker.addEventListener('message', handler);
             self._worker.postMessage({ type: 'getWindowSpriteDiagnostics' });
+        });
+    };
+
+    ShockwavePlayer.prototype.getVisibleTextDiagnostics = function() {
+        if (!this._worker || !this._workerReady) return Promise.resolve('');
+        var self = this;
+        return new Promise(function(resolve) {
+            var handler = function(e) {
+                if (e.data && e.data.type === 'visibleTextDiagnostics') {
+                    self._worker.removeEventListener('message', handler);
+                    resolve(e.data.diagnostics || '');
+                }
+            };
+            self._worker.addEventListener('message', handler);
+            self._worker.postMessage({ type: 'getVisibleTextDiagnostics' });
+        });
+    };
+
+    ShockwavePlayer.prototype.getBootstrapDiagnostics = function() {
+        if (!this._worker || !this._workerReady) return Promise.resolve('');
+        var self = this;
+        return new Promise(function(resolve) {
+            var handler = function(e) {
+                if (e.data && e.data.type === 'bootstrapDiagnostics') {
+                    self._worker.removeEventListener('message', handler);
+                    resolve(e.data.diagnostics || '');
+                }
+            };
+            self._worker.addEventListener('message', handler);
+            self._worker.postMessage({ type: 'getBootstrapDiagnostics' });
         });
     };
 

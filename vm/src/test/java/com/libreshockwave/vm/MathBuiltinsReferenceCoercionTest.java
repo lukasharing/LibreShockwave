@@ -82,4 +82,28 @@ class MathBuiltinsReferenceCoercionTest {
         assertTrue(max.isInt());
         assertEquals(3, max.toInt());
     }
+
+    @Test
+    void randomBuiltinUsesVmRandomSeed() {
+        LingoVM first = new LingoVM(null);
+        LingoVM second = new LingoVM(null);
+        first.setRandomSeed(1234);
+        second.setRandomSeed(1234);
+
+        for (int i = 0; i < 8; i++) {
+            assertEquals(first.callHandler("random", List.of(Datum.of(150))).toInt(),
+                    second.callHandler("random", List.of(Datum.of(150))).toInt());
+        }
+        assertEquals(1234, first.getRandomSeed());
+    }
+
+    @Test
+    void randomSeedUsesJavaCompatibleSequence() {
+        LingoVM vm = new LingoVM(null);
+        vm.setRandomSeed(4096);
+
+        assertEquals(1, vm.callHandler("random", List.of(Datum.of(4))).toInt());
+        assertEquals(2, vm.callHandler("random", List.of(Datum.of(2))).toInt());
+        assertEquals(40, vm.callHandler("random", List.of(Datum.of(150))).toInt());
+    }
 }

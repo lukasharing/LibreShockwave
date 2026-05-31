@@ -51,7 +51,8 @@ public class XmedTextParser {
 
         String text = extractText(xmedData, ascii);
         String fontName = extractFont(xmedData, ascii);
-        int[] fontSizeAndStyle = extractFontSizeAndStyle(xmedData, ascii);
+        int[] fontSizeAndStyle = extractFontSizeAndStyle(xmedData, ascii,
+                text != null ? text.length() : 0);
         int[] color = extractColor(xmedData, ascii);
         String alignment = extractAlignment(xmedData, ascii);
 
@@ -70,10 +71,6 @@ public class XmedTextParser {
             height = readU32BE(specificData, 48);
             width = readU32BE(specificData, 52);
         }
-        if (specificData != null && specificData.length >= 36) {
-            int boldFlag = readU32BE(specificData, 32);
-            memberBold = boldFlag != 0;
-        }
         if (specificData != null && specificData.length >= 40) {
             int aaDisabled = readU32BE(specificData, 12);
             if (aaDisabled == 0) {
@@ -87,22 +84,15 @@ public class XmedTextParser {
             }
         }
 
-        if (text.contains("WELCOME")) {
-            var t2 = 2;
-        }
-
-        // Build a single styled span covering the full text (per-run parsing TBD)
         boolean spanBold = memberBold || (fontStyle & 1) != 0;
         boolean spanItalic = (fontStyle & 2) != 0;
-        boolean spanUnderline = (fontStyle & 4) != 0;
         int textLen = text != null ? text.length() : 0;
-        StyledSpan span = new StyledSpan(0, textLen, fontName, fontSize,
-                spanBold, spanItalic, spanUnderline,
-                color[0], color[1], color[2]);
+        List<StyledSpan> spans = extractStyleSpans(xmedData, ascii, textLen,
+                fontName, fontSize, spanBold, spanItalic, color);
 
         return new XmedStyledText(
                 text,
-                List.of(span),
+                spans,
                 alignment,
                 true,           // wordWrap — XMED text members default to wrapping
                 0,              // fixedLineSpace
@@ -112,6 +102,93 @@ public class XmedTextParser {
                 memberBold,
                 color[0], color[1], color[2]
         );
+    }
+
+    private static List<StyledSpan> extractStyleSpans(byte[] data, String ascii, int textLen,
+                                                      String fontName, int fontSize,
+                                                      boolean bold, boolean italic,
+                                                      int[] color) {
+        List<StyleRun> runs = extractStyleRuns(data, ascii, textLen);
+        if (runs.isEmpty()) {
+            return List.of(new StyledSpan(0, textLen, fontName, fontSize,
+                    bold, italic, false,
+                    color[0], color[1], color[2]));
+        }
+
+        java.util.ArrayList<StyledSpan> spans = new java.util.ArrayList<>();
+        for (int i = 0; i < runs.size(); i++) {
+            StyleRun run = runs.get(i);
+            int start = Math.max(0, Math.min(textLen, run.offset()));
+            int end = i + 1 < runs.size() ? runs.get(i + 1).offset() : textLen;
+            end = Math.max(start, Math.min(textLen, end));
+            if (start == end) {
+                continue;
+            }
+            spans.add(new StyledSpan(start, end, fontName, fontSize,
+                    bold, italic, (run.style() & 1) != 0,
+                    color[0], color[1], color[2]));
+        }
+
+        return spans.isEmpty()
+                ? List.of(new StyledSpan(0, textLen, fontName, fontSize,
+                        bold, italic, false,
+                        color[0], color[1], color[2]))
+                : List.copyOf(spans);
+    }
+
+    private record StyleRun(int offset, int style) {}
+
+    /**
+     * Section 0004 stores character style runs as offset/style pairs encoded
+     * with Director's compact textual control-byte format:
+     *   [02]<hex offset>[01]<hex style>
+     */
+    private static List<StyleRun> extractStyleRuns(byte[] data, String ascii, int textLen) {
+        int idx = findSection(data, "0004");
+        if (idx < 0) {
+            return List.of();
+        }
+        int secStart = idx + 20;
+        int secLen = parseSectionLength(ascii, idx);
+        int secEnd = secLen > 0 ? Math.min(secStart + secLen, data.length) : data.length;
+
+        java.util.ArrayList<StyleRun> runs = new java.util.ArrayList<>();
+        int i = secStart;
+        while (i < secEnd) {
+            if (data[i] != 0x02) {
+                i++;
+                continue;
+            }
+            int offsetStart = ++i;
+            while (i < secEnd && isHexDigit(data[i] & 0xFF)) {
+                i++;
+            }
+            int offsetEnd = i;
+            if (offsetStart == i || i >= secEnd || data[i] != 0x01) {
+                continue;
+            }
+            int styleStart = ++i;
+            while (i < secEnd && isHexDigit(data[i] & 0xFF)) {
+                i++;
+            }
+            if (styleStart == i) {
+                continue;
+            }
+            try {
+                int offset = Integer.parseInt(new String(data, offsetStart, offsetEnd - offsetStart,
+                        java.nio.charset.StandardCharsets.ISO_8859_1), 16);
+                int style = Integer.parseInt(new String(data, styleStart, i - styleStart,
+                        java.nio.charset.StandardCharsets.ISO_8859_1), 16);
+                if (offset >= 0 && offset <= textLen + 2) {
+                    runs.add(new StyleRun(Math.min(offset, textLen), style));
+                }
+            } catch (NumberFormatException e) {
+                // Ignore malformed style entries.
+            }
+        }
+
+        runs.sort(java.util.Comparator.comparingInt(StyleRun::offset));
+        return runs;
     }
 
     /**
@@ -127,7 +204,8 @@ public class XmedTextParser {
 
         String text = extractText(data, ascii);
         String fontName = extractFont(data, ascii);
-        int[] fontSizeAndStyle = extractFontSizeAndStyle(data, ascii);
+        int[] fontSizeAndStyle = extractFontSizeAndStyle(data, ascii,
+                text != null ? text.length() : 0);
         int[] color = extractColor(data, ascii);
         String alignment = extractAlignment(data, ascii);
 
@@ -343,26 +421,21 @@ public class XmedTextParser {
      *
      * @return int[]{fontSize, fontStyle}
      */
-    private static int[] extractFontSizeAndStyle(byte[] data, String ascii) {
+    private static int[] extractFontSizeAndStyle(byte[] data, String ascii, int textLen) {
         // Find section 0006 — search after [03] delimiter
-        int idx0006 = -1;
-        for (int i = 0; i < data.length - 24; i++) {
-            if (data[i] == 0x03 && i + 4 < data.length
-                    && data[i+1] == '0' && data[i+2] == '0' && data[i+3] == '0' && data[i+4] == '6') {
-                idx0006 = i + 1;
-                break;
-            }
-        }
+        int idx0006 = findSection(data, "0006");
         if (idx0006 < 0) return new int[]{9, 0};
 
         // Parse section header: tag(4) + length(8) + count(8)
         int secStart = idx0006 + 20;
-        int secLen = 0;
-        try {
-            String lenHex = ascii.substring(idx0006 + 4, Math.min(idx0006 + 12, ascii.length()));
-            secLen = Integer.parseInt(lenHex, 16);
-        } catch (Exception e) { /* ignore */ }
+        int secLen = parseSectionLength(ascii, idx0006);
         int secEnd = secLen > 0 ? Math.min(secStart + secLen, data.length) : data.length;
+
+        java.util.List<Integer> styleRecordSizes = extractStyleRecordFontSizes(data, secStart, secEnd);
+        int referencedSize = chooseReferencedStyleFontSize(data, ascii, textLen, styleRecordSizes);
+        if (referencedSize > 0) {
+            return new int[]{referencedSize, 0};
+        }
 
         // Extract font sizes from [02]<hexSize>"0000"[02] pattern within section 0006
         // Each run has a font size encoded as fixed-point: "C0000" = 12.0pt, "90000" = 9.0pt
@@ -394,11 +467,17 @@ public class XmedTextParser {
             }
         }
 
-        // Use the most common font size (body text), not the first (which may be heading)
+        // Use the most common font size (body text), not the first (which may be
+        // an inherited/default style record). For close ties, prefer the smaller
+        // repeated size; XMED sections commonly include slightly larger defaults
+        // before the concrete run style used by compact text members.
         int fontSize = 9; // default
         int maxCount = 0;
         for (var entry : sizeCounts.entrySet()) {
-            if (entry.getValue() > maxCount) {
+            if (entry.getValue() > maxCount
+                    || (entry.getValue() == maxCount
+                    && entry.getKey() < fontSize
+                    && fontSize - entry.getKey() <= 2)) {
                 maxCount = entry.getValue();
                 fontSize = entry.getKey();
             }
@@ -408,6 +487,101 @@ public class XmedTextParser {
         }
 
         return new int[]{fontSize, fontStyle};
+    }
+
+    private static java.util.List<Integer> extractStyleRecordFontSizes(byte[] data, int secStart, int secEnd) {
+        java.util.ArrayList<Integer> sizes = new java.util.ArrayList<>();
+        for (int i = secStart; i < secEnd - 6; i++) {
+            if (data[i] != 0x02) {
+                continue;
+            }
+            StringBuilder hexStr = new StringBuilder();
+            int j = i + 1;
+            while (j < secEnd && isHexDigit(data[j] & 0xFF)) {
+                hexStr.append((char) data[j]);
+                j++;
+            }
+            String hex = hexStr.toString();
+            if (hex.length() >= 5 && hex.endsWith("0000") && j < secEnd && data[j] == 0x02) {
+                try {
+                    int size = Integer.parseInt(hex.substring(0, hex.length() - 4), 16);
+                    if (size >= 6 && size <= 200) {
+                        sizes.add(size);
+                    }
+                } catch (NumberFormatException e) {
+                    // Ignore malformed style entries.
+                }
+            }
+        }
+        return sizes;
+    }
+
+    private static int chooseReferencedStyleFontSize(byte[] data, String ascii, int textLen,
+                                                     java.util.List<Integer> styleRecordSizes) {
+        if (styleRecordSizes.isEmpty() || textLen <= 0) {
+            return -1;
+        }
+
+        List<StyleRun> runs = extractStyleRuns(data, ascii, textLen);
+        if (runs.isEmpty()) {
+            return -1;
+        }
+
+        java.util.Map<Integer, Integer> coveredCharsBySize = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < runs.size(); i++) {
+            StyleRun run = runs.get(i);
+            int styleIndex = run.style();
+            if (styleIndex < 0 || styleIndex >= styleRecordSizes.size()) {
+                continue;
+            }
+            int start = Math.max(0, Math.min(textLen, run.offset()));
+            int end = i + 1 < runs.size() ? runs.get(i + 1).offset() : textLen;
+            end = Math.max(start, Math.min(textLen, end));
+            int coverage = end - start;
+            if (coverage <= 0) {
+                continue;
+            }
+            int size = styleRecordSizes.get(styleIndex);
+            coveredCharsBySize.put(size, coveredCharsBySize.getOrDefault(size, 0) + coverage);
+        }
+
+        int bestSize = -1;
+        int bestCoverage = 0;
+        for (var entry : coveredCharsBySize.entrySet()) {
+            if (entry.getValue() > bestCoverage) {
+                bestSize = entry.getKey();
+                bestCoverage = entry.getValue();
+            }
+        }
+        return bestSize;
+    }
+
+    private static int findSection(byte[] data, String tag) {
+        byte[] tagBytes = tag.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+        for (int i = 0; i < data.length - 24; i++) {
+            if (data[i] == 0x03 && i + tagBytes.length < data.length) {
+                boolean match = true;
+                for (int j = 0; j < tagBytes.length; j++) {
+                    if (data[i + 1 + j] != tagBytes[j]) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) {
+                    return i + 1;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private static int parseSectionLength(String ascii, int sectionOffset) {
+        try {
+            String lenHex = ascii.substring(sectionOffset + 4, Math.min(sectionOffset + 12, ascii.length()));
+            return Integer.parseInt(lenHex, 16);
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     /** Read a big-endian unsigned 32-bit integer from a byte array. */
@@ -453,7 +627,7 @@ public class XmedTextParser {
      * The first entry's value determines the primary alignment for the text.
      *
      * XMED alignment values (different from Director's scripting convention):
-     *   0 = left, 1 = right, 2 = center
+     *   0 = left, 1 = center, 2 = right
      */
     private static String extractAlignment(byte[] data, String ascii) {
         // Find section 0005 after a [03] delimiter
@@ -494,8 +668,8 @@ public class XmedTextParser {
 
     private static String alignmentFromValue(int val) {
         return switch (val) {
-            case 1 -> "right";
-            case 2 -> "center";
+            case 1 -> "center";
+            case 2 -> "right";
             default -> "left";
         };
     }

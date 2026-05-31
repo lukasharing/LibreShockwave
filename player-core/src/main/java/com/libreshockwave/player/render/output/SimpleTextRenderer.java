@@ -4,7 +4,6 @@ import com.libreshockwave.bitmap.Bitmap;
 import com.libreshockwave.cast.XmedStyledText;
 import com.libreshockwave.font.BitmapFont;
 import com.libreshockwave.player.cast.FontRegistry;
-import com.libreshockwave.player.cast.VolterFontBundle;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -35,6 +34,27 @@ public class SimpleTextRenderer implements TextRenderer {
                              String alignment, int textColor, int bgColor,
                              boolean wordWrap, boolean antialias,
                              int fixedLineSpace, int topSpacing) {
+        return renderTextInternal(text, width, height, fontName, fontSize, fontStyle,
+                alignment, textColor, bgColor, wordWrap, antialias,
+                fixedLineSpace, topSpacing, false);
+    }
+
+    public Bitmap renderLegacyStxtText(String text, int width, int height,
+                                       String fontName, int fontSize, String fontStyle,
+                                       String alignment, int textColor, int bgColor,
+                                       boolean wordWrap, boolean antialias,
+                                       int fixedLineSpace, int topSpacing) {
+        return renderTextInternal(text, width, height, fontName, fontSize, fontStyle,
+                alignment, textColor, bgColor, wordWrap, antialias,
+                fixedLineSpace, topSpacing, true);
+    }
+
+    private Bitmap renderTextInternal(String text, int width, int height,
+                                      String fontName, int fontSize, String fontStyle,
+                                      String alignment, int textColor, int bgColor,
+                                      boolean wordWrap, boolean antialias,
+                                      int fixedLineSpace, int topSpacing,
+                                      boolean preferRegisteredDirectorFonts) {
         if (text == null) text = "";
         if (width <= 0) width = 200;
         if (height <= 0) height = 1; // auto-size: neededHeight will expand to fit
@@ -59,7 +79,8 @@ public class SimpleTextRenderer implements TextRenderer {
 
         // Check for PFR bitmap font (or Windows TTF, or Mac BDF)
         boolean[] usedRealBold = {false};
-        BitmapFont pfrFont = resolveBitmapFont(fontName, fontSize, wantsBold, wantsItalic, usedRealBold);
+        BitmapFont pfrFont = resolveBitmapFont(fontName, fontSize, wantsBold, wantsItalic,
+                usedRealBold, preferRegisteredDirectorFonts);
         if (pfrFont != null) {
             boolean syntheticBold = wantsBold && !usedRealBold[0];
             Bitmap result = renderWithBitmapFont(pfrFont, text, width, height,
@@ -116,6 +137,7 @@ public class SimpleTextRenderer implements TextRenderer {
             Bitmap result = renderWithBitmapFont(font, text, width, height,
                     alignment, textColor, bgColor, wordWrap,
                     fixedLineSpace, 0, syntheticBold, underline);
+            underlineStyledSpans(result, font, styledText, textColor);
             if (antialias && result != null) {
                 result = applyTextAA(result, bgColor);
             }
@@ -132,6 +154,77 @@ public class SimpleTextRenderer implements TextRenderer {
         return result;
     }
 
+    private static void underlineStyledSpans(Bitmap bitmap, BitmapFont font, XmedStyledText styledText, int textColor) {
+        if (bitmap == null || font == null || styledText == null || styledText.styledSpans().isEmpty()) {
+            return;
+        }
+
+        boolean hasUnderline = false;
+        for (var span : styledText.styledSpans()) {
+            if (span.underline()) {
+                hasUnderline = true;
+                break;
+            }
+        }
+        if (!hasUnderline) {
+            return;
+        }
+
+        int[] pixels = bitmap.getPixels();
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        String text = styledText.text();
+        if (text == null || text.isEmpty()) {
+            return;
+        }
+
+        int lineHeight = styledText.fixedLineSpace() > 0 ? styledText.fixedLineSpace() : font.getLineHeight();
+        int y = 0;
+        int lineStart = 0;
+        while (lineStart <= text.length() && y < height) {
+            int lineEnd = lineStart;
+            while (lineEnd < text.length() && text.charAt(lineEnd) != '\r' && text.charAt(lineEnd) != '\n') {
+                lineEnd++;
+            }
+
+            String line = text.substring(lineStart, lineEnd);
+            int lineWidth = font.getStringWidth(line);
+            int lineX = switch (styledText.alignment()) {
+                case "center" -> (width - lineWidth) / 2;
+                case "right" -> width - lineWidth;
+                default -> 0;
+            };
+            int glyphY = y;
+
+            for (var span : styledText.styledSpans()) {
+                if (!span.underline()) {
+                    continue;
+                }
+                int start = Math.max(lineStart, span.startOffset());
+                int end = Math.min(lineEnd, span.endOffset());
+                if (start >= end) {
+                    continue;
+                }
+                int startX = lineX + font.getStringWidth(text.substring(lineStart, start));
+                int endX = lineX + font.getStringWidth(text.substring(lineStart, end));
+                int inkBottom = findInkBottom(pixels, width, height, startX, endX,
+                        glyphY, Math.min(height - 1, glyphY + font.getLineHeight() - 1));
+                int underlineY = Math.min(height - 1, Math.max(glyphY, inkBottom));
+                drawUnderline(pixels, width, height, underlineY, startX, endX, textColor);
+            }
+
+            if (lineEnd >= text.length()) {
+                break;
+            }
+            if (text.charAt(lineEnd) == '\r' && lineEnd + 1 < text.length() && text.charAt(lineEnd + 1) == '\n') {
+                lineStart = lineEnd + 2;
+            } else {
+                lineStart = lineEnd + 1;
+            }
+            y += lineHeight;
+        }
+    }
+
     /**
      * XMED-specific font resolution chain.
      * Priority: Mac bitmap TTFs (pixel-perfect) → Windows outline TTFs → PFR → first registered.
@@ -142,7 +235,8 @@ public class SimpleTextRenderer implements TextRenderer {
                                                boolean[] usedRealBold) {
         if (fontName == null) return null;
 
-        BitmapFont aliasFont = resolveDirectorFontAlias(fontName, fontSize, bold, italic, usedRealBold, true);
+        BitmapFont aliasFont = resolveDirectorFontAlias(fontName, fontSize, bold, italic,
+                usedRealBold, true, false);
         if (aliasFont != null) {
             return aliasFont;
         }
@@ -290,10 +384,12 @@ public class SimpleTextRenderer implements TextRenderer {
      */
     private static BitmapFont resolveBitmapFont(String fontName, int fontSize,
                                                     boolean bold, boolean italic,
-                                                    boolean[] usedRealBold) {
+                                                    boolean[] usedRealBold,
+                                                    boolean preferRegisteredDirectorFonts) {
         if (fontName == null) return null;
 
-        BitmapFont aliasFont = resolveDirectorFontAlias(fontName, fontSize, bold, italic, usedRealBold, false);
+        BitmapFont aliasFont = resolveDirectorFontAlias(fontName, fontSize, bold, italic,
+                usedRealBold, false, preferRegisteredDirectorFonts);
         if (aliasFont != null) {
             return aliasFont;
         }
@@ -339,15 +435,25 @@ public class SimpleTextRenderer implements TextRenderer {
     private static BitmapFont resolveDirectorFontAlias(String fontName, int fontSize,
                                                        boolean bold, boolean italic,
                                                        boolean[] usedRealBold,
-                                                       boolean preferMacFonts) {
+                                                       boolean preferMacFonts,
+                                                       boolean preferRegisteredDirectorFonts) {
         FontRegistry.FontAlias alias = FontRegistry.getFontAlias(fontName);
         String resolvedName = alias != null ? alias.fontName() : fontName;
         boolean resolvedBold = bold || (alias != null && alias.bold());
+        int aliasSize = directorAliasFontSize(fontSize);
 
-        BitmapFont volter = VolterFontBundle.getFont(resolvedName, fontSize, resolvedBold);
-        if (volter != null) {
-            usedRealBold[0] = resolvedBold;
-            return volter;
+        if (preferRegisteredDirectorFonts) {
+            BitmapFont registered = resolveRegisteredDirectorFont(fontName, resolvedName,
+                    aliasSize, resolvedBold, italic, usedRealBold);
+            if (registered != null) {
+                return registered;
+            }
+        }
+
+        BitmapFont bundled = FontRegistry.getEmbeddedBitmapFont(resolvedName, aliasSize, resolvedBold, italic);
+        if (bundled != null) {
+            usedRealBold[0] = resolvedBold && FontRegistry.hasEmbeddedBoldVariant(resolvedName);
+            return bundled;
         }
 
         if (alias == null) {
@@ -355,8 +461,8 @@ public class SimpleTextRenderer implements TextRenderer {
         }
 
         BitmapFont first = preferMacFonts
-                ? com.libreshockwave.player.cast.MacFontBundle.getFont(resolvedName, fontSize, resolvedBold, italic)
-                : com.libreshockwave.player.cast.WindowsFontBundle.getFont(resolvedName, fontSize, resolvedBold, italic);
+                ? com.libreshockwave.player.cast.MacFontBundle.getFont(resolvedName, aliasSize, resolvedBold, italic)
+                : com.libreshockwave.player.cast.WindowsFontBundle.getFont(resolvedName, aliasSize, resolvedBold, italic);
         if (first != null) {
             usedRealBold[0] = resolvedBold && (preferMacFonts
                     ? com.libreshockwave.player.cast.MacFontBundle.hasBoldVariant(resolvedName)
@@ -365,8 +471,8 @@ public class SimpleTextRenderer implements TextRenderer {
         }
 
         BitmapFont second = preferMacFonts
-                ? com.libreshockwave.player.cast.WindowsFontBundle.getFont(resolvedName, fontSize, resolvedBold, italic)
-                : com.libreshockwave.player.cast.MacFontBundle.getFont(resolvedName, fontSize, resolvedBold, italic);
+                ? com.libreshockwave.player.cast.WindowsFontBundle.getFont(resolvedName, aliasSize, resolvedBold, italic)
+                : com.libreshockwave.player.cast.MacFontBundle.getFont(resolvedName, aliasSize, resolvedBold, italic);
         if (second != null) {
             usedRealBold[0] = resolvedBold && (preferMacFonts
                     ? com.libreshockwave.player.cast.WindowsFontBundle.hasBoldVariant(resolvedName)
@@ -374,18 +480,60 @@ public class SimpleTextRenderer implements TextRenderer {
             return second;
         }
 
-        BitmapFont registered = FontRegistry.getBitmapFont(resolvedName, fontSize);
+        BitmapFont registered = FontRegistry.getBitmapFont(resolvedName, aliasSize);
         if (registered != null) {
             return registered;
         }
 
         String resolved = FontRegistry.resolveFont(resolvedName);
-        return resolved != null ? FontRegistry.getBitmapFont(resolved, fontSize) : null;
+        return resolved != null ? FontRegistry.getBitmapFont(resolved, aliasSize) : null;
+    }
+
+    private static BitmapFont resolveRegisteredDirectorFont(String originalName, String resolvedName,
+                                                            int fontSize, boolean bold, boolean italic,
+                                                            boolean[] usedRealBold) {
+        if (italic) {
+            return null;
+        }
+        if (bold) {
+            BitmapFont boldFont = resolveRegisteredPfrCandidate(originalName + "-Bold", fontSize);
+            if (boldFont == null) {
+                boldFont = resolveRegisteredPfrCandidate(originalName + " Bold", fontSize);
+            }
+            if (boldFont == null && !originalName.equals(resolvedName)) {
+                boldFont = resolveRegisteredPfrCandidate(resolvedName + "-Bold", fontSize);
+                if (boldFont == null) {
+                    boldFont = resolveRegisteredPfrCandidate(resolvedName + " Bold", fontSize);
+                }
+            }
+            if (boldFont != null) {
+                usedRealBold[0] = true;
+                return boldFont;
+            }
+        }
+
+        BitmapFont exact = resolveRegisteredPfrCandidate(originalName, fontSize);
+        if (exact == null && !originalName.equals(resolvedName)) {
+            exact = resolveRegisteredPfrCandidate(resolvedName, fontSize);
+        }
+        return exact;
+    }
+
+    private static BitmapFont resolveRegisteredPfrCandidate(String fontName, int fontSize) {
+        String resolved = FontRegistry.resolveFont(fontName);
+        if (resolved == null || !FontRegistry.hasPfrFont(resolved)) {
+            return null;
+        }
+        return FontRegistry.getBitmapFont(resolved, fontSize);
+    }
+
+    private static int directorAliasFontSize(int fontSize) {
+        return fontSize >= 11 ? fontSize - 1 : fontSize;
     }
 
     /** Backward-compatible overload without bold/italic. */
     private static BitmapFont resolveBitmapFont(String fontName, int fontSize) {
-        return resolveBitmapFont(fontName, fontSize, false, false, new boolean[]{false});
+        return resolveBitmapFont(fontName, fontSize, false, false, new boolean[]{false}, false);
     }
 
     private Bitmap renderWithBitmapFont(BitmapFont font, String text, int width, int height,
@@ -423,7 +571,7 @@ public class SimpleTextRenderer implements TextRenderer {
         // Leading goes above the text within each line.
         int leading = Math.max(0, lineHeight - font.getLineHeight());
         int verticalOverflow = Math.max(0, font.getLineHeight() - lineHeight);
-        int y = topSpacing;
+        int y = topSpacing + (topSpacing > 1 ? 1 : 0);
         for (String line : lines) {
             if (y >= height) break;
             int x = 0;

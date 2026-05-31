@@ -4,6 +4,9 @@ import com.libreshockwave.bitmap.Bitmap;
 import com.libreshockwave.player.cast.FontRegistry;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -71,31 +74,86 @@ class SimpleTextRendererTest {
     @Test
     void onePixelDefaultLeadingDoesNotExpandBitmapFontLineAdvance() {
         FontRegistry.clear();
-        SimpleTextRenderer renderer = new SimpleTextRenderer();
+        try {
+            FontRegistry.registerFontAlias("V", "Volter", false);
+            SimpleTextRenderer renderer = new SimpleTextRenderer();
 
-        Bitmap text = renderer.renderText("Public Spaces\n(0/0)",
-                160, 0,
-                "V", 9, "plain",
-                "left", 0xFF000000, 0x00FFFFFF,
-                false, false, 9, 1);
+            Bitmap text = renderer.renderText("Public Spaces\n(0/0)",
+                    160, 0,
+                    "V", 9, "plain",
+                    "left", 0xFF000000, 0x00FFFFFF,
+                    false, false, 9, 1);
 
-        assertEquals(19, text.getHeight(),
-                "expected one-pixel default leading to affect image height without adding interline spacing");
+            assertEquals(19, text.getHeight(),
+                    "expected one-pixel default leading to affect image height without adding interline spacing");
+        } finally {
+            FontRegistry.clear();
+        }
     }
 
     @Test
     void explicitBitmapFontLineSpacingStillExpandsLineAdvance() {
         FontRegistry.clear();
-        SimpleTextRenderer renderer = new SimpleTextRenderer();
+        try {
+            FontRegistry.registerFontAlias("V", "Volter", false);
+            SimpleTextRenderer renderer = new SimpleTextRenderer();
 
-        Bitmap text = renderer.renderText("Public Spaces\n(0/0)",
-                160, 0,
-                "V", 9, "plain",
-                "left", 0xFF000000, 0x00FFFFFF,
-                false, false, 9, 9);
+            Bitmap text = renderer.renderText("Public Spaces\n(0/0)",
+                    160, 0,
+                    "V", 9, "plain",
+                    "left", 0xFF000000, 0x00FFFFFF,
+                    false, false, 9, 9);
 
-        assertEquals(36, text.getHeight(),
-                "expected explicit extra leading to keep the larger Director line advance");
+            assertEquals(36, text.getHeight(),
+                    "expected explicit extra leading to keep the larger Director line advance");
+        } finally {
+            FontRegistry.clear();
+        }
+    }
+
+    @Test
+    void explicitBitmapFontTopSpacingAddsDirectorLeadingBeforeGlyphInk() {
+        FontRegistry.clear();
+        try {
+            FontRegistry.registerFontAlias("vb", "Volter", true);
+            SimpleTextRenderer renderer = new SimpleTextRenderer();
+
+            Bitmap text = renderer.renderText("Copyright Habbo Ltd 2001",
+                    170, 54,
+                    "vb", 9, "plain",
+                    "left", 0xFFFFFFFF, 0xFF000000,
+                    true, false, 9, 2);
+
+            assertEquals(3, findFirstNonBackgroundRow(text, 0xFF000000),
+                    "expected explicit two-pixel topSpacing to reserve Director leading above glyph ink");
+        } finally {
+            FontRegistry.clear();
+        }
+    }
+
+    @Test
+    void registeredPfrVariantTakesPrecedenceOverBundledDirectorFallback() throws Exception {
+        Path v1BoldVolter = Path.of("/opt/git/v1_assets/habbo_entry/raw_chunks/03731_Volter-Bold_GoldFish__3968_XMED.bin");
+        if (!Files.isRegularFile(v1BoldVolter)) {
+            return;
+        }
+
+        FontRegistry.clear();
+        try {
+            FontRegistry.registerPfr1Font("Volter-Bold (GoldFish)", Files.readAllBytes(v1BoldVolter));
+            SimpleTextRenderer renderer = new SimpleTextRenderer();
+
+            Bitmap text = renderer.renderLegacyStxtText("Copyright Habbo Ltd 2001",
+                    170, 54,
+                    "Volter", 9, "bold",
+                    "left", 0xFFFFFFFF, 0xFF000000,
+                    true, false, 9, 2);
+
+            assertEquals(153, findLastNonBackgroundColumn(text, 0xFF000000),
+                    "expected legacy Volter bold text to use the wider movie-registered PFR metrics");
+        } finally {
+            FontRegistry.clear();
+        }
     }
 
     @Test
@@ -175,7 +233,7 @@ class SimpleTextRendererTest {
     }
 
     @Test
-    void directorFontAliasUsesEmbeddedVolterBoldMetrics() {
+    void directorFontAliasUsesEmbeddedBoldMetrics() {
         FontRegistry.clear();
         try {
             FontRegistry.registerFontAlias("vb", "Volter", true);
@@ -186,24 +244,49 @@ class SimpleTextRendererTest {
                     10, "left", 200);
 
             assertTrue(afterTitle[0] >= 90,
-                    "expected Director alias vb to resolve to the wider Volter bold metrics");
+                    "expected Director alias vb to resolve to the wider embedded bold metrics");
         } finally {
             FontRegistry.clear();
         }
     }
 
     @Test
-    void directorVolterShortAliasFallsBackToBundledBoldMetrics() {
+    void directorFontAliasCanResolveBundledBoldFace() {
         FontRegistry.clear();
-        SimpleTextRenderer renderer = new SimpleTextRenderer();
+        try {
+            FontRegistry.registerFontAlias("VB", "Volter", true);
+            SimpleTextRenderer renderer = new SimpleTextRenderer();
 
-        Bitmap title = renderer.renderText("Hotel Navigator", 200, 15,
-                "VB", 9, "plain",
-                "left", 0xFFEEEEEE, 0xFF6794A7,
-                false, false, 10, 0);
+            Bitmap title = renderer.renderText("Hotel Navigator", 200, 15,
+                    "VB", 9, "plain",
+                    "left", 0xFFEEEEEE, 0xFF6794A7,
+                    false, false, 10, 0);
 
-        assertEquals(284, countPixels(title, 0xFFEEEEEE),
-                "expected unregistered Director font alias VB to use bundled Volter bold");
+            assertEquals(284, countPixels(title, 0xFFEEEEEE),
+                    "expected Director font alias VB to use the bundled bold face");
+        } finally {
+            FontRegistry.clear();
+        }
+    }
+
+    @Test
+    void directorFontAliasUsesDirectorSizedMetricsForWrapping() {
+        FontRegistry.clear();
+        try {
+            FontRegistry.registerFontAlias("Volter (goldfish)", "Volter", false);
+            SimpleTextRenderer renderer = new SimpleTextRenderer();
+
+            Bitmap text = renderer.renderText("Haven't got a Habbo yet?\rYou can create one here.",
+                    175, 24,
+                    "Volter (goldfish)", 12, "plain",
+                    "center", 0xFF000000, 0x00FFFFFF,
+                    true, false, 12, 0);
+
+            assertEquals(24, text.getHeight(),
+                    "expected Director alias size 12 to fit the v1 two-line panel text");
+        } finally {
+            FontRegistry.clear();
+        }
     }
 
     private static int countOpaquePixelsOnRow(Bitmap bitmap, int y) {
@@ -225,6 +308,17 @@ class SimpleTextRendererTest {
         return -1;
     }
 
+    private static int findFirstNonBackgroundRow(Bitmap bitmap, int bgColor) {
+        for (int y = 0; y < bitmap.getHeight(); y++) {
+            for (int x = 0; x < bitmap.getWidth(); x++) {
+                if (bitmap.getPixel(x, y) != bgColor) {
+                    return y;
+                }
+            }
+        }
+        return -1;
+    }
+
     private static int findOpaqueRowBefore(Bitmap bitmap, int beforeY) {
         for (int y = beforeY - 1; y >= 0; y--) {
             if (countOpaquePixelsOnRow(bitmap, y) > 0) {
@@ -236,6 +330,17 @@ class SimpleTextRendererTest {
 
     private static int findFirstNonBackgroundColumn(Bitmap bitmap, int bgColor) {
         for (int x = 0; x < bitmap.getWidth(); x++) {
+            for (int y = 0; y < bitmap.getHeight(); y++) {
+                if (bitmap.getPixel(x, y) != bgColor) {
+                    return x;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private static int findLastNonBackgroundColumn(Bitmap bitmap, int bgColor) {
+        for (int x = bitmap.getWidth() - 1; x >= 0; x--) {
             for (int y = 0; y < bitmap.getHeight(); y++) {
                 if (bitmap.getPixel(x, y) != bgColor) {
                     return x;

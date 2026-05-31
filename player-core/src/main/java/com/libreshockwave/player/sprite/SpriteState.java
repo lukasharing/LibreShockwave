@@ -37,6 +37,11 @@ public class SpriteState {
     private boolean blendExplicitlySet = false;
     private boolean trailsExplicitlySet = false;
     private boolean stretchExplicitlySet = false;
+    private boolean locHExplicitlySet = false;
+    private boolean locVExplicitlySet = false;
+    private boolean locZExplicitlySet = false;
+    private boolean flipHExplicitlySet = false;
+    private boolean flipVExplicitlySet = false;
     private boolean scoreDefaultsApplied = false;
     private boolean flipH = false;
     private boolean flipV = false;
@@ -92,9 +97,9 @@ public class SpriteState {
     public boolean hasForeColor() { return hasForeColor; }
     public boolean hasBackColor() { return hasBackColor; }
 
-    public void setLocH(int locH) { this.locH = locH; }
-    public void setLocV(int locV) { this.locV = locV; }
-    public void setLocZ(int locZ) { this.locZ = locZ; }
+    public void setLocH(int locH) { this.locH = locH; this.locHExplicitlySet = true; }
+    public void setLocV(int locV) { this.locV = locV; this.locVExplicitlySet = true; }
+    public void setLocZ(int locZ) { this.locZ = locZ; this.locZExplicitlySet = true; }
     public void setWidth(int width) { this.width = width; this.hasSizeChanged = true; }
     public void setHeight(int height) { this.height = height; this.hasSizeChanged = true; }
     public void setVisible(boolean visible) { this.visible = visible; }
@@ -106,8 +111,8 @@ public class SpriteState {
     public void setStretch(int stretch) { this.stretch = stretch; this.stretchExplicitlySet = true; }
     public boolean isFlipH() { return flipH; }
     public boolean isFlipV() { return flipV; }
-    public void setFlipH(boolean flipH) { this.flipH = flipH; }
-    public void setFlipV(boolean flipV) { this.flipV = flipV; }
+    public void setFlipH(boolean flipH) { this.flipH = flipH; this.flipHExplicitlySet = true; }
+    public void setFlipV(boolean flipV) { this.flipV = flipV; this.flipVExplicitlySet = true; }
     public double getRotation() { return rotation; }
     public double getSkew() { return skew; }
     public void setRotation(double rotation) { this.rotation = rotation; }
@@ -175,6 +180,8 @@ public class SpriteState {
         this.flipV = false;
         this.rotation = 0.0;
         this.skew = 0.0;
+        this.flipHExplicitlySet = false;
+        this.flipVExplicitlySet = false;
     }
 
     public void resetReleasedChannelGeometry() {
@@ -247,8 +254,8 @@ public class SpriteState {
         if (!inkExplicitlySet) {
             this.inkMode = InkMode.fromCode(data.ink());
         }
-        if (!blendExplicitlySet && this.inkMode == InkMode.BLEND && data.blendByte() > 0) {
-            this.blend = Math.round((255 - data.blendByte()) * 100f / 255f);
+        if (!blendExplicitlySet) {
+            this.blend = scoreBlendPercent(data.blendByte());
         }
         if (!trailsExplicitlySet) {
             this.trails = data.trails();
@@ -270,17 +277,30 @@ public class SpriteState {
     public void syncFromScore(ScoreChunk.ChannelData data) {
         if (data == null) return;
         this.scoreData = data;
-        this.locH = data.posX();
-        this.locV = data.posY();
+        if (!locHExplicitlySet) {
+            this.locH = data.posX();
+        }
+        if (!locVExplicitlySet) {
+            this.locV = data.posY();
+        }
+        if (!locZExplicitlySet) {
+            this.locZ = 0;
+        }
         if (!hasSizeChanged && data.width() > 0 && data.height() > 0) {
             this.width = data.width();
             this.height = data.height();
         }
+        if (!flipHExplicitlySet) {
+            this.flipH = data.isFlipH();
+        }
+        if (!flipVExplicitlySet) {
+            this.flipV = data.isFlipV();
+        }
         if (!inkExplicitlySet) {
             this.inkMode = InkMode.fromCode(data.ink());
         }
-        if (!blendExplicitlySet && InkMode.fromCode(data.ink()) == InkMode.BLEND && data.blendByte() > 0) {
-            this.blend = Math.round((255 - data.blendByte()) * 100f / 255f);
+        if (!blendExplicitlySet) {
+            this.blend = scoreBlendPercent(data.blendByte());
         }
         if (!trailsExplicitlySet) {
             this.trails = data.trails();
@@ -320,10 +340,7 @@ public class SpriteState {
         this.visible = true;
         this.puppet = false;
         this.inkMode = InkMode.fromCode(data.ink());
-        this.blend = 100;
-        if (this.inkMode == InkMode.BLEND && data.blendByte() > 0) {
-            this.blend = Math.round((255 - data.blendByte()) * 100f / 255f);
-        }
+        this.blend = scoreBlendPercent(data.blendByte());
         this.trails = data.trails();
         this.stretch = data.stretch();
         this.foreColor = data.resolvedForeColor();
@@ -335,9 +352,14 @@ public class SpriteState {
         this.blendExplicitlySet = false;
         this.trailsExplicitlySet = false;
         this.stretchExplicitlySet = false;
+        this.locHExplicitlySet = false;
+        this.locVExplicitlySet = false;
+        this.locZExplicitlySet = false;
+        this.flipHExplicitlySet = false;
+        this.flipVExplicitlySet = false;
         this.scoreDefaultsApplied = false;
-        this.flipH = false;
-        this.flipV = false;
+        this.flipH = data.isFlipH();
+        this.flipV = data.isFlipV();
         this.rotation = 0.0;
         this.skew = 0.0;
         this.cursor = 0;
@@ -363,4 +385,14 @@ public class SpriteState {
     }
 
     public ScoreChunk.ChannelData getInitialData() { return scoreData; }
+
+    private static int scoreBlendPercent(int blendByte) {
+        if (blendByte <= 0) {
+            return 100;
+        }
+        if (blendByte >= 255) {
+            return 0;
+        }
+        return Math.round((255 - blendByte) * 100f / 255f);
+    }
 }

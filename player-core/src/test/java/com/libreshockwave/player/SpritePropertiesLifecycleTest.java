@@ -119,7 +119,7 @@ class SpritePropertiesLifecycleTest {
                 1, 0, 0, 0, 0, 0,
                 4, 88,
                 0, 0, 10, 20, 30, 40,
-                0, 0, 0, 0, 0, 0
+                0, 0, 0, 0, 0, 0, 0
         ));
 
         assertTrue(props.setSpriteProp(31, "member", Datum.ZERO));
@@ -128,6 +128,68 @@ class SpritePropertiesLifecycleTest {
         assertTrue(state.hasDynamicMember());
         assertEquals(0, state.getEffectiveCastLib());
         assertEquals(0, state.getEffectiveCastMember());
+    }
+
+    @Test
+    void scoreThicknessFlagsInitializeSpriteFlips() {
+        SpriteState state = new SpriteState(12, new ScoreChunk.ChannelData(
+                1, 0, 0, 0, 0, 0,
+                1, 1,
+                0, 0, 10, 20, 30, 40,
+                0, 0, 0x60, 0, 0, 0, 0
+        ));
+
+        assertTrue(state.isFlipH());
+        assertTrue(state.isFlipV());
+    }
+
+    @Test
+    void scoreSyncPreservesScriptPositionAndFlipOverrides() {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteProperties props = new SpriteProperties(registry);
+        SpriteState state = registry.getOrCreate(12, new ScoreChunk.ChannelData(
+                1, 0, 0, 0, 0, 0,
+                11, 53,
+                0, 0, 100, 120, 43, 42,
+                0, 0, 0, 0, 0, 0, 0
+        ));
+
+        assertTrue(props.setSpriteProp(12, "locH", Datum.of(140)));
+        assertTrue(props.setSpriteProp(12, "locV", Datum.of(95)));
+        assertTrue(props.setSpriteProp(12, "flipH", Datum.of(1)));
+
+        registry.updateFromScore(12, new ScoreChunk.ChannelData(
+                1, 0, 0, 0, 0, 0,
+                11, 53,
+                0, 0, 500, 510, 43, 42,
+                0, 0, 0, 0, 0, 0, 0
+        ));
+
+        assertEquals(140, state.getLocH());
+        assertEquals(95, state.getLocV());
+        assertTrue(state.isFlipH());
+    }
+
+    @Test
+    void scoreSyncStillUpdatesUnmodifiedPositionAndFlip() {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteState state = registry.getOrCreate(12, new ScoreChunk.ChannelData(
+                1, 0, 0, 0, 0, 0,
+                11, 53,
+                0, 0, 100, 120, 43, 42,
+                0, 0, 0, 0, 0, 0, 0
+        ));
+
+        registry.updateFromScore(12, new ScoreChunk.ChannelData(
+                1, 0, 0, 0, 0, 0,
+                11, 53,
+                0, 0, 500, 510, 43, 42,
+                0, 0, 0x20, 0, 0, 0, 0
+        ));
+
+        assertEquals(510, state.getLocH());
+        assertEquals(500, state.getLocV());
+        assertTrue(state.isFlipH());
     }
 
     @Test
@@ -235,7 +297,7 @@ class SpritePropertiesLifecycleTest {
                 1, 0, 0, 0, 0, 0,
                 3, 40,
                 0, 0, 10, 20, 30, 40,
-                0, 0, 0, 0, 0, 0
+                0, 0, 0, 0, 0, 0, 0
         ));
 
         CastMember first = castLib.createDynamicMember("bitmap");
@@ -293,7 +355,7 @@ class SpritePropertiesLifecycleTest {
                 1, 0, 0, 0, 0, 0,
                 3, 40,
                 0, 0, 10, 20, 30, 40,
-                0, 0, 0, 0, 0, 0
+                0, 0, 0, 0, 0, 0, 0
         ));
 
         Datum.ScriptInstance scriptInstance = new Datum.ScriptInstance(77, new LinkedHashMap<>());
@@ -312,7 +374,7 @@ class SpritePropertiesLifecycleTest {
                 1, 0, 0, 0, 0, 0,
                 4, 41,
                 0, 0, 50, 60, 70, 80,
-                0, 0, 0, 0, 0, 0
+                0, 0, 0, 0, 0, 0, 0
         ));
 
         assertEquals(4, state.getEffectiveCastLib());

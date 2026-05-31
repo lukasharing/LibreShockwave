@@ -12,7 +12,9 @@ import java.lang.reflect.Method;
 import java.nio.ByteOrder;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class StageRendererScoreSpriteInkTest {
 
@@ -58,6 +60,93 @@ class StageRendererScoreSpriteInkTest {
         assertEquals(77, registry.get(4).getBlend());
     }
 
+    @Test
+    void scoreSpriteResolvesPaletteColorNumbers() throws Exception {
+        StageRenderer renderer = new StageRenderer(newEmptyDirectorFile());
+        ScoreChunk.ChannelData data = new ScoreChunk.ChannelData(
+            1,
+            InkMode.COPY.code(),
+            0,
+            0,
+            255,
+            0,
+            0,
+            0,
+            0,
+            0,
+            10,
+            10,
+            10,
+            10,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+        );
+
+        RenderSprite sprite = invokeCreateRenderSprite(renderer, 5, data);
+
+        assertNotNull(sprite);
+        assertEquals(0x000000, sprite.getForeColor());
+    }
+
+    @Test
+    void scoreSpriteKeepsExplicitRgbColors() throws Exception {
+        StageRenderer renderer = new StageRenderer(newEmptyDirectorFile());
+        ScoreChunk.ChannelData data = new ScoreChunk.ChannelData(
+            1,
+            InkMode.COPY.code(),
+            0,
+            0,
+            0x12,
+            0,
+            0,
+            0,
+            0,
+            0,
+            10,
+            10,
+            10,
+            10,
+            1,
+            0,
+            0,
+            0x34,
+            0,
+            0x56,
+            0
+        );
+
+        RenderSprite sprite = invokeCreateRenderSprite(renderer, 6, data);
+
+        assertNotNull(sprite);
+        assertEquals(0x123456, sprite.getForeColor());
+    }
+
+    @Test
+    void scoreBehaviorChannelsMarkRenderedSpriteAsBehaviorBacked() throws Exception {
+        StageRenderer renderer = new StageRenderer(newEmptyDirectorFile());
+        ScoreChunk.ChannelData data = channelData(InkMode.MATTE.code(), 0, 0, 0);
+
+        RenderSprite before = invokeCreateRenderSprite(renderer, 12, data);
+        assertNotNull(before);
+        assertFalse(before.hasBehaviors());
+
+        renderer.getSpriteRegistry().markScoreBehaviorChannel(12);
+        RenderSprite after = invokeCreateRenderSprite(renderer, 12, data);
+
+        assertNotNull(after);
+        assertTrue(after.hasBehaviors());
+    }
+
+    @Test
+    void oldScoreRgbExpansionMatchesNativeFiveBitChannels() {
+        assertEquals(0x84CEEF, StageRenderer.expandScoreRgb555(0x84CCE8));
+    }
+
     private static RenderSprite invokeCreateRenderSprite(StageRenderer renderer, int channel,
                                                          ScoreChunk.ChannelData data) throws Exception {
         Method method = StageRenderer.class.getDeclaredMethod(
@@ -91,6 +180,7 @@ class StageRendererScoreSpriteInkTest {
             10,
             0,
             blendByte,
+            0,
             0,
             0,
             0,

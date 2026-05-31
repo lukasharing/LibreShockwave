@@ -81,6 +81,10 @@ public class FrameContext {
         return currentFrame;
     }
 
+    public int getEffectiveFrame() {
+        return pendingFrame != null ? pendingFrame : currentFrame;
+    }
+
     public int getFrameCount() {
         return navigator.getFrameCount();
     }
@@ -280,6 +284,9 @@ public class FrameContext {
 
                 // Create behavior instances for this sprite
                 for (ScoreBehaviorRef behaviorRef : span.getBehaviors()) {
+                    if (spriteRegistry != null) {
+                        spriteRegistry.markScoreBehaviorChannel(channel);
+                    }
                     behaviorManager.createInstance(behaviorRef, channel);
                 }
 
@@ -395,7 +402,7 @@ public class FrameContext {
             List<BehaviorInstance> instances = behaviorManager.getInstancesForChannel(channel);
             for (BehaviorInstance instance : instances) {
                 if (!instance.isBeginSpriteCalled()) {
-                    eventDispatcher.dispatchSpriteEvent(channel, PlayerEvent.BEGIN_SPRITE, List.of());
+                    eventDispatcher.dispatchBehaviorEvent(instance, PlayerEvent.BEGIN_SPRITE, List.of());
                     instance.setBeginSpriteCalled(true);
                 }
             }
