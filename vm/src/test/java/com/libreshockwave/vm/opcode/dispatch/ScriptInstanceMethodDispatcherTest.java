@@ -11,6 +11,8 @@ import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.opcode.ExecutionContext;
 import com.libreshockwave.vm.support.NoOpCastLibProvider;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 
 import java.lang.reflect.Field;
 import java.util.ArrayDeque;
@@ -23,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@Execution(ExecutionMode.SAME_THREAD)
 class ScriptInstanceMethodDispatcherTest {
 
     @Test
@@ -95,7 +98,7 @@ class ScriptInstanceMethodDispatcherTest {
     }
 
     @Test
-    void explicitScriptHandlerRunsBeforeMemberRegistryFallback() {
+    void explicitScriptHandlerRunsForInstanceMethod() {
         ScriptChunk.Handler handler = createTestHandler();
         ScriptChunk script = createTestScript(handler);
         Scope scope = new Scope(script, handler, List.of(), Datum.VOID);
@@ -119,9 +122,7 @@ class ScriptInstanceMethodDispatcherTest {
                 ignored -> {},
                 () -> "");
 
-        Datum.PropList registry = new Datum.PropList();
         Datum.ScriptInstance instance = new Datum.ScriptInstance(77, new LinkedHashMap<>());
-        instance.properties().put("pAllMemNumList", registry);
 
         CastLibProvider.setProvider(new ScriptHandlerProvider(script, handler, false));
         try {
@@ -131,96 +132,107 @@ class ScriptInstanceMethodDispatcherTest {
                     "getmemnum",
                     List.of(Datum.of("Object Base Class")));
             assertEquals("script:getmemnum", result.toStr());
-            assertEquals(null, registry.get("Object Base Class"));
         } finally {
             CastLibProvider.clearProvider();
         }
     }
 
     @Test
-    void stableRegistryPrefillSeedsRegistryBeforeExplicitScriptHandler() {
+    void handlerPredicateWalksAncestorChain() {
         ScriptChunk.Handler handler = createTestHandler();
         ScriptChunk script = createTestScript(handler);
-        Scope scope = new Scope(script, handler, List.of(), Datum.VOID);
-        ExecutionContext ctx = new ExecutionContext(
-                scope,
-                handler.instructions().getFirst(),
-                new BuiltinRegistry(),
-                null,
-                (ignoredScript, ignoredHandler, args, receiver) -> Datum.of("script:getmemnum"),
-                ignoredName -> null,
-                new ExecutionContext.GlobalAccessor() {
-                    @Override
-                    public Datum getGlobal(String name) {
-                        return Datum.VOID;
-                    }
+        Datum.ScriptInstance ancestor = new Datum.ScriptInstance(78, new LinkedHashMap<>());
+        Datum.ScriptInstance child = new Datum.ScriptInstance(77, new LinkedHashMap<>());
+        child.properties().put(Datum.PROP_ANCESTOR, ancestor);
 
-                    @Override
-                    public void setGlobal(String name, Datum value) {}
-                },
-                (name, args) -> Datum.VOID,
-                ignored -> {},
-                () -> "");
-
-        Datum.PropList registry = new Datum.PropList();
-        Datum.ScriptInstance instance = new Datum.ScriptInstance(77, new LinkedHashMap<>());
-        instance.properties().put("pAllMemNumList", registry);
-
-        CastLibProvider.setProvider(new ScriptHandlerProvider(script, handler, true));
+        CastLibProvider.setProvider(new NoOpCastLibProvider() {
+            @Override
+            public HandlerLocation findHandlerInScript(int scriptId, String handlerName) {
+                if (scriptId == 78 && "handleEndCrypto".equalsIgnoreCase(handlerName)) {
+                    return new HandlerLocation(1, script, handler, null);
+                }
+                return null;
+            }
+        });
         try {
             Datum result = ScriptInstanceMethodDispatcher.dispatch(
-                    ctx,
-                    instance,
-                    "getmemnum",
-                    List.of(Datum.of("Object Base Class")));
-            assertEquals("script:getmemnum", result.toStr());
-            assertEquals((2 << 16) | 74, registry.get("Object Base Class").toInt());
+                    null,
+                    child,
+                    "handler",
+                    List.of(Datum.symbol("handleEndCrypto")));
+
+            assertTrue(result.isTruthy());
         } finally {
             CastLibProvider.clearProvider();
         }
     }
 
     @Test
-    void scriptBootstrapPrefillSeedsRegistryBeforeExplicitScriptHandler() {
-        ScriptChunk.Handler handler = createTestHandler();
-        ScriptChunk script = createTestScript(handler);
-        Scope scope = new Scope(script, handler, List.of(), Datum.VOID);
-        ExecutionContext ctx = new ExecutionContext(
-                scope,
-                handler.instructions().getFirst(),
-                new BuiltinRegistry(),
-                null,
-                (ignoredScript, ignoredHandler, args, receiver) -> Datum.of("script:getmemnum"),
-                ignoredName -> null,
-                new ExecutionContext.GlobalAccessor() {
-                    @Override
-                    public Datum getGlobal(String name) {
-                        return Datum.VOID;
-                    }
+    void nestedPropLookupFallsBackPastIncompleteAncestorShadow() {
+        Datum.PropList incompleteProps = new Datum.PropList();
+        incompleteProps.add("id", Datum.of("shadow"), true);
+        Datum.PropList actualProps = new Datum.PropList();
+        actualProps.add("bgColor", new Datum.Color(255, 255, 255), true);
 
-                    @Override
-                    public void setGlobal(String name, Datum value) {}
-                },
-                (name, args) -> Datum.VOID,
-                ignored -> {},
-                () -> "");
+        Datum.ScriptInstance ancestor = new Datum.ScriptInstance(78, new LinkedHashMap<>());
+        ancestor.properties().put("pProps", actualProps);
+        Datum.ScriptInstance child = new Datum.ScriptInstance(77, new LinkedHashMap<>());
+        child.properties().put("pProps", incompleteProps);
+        child.properties().put(Datum.PROP_ANCESTOR, ancestor);
 
-        Datum.PropList registry = new Datum.PropList();
+        Datum result = ScriptInstanceMethodDispatcher.dispatch(
+                null, child, "getProp", List.of(Datum.symbol("pProps"), Datum.symbol("bgColor")));
+
+        assertEquals(new Datum.Color(255, 255, 255), result);
+    }
+
+    @Test
+    void nestedPropLookupUsesNumericPropertyKeyWhenIndexIsOutOfRange() {
+        Datum.PropList props = new Datum.PropList();
+        props.putTyped(Datum.of(2147418112), Datum.of("sandbox"));
         Datum.ScriptInstance instance = new Datum.ScriptInstance(77, new LinkedHashMap<>());
-        instance.properties().put("pAllMemNumList", registry);
+        instance.properties().put("pObjects", props);
 
-        CastLibProvider.setProvider(new ScriptHandlerProvider(script, handler, false, true));
-        try {
-            Datum result = ScriptInstanceMethodDispatcher.dispatch(
-                    ctx,
-                    instance,
-                    "getmemnum",
-                    List.of(Datum.of("Object Base Class")));
-            assertEquals("script:getmemnum", result.toStr());
-            assertEquals((2 << 16) | 74, registry.get("Object Base Class").toInt());
-        } finally {
-            CastLibProvider.clearProvider();
-        }
+        Datum result = ScriptInstanceMethodDispatcher.dispatch(
+                null, instance, "getProp", List.of(Datum.symbol("pObjects"), Datum.of(2147418112)));
+
+        assertEquals("sandbox", result.toStr());
+    }
+
+    @Test
+    void nestedPropSetCreatesNumericPropertyKeyWhenIndexIsOutOfRange() {
+        Datum.PropList props = new Datum.PropList();
+        Datum.ScriptInstance instance = new Datum.ScriptInstance(77, new LinkedHashMap<>());
+        instance.properties().put("pObjects", props);
+
+        ScriptInstanceMethodDispatcher.dispatch(
+                null,
+                instance,
+                "setProp",
+                List.of(Datum.symbol("pObjects"), Datum.of(2147418112), Datum.of("chair")));
+
+        assertEquals(1, props.size());
+        assertEquals("chair", props.getAProp(Datum.of(2147418112)).toStr());
+    }
+
+    @Test
+    void nestedPropSetUpdatesAncestorOwnedContainer() {
+        Datum.PropList objectList = new Datum.PropList();
+        Datum.ScriptInstance ancestor = new Datum.ScriptInstance(78, new LinkedHashMap<>());
+        ancestor.properties().put("pObjectList", objectList);
+
+        Datum.ScriptInstance instance = new Datum.ScriptInstance(77, new LinkedHashMap<>());
+        instance.properties().put(Datum.PROP_ANCESTOR, ancestor);
+
+        Datum.ScriptInstance roomInterface = new Datum.ScriptInstance(79, new LinkedHashMap<>());
+        ScriptInstanceMethodDispatcher.dispatch(
+                null,
+                instance,
+                "setProp",
+                List.of(Datum.symbol("pObjectList"), Datum.symbol("room_interface"), roomInterface));
+
+        assertEquals(roomInterface, objectList.get(Datum.symbol("room_interface")));
+        assertFalse(instance.properties().containsKey("pObjectList"));
     }
 
     @Test
@@ -316,6 +328,37 @@ class ScriptInstanceMethodDispatcherTest {
         assertEquals(2, result.toInt());
     }
 
+    @Test
+    void prependedReceiverRemainsParamZeroWhenNamesAreUnavailableButArgCountIncludesMe() {
+        ScriptChunk.Handler handler = createHandlerWithArgCount(4);
+        ScriptChunk script = createTestScript(handler);
+        Datum.ScriptInstance receiver = new Datum.ScriptInstance(77, new LinkedHashMap<>());
+        Datum object = new Datum.ScriptInstance(78, new LinkedHashMap<>());
+        Datum message = Datum.of("Variable not found");
+        Datum method = Datum.symbol("get");
+        Scope scope = new Scope(script, handler, List.of(receiver, object, message, method), receiver);
+
+        assertTrue(scope.getParam(0) == receiver);
+        assertTrue(scope.getParam(1) == object);
+        assertEquals("Variable not found", scope.getParam(2).toStr());
+        assertEquals("get", scope.getParam(3).toKeyName());
+    }
+
+    @Test
+    void prependedReceiverIsSkippedWhenNamesAreUnavailableAndArgCountExcludesMe() {
+        ScriptChunk.Handler handler = createHandlerWithArgCount(3);
+        ScriptChunk script = createTestScript(handler);
+        Datum.ScriptInstance receiver = new Datum.ScriptInstance(77, new LinkedHashMap<>());
+        Datum object = new Datum.ScriptInstance(78, new LinkedHashMap<>());
+        Datum message = Datum.of("Variable not found");
+        Datum method = Datum.symbol("get");
+        Scope scope = new Scope(script, handler, List.of(receiver, object, message, method), receiver);
+
+        assertTrue(scope.getParam(0) == object);
+        assertEquals("Variable not found", scope.getParam(1).toStr());
+        assertEquals("get", scope.getParam(2).toKeyName());
+    }
+
     @SuppressWarnings("unchecked")
     private static void pushActiveScope(LingoVM vm) throws Exception {
         Field callStackField = LingoVM.class.getDeclaredField("callStack");
@@ -337,6 +380,26 @@ class ScriptInstanceMethodDispatcherTest {
                 0,
                 0,
                 List.of(),
+                List.of(),
+                List.of(new ScriptChunk.Handler.Instruction(0, Opcode.RET, 0, 0)),
+                Map.of(0, 0));
+    }
+
+    private static ScriptChunk.Handler createHandlerWithArgCount(int argCount) {
+        List<Integer> argNameIds = new java.util.ArrayList<>();
+        for (int i = 0; i < argCount; i++) {
+            argNameIds.add(100 + i);
+        }
+        return new ScriptChunk.Handler(
+                1,
+                0,
+                0,
+                0,
+                argCount,
+                0,
+                0,
+                0,
+                argNameIds,
                 List.of(),
                 List.of(new ScriptChunk.Handler.Instruction(0, Opcode.RET, 0, 0)),
                 Map.of(0, 0));
@@ -370,18 +433,16 @@ class ScriptInstanceMethodDispatcherTest {
 
     @SuppressWarnings("unchecked")
     private static void setCurrentVm(LingoVM vm) throws Exception {
-        Field field = LingoVM.class.getDeclaredField("CURRENT_VM");
+        Field field = LingoVM.class.getDeclaredField("currentVm");
         field.setAccessible(true);
-        ThreadLocal<LingoVM> threadLocal = (ThreadLocal<LingoVM>) field.get(null);
-        threadLocal.set(vm);
+        field.set(null, vm);
     }
 
     @SuppressWarnings("unchecked")
     private static void clearCurrentVm() throws Exception {
-        Field field = LingoVM.class.getDeclaredField("CURRENT_VM");
+        Field field = LingoVM.class.getDeclaredField("currentVm");
         field.setAccessible(true);
-        ThreadLocal<LingoVM> threadLocal = (ThreadLocal<LingoVM>) field.get(null);
-        threadLocal.remove();
+        field.set(null, null);
     }
 
     private static final class ScriptHandlerProvider extends NoOpCastLibProvider {

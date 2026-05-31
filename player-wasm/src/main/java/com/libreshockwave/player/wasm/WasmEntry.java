@@ -6,9 +6,8 @@ import org.teavm.interop.Export;
 import com.libreshockwave.DirectorFile;
 import com.libreshockwave.bitmap.Bitmap;
 import com.libreshockwave.chunks.CastMemberChunk;
-import com.libreshockwave.cast.TextInfo;
 import com.libreshockwave.player.cast.CastMember;
-import com.libreshockwave.player.cast.CastLib;
+import com.libreshockwave.player.render.pipeline.FrameRenderPipeline;
 import com.libreshockwave.player.render.pipeline.RenderSprite;
 import com.libreshockwave.util.FileUtil;
 import com.libreshockwave.vm.DebugConfig;
@@ -37,6 +36,8 @@ public class WasmEntry {
 
     private static WasmPlayer wasmPlayer;
     private static String lastError = null;
+    private static int vmHandlerTimeoutMs = 0;
+    private static boolean scriptErrorPausePending = false;
 
     // Shared buffers for JS <-> WASM data transfer
     private static byte[] movieBuffer;
@@ -44,13 +45,15 @@ public class WasmEntry {
     private static byte[] netBuffer;
     private static final Queue<String[]> pendingGotoNetPages = new ArrayDeque<>();
     private static final Queue<String> pendingGotoNetMovies = new ArrayDeque<>();
-    private static final Map<String, Datum> pendingInitialBuiltinVariables = new LinkedHashMap<>();
     private static int nextGotoNetMovieRequestId = 1;
+    private static final Map<String, Datum> initialBuiltinVariables = new LinkedHashMap<>();
 
     private static final Set<String> failedCasts = new HashSet<>();
 
     // Debug log: accumulates messages; read via getDebugLog() export
     static final StringBuilder debugLog = new StringBuilder(1024);
+    private static final int MAX_DEBUG_LOG_CHARS = 65536;
+    private static final int MAX_DEBUG_MESSAGE_CHARS = 8192;
 
     private static boolean isDebugLoggingEnabled() {
         return DebugConfig.isDebugPlaybackEnabled();
@@ -60,7 +63,7 @@ public class WasmEntry {
         if (!isDebugLoggingEnabled() || msg == null || msg.isEmpty()) {
             return;
         }
-        debugLog.append(msg);
+        appendBoundedDebug(msg);
     }
 
     /** Append a timestamped debug message (accessible from player-wasm package). */
@@ -68,23 +71,35 @@ public class WasmEntry {
         if (!isDebugLoggingEnabled() || msg == null || msg.isEmpty()) {
             return;
         }
-        debugLog.append(msg).append('\n');
+        appendBoundedDebug(msg);
+        appendBoundedDebug("\n");
+    }
+
+    private static void appendBoundedDebug(String msg) {
+        String next = msg;
+        if (next.length() > MAX_DEBUG_MESSAGE_CHARS) {
+            next = next.substring(0, MAX_DEBUG_MESSAGE_CHARS) + "... [truncated]\n";
+        }
+        if (debugLog.length() + next.length() > MAX_DEBUG_LOG_CHARS) {
+            // TeaVM/WASM has proven fragile around repeated StringBuilder.delete()
+            // on hot debug paths. Drop the previous frame's accumulated text instead
+            // of shifting a large backing array.
+            debugLog.setLength(0);
+            debugLog.append("[debug log truncated]\n");
+        }
+        debugLog.append(next);
     }
 
     static void enqueueGotoNetPage(String url, String target) {
-        synchronized (pendingGotoNetPages) {
-            pendingGotoNetPages.offer(new String[] {
-                    url != null ? url : "",
-                    target != null ? target : ""
-            });
-        }
+        pendingGotoNetPages.offer(new String[] {
+                url != null ? url : "",
+                target != null ? target : ""
+        });
     }
 
     static int enqueueGotoNetMovie(String url) {
-        synchronized (pendingGotoNetMovies) {
-            pendingGotoNetMovies.offer(url != null ? url : "");
-            return nextGotoNetMovieRequestId++;
-        }
+        pendingGotoNetMovies.offer(url != null ? url : "");
+        return nextGotoNetMovieRequestId++;
     }
 
     public static void main(String[] args) {
@@ -119,53 +134,15 @@ public class WasmEntry {
         return Address.ofData(stringBuffer).toInt();
     }
 
-    @Export(name = "setInitialBuiltinSymbol")
-    public static void setInitialBuiltinSymbol(int keyLen, int valueLen) {
-        if (keyLen <= 0 || valueLen <= 0) return;
-        String key = new String(stringBuffer, 0, keyLen, StandardCharsets.UTF_8);
-        String value = new String(stringBuffer, keyLen, valueLen, StandardCharsets.UTF_8);
-        setInitialBuiltinDatum(key, Datum.symbol(value));
-    }
-
-    @Export(name = "setInitialBuiltinVariable")
-    public static void setInitialBuiltinVariable(int keyLen, int valueLen) {
-        if (keyLen <= 0) return;
-        String key = new String(stringBuffer, 0, keyLen, StandardCharsets.UTF_8);
-        String value = new String(stringBuffer, keyLen, Math.max(0, valueLen), StandardCharsets.UTF_8);
-        setInitialBuiltinDatum(key, Datum.of(value));
-    }
-
-    @Export(name = "clearInitialBuiltinVariables")
-    public static void clearInitialBuiltinVariables() {
-        pendingInitialBuiltinVariables.clear();
-        if (wasmPlayer != null && wasmPlayer.getPlayer() != null) {
-            wasmPlayer.getPlayer().setInitialBuiltinVariables(pendingInitialBuiltinVariables);
-        }
-    }
-
-    private static void setInitialBuiltinDatum(String key, Datum value) {
-        if (key == null || key.isEmpty()) return;
-        Datum safeValue = Datum.valueOrVoid(value);
-        pendingInitialBuiltinVariables.put(key, safeValue);
-        if (wasmPlayer != null && wasmPlayer.getPlayer() != null) {
-            wasmPlayer.getPlayer().setInitialBuiltinVariable(key, safeValue);
-        }
-    }
-
-    @Export(name = "setMovieProperty")
-    public static void setMovieProperty(int keyLen, int valueLen) {
-        if (wasmPlayer == null || wasmPlayer.getPlayer() == null || keyLen <= 0) return;
-        String key = new String(stringBuffer, 0, keyLen, StandardCharsets.UTF_8);
-        String value = new String(stringBuffer, keyLen, Math.max(0, valueLen), StandardCharsets.UTF_8);
-        wasmPlayer.getPlayer().getMovieProperties().setMovieProp(key, Datum.of(value));
+    @Export(name = "ensureStringBufferCapacity")
+    public static int ensureStringBufferCapacity(int minCapacity) {
+        growStringBuffer(minCapacity);
+        return Address.ofData(stringBuffer).toInt();
     }
 
     @Export(name = "readNextGotoNetPage")
     public static int readNextGotoNetPage() {
-        String[] next;
-        synchronized (pendingGotoNetPages) {
-            next = pendingGotoNetPages.poll();
-        }
+        String[] next = pendingGotoNetPages.poll();
         if (next == null) {
             return 0;
         }
@@ -186,10 +163,7 @@ public class WasmEntry {
 
     @Export(name = "readNextGotoNetMovie")
     public static int readNextGotoNetMovie() {
-        String next;
-        synchronized (pendingGotoNetMovies) {
-            next = pendingGotoNetMovies.poll();
-        }
+        String next = pendingGotoNetMovies.poll();
         if (next == null) {
             return 0;
         }
@@ -211,6 +185,8 @@ public class WasmEntry {
     public static int loadMovie(int movieSize, int basePathLen) {
         DirectorFile.setJpegDecoder(WasmJpegDecoder::decode);
         WasmJpegDecoder.reset();
+        lastError = null;
+        scriptErrorPausePending = false;
 
         String basePath = "";
         if (basePathLen > 0) {
@@ -223,12 +199,10 @@ public class WasmEntry {
         if (wasmPlayer != null) {
             wasmPlayer.shutdown();
         }
-        synchronized (pendingGotoNetPages) {
-            pendingGotoNetPages.clear();
-        }
-        synchronized (pendingGotoNetMovies) {
-            pendingGotoNetMovies.clear();
-        }
+        lastSpriteCount = 0;
+        clearRenderCache();
+        pendingGotoNetPages.clear();
+        pendingGotoNetMovies.clear();
 
         wasmPlayer = new WasmPlayer();
         if (!wasmPlayer.loadMovie(data, basePath,
@@ -255,16 +229,22 @@ public class WasmEntry {
                         }
                     }
                     log("castDataRequestCallback: " + baseName + " not in cache (cast#" + castLibNumber + ")");
+                    QueuedNetProvider net = wasmPlayer.getNetProvider();
+                    if (net != null) {
+                        net.preloadNetThing(fileName);
+                    }
                 })) {
             return 0;
-        }
-        if (wasmPlayer.getPlayer() != null) {
-            wasmPlayer.getPlayer().setInitialBuiltinVariables(pendingInitialBuiltinVariables);
         }
 
         // Wire up error handler depth tracing
         if (wasmPlayer.getPlayer() != null) {
+            wasmPlayer.getPlayer().getStageRenderer().getSpriteRegistry()
+                    .setRevisionListener(WasmEntry::markRenderCacheDirty);
+            wasmPlayer.getPlayer().setCastLoadedListener(wasmPlayer::bumpCastRevision);
             wasmPlayer.getPlayer().getVM().setErrorHandlerSkipCallback(msg -> log("[EH] " + msg));
+            wasmPlayer.getPlayer().getVM().setHandlerTimeoutMs(vmHandlerTimeoutMs);
+            applyPendingInitialBuiltinVariables();
         }
 
         int w = wasmPlayer.getStageWidth();
@@ -284,13 +264,22 @@ public class WasmEntry {
         }
     }
 
-    @Export(name = "setRunMode")
-    public static void setRunMode(int valueLen) {
-        if (wasmPlayer == null || wasmPlayer.getPlayer() == null || valueLen <= 0) return;
-        String value = new String(stringBuffer, 0, valueLen, StandardCharsets.UTF_8);
-        wasmPlayer.getPlayer().getMovieProperties().setRunMode(value);
+    /**
+     * Set the per-handler wall-clock timeout. 0 disables it for runtimes that
+     * already use a deterministic instruction step limit.
+     */
+    @Export(name = "setVmHandlerTimeoutMs")
+    public static void setVmHandlerTimeoutMs(int timeoutMs) {
+        vmHandlerTimeoutMs = Math.max(0, timeoutMs);
+        if (wasmPlayer != null && wasmPlayer.getPlayer() != null) {
+            wasmPlayer.getPlayer().getVM().setHandlerTimeoutMs(vmHandlerTimeoutMs);
+        }
     }
 
+    /**
+     * Compatibility hook for bytecode that uses setAt(propList, key, value) as
+     * associative property assignment. Director-strict mode keeps this disabled.
+     */
     @Export(name = "setPropListSetAtByKeyCompatibility")
     public static void setPropListSetAtByKeyCompatibility(int enabled) {
         if (wasmPlayer != null && wasmPlayer.getPlayer() != null) {
@@ -304,7 +293,25 @@ public class WasmEntry {
      */
     @Export(name = "setDebugPlaybackEnabled")
     public static void setDebugPlaybackEnabled(int enabled) {
-        DebugConfig.setDebugPlaybackEnabled(enabled != 0);
+        boolean debugPlayback = enabled != 0;
+        DebugConfig.setDebugPlaybackEnabled(debugPlayback);
+        if (wasmPlayer != null && wasmPlayer.getPlayer() != null) {
+            wasmPlayer.getPlayer().getFrameContext().setDebugEnabled(debugPlayback);
+        }
+    }
+
+    /**
+     * Pause the browser tick loop when a script/authored error is reported.
+     * This is a debug-only trap used to preserve the original failure context.
+     */
+    @Export(name = "setPauseOnScriptErrorEnabled")
+    public static void setPauseOnScriptErrorEnabled(int enabled) {
+        DebugConfig.setPauseOnScriptErrorEnabled(enabled != 0);
+    }
+
+    @Export(name = "setPauseOnAuthoredMajorEnabled")
+    public static void setPauseOnAuthoredMajorEnabled(int enabled) {
+        DebugConfig.setPauseOnAuthoredMajorEnabled(enabled != 0);
     }
 
     /**
@@ -338,7 +345,7 @@ public class WasmEntry {
     }
 
     /**
-     * Preload all external casts (queue fetch requests before play).
+     * Preload external casts required before frame one.
      * @return number of casts queued for loading
      */
     @Export(name = "preloadCasts")
@@ -357,11 +364,13 @@ public class WasmEntry {
         if (wasmPlayer == null) return;
         try {
             lastError = null;
+            scriptErrorPausePending = false;
             // Set step limit to catch infinite loops. Large startup handlers in
             // real clients can legitimately do multi-megabyte text conversion,
             // so keep enough headroom for those while still bounding runaway code.
             if (wasmPlayer.getPlayer() != null) {
                 wasmPlayer.getPlayer().getVM().setStepLimit(50_000_000);
+                wasmPlayer.getPlayer().getVM().setHandlerTimeoutMs(vmHandlerTimeoutMs);
             }
             log("play() called, frame before=" + wasmPlayer.getCurrentFrame());
             wasmPlayer.play();
@@ -388,9 +397,33 @@ public class WasmEntry {
         }
     }
 
+    /**
+     * Process pending Xtra callbacks without advancing the score.
+     * Browser socket events use this after delivering MUS events so authored
+     * Multiuser callbacks can answer or tear down the connection immediately.
+     */
+    @Export(name = "processXtraCallbacks")
+    public static void processXtraCallbacks() {
+        if (wasmPlayer == null) return;
+        try {
+            wasmPlayer.processXtraCallbacks();
+        } catch (Throwable e) {
+            captureError("processXtraCallbacks", e);
+        }
+    }
+
     @Export(name = "pause")
     public static void pause() {
         if (wasmPlayer != null) wasmPlayer.pause();
+    }
+
+    @Export(name = "consumeScriptErrorPauseRequest")
+    public static int consumeScriptErrorPauseRequest() {
+        if (!scriptErrorPausePending) {
+            return 0;
+        }
+        scriptErrorPausePending = false;
+        return 1;
     }
 
     @Export(name = "stop")
@@ -400,12 +433,18 @@ public class WasmEntry {
 
     @Export(name = "goToFrame")
     public static void goToFrame(int frame) {
-        if (wasmPlayer != null) wasmPlayer.goToFrame(frame);
+        if (wasmPlayer != null) {
+            markRenderCacheDirty();
+            wasmPlayer.goToFrame(frame);
+        }
     }
 
     @Export(name = "stepForward")
     public static void stepForward() {
-        if (wasmPlayer != null) wasmPlayer.stepFrame();
+        if (wasmPlayer != null) {
+            markRenderCacheDirty();
+            wasmPlayer.stepFrame();
+        }
     }
 
     @Export(name = "stepBackward")
@@ -413,6 +452,7 @@ public class WasmEntry {
         if (wasmPlayer != null) {
             int frame = wasmPlayer.getCurrentFrame();
             if (frame > 1) {
+                markRenderCacheDirty();
                 wasmPlayer.goToFrame(frame - 1);
             }
         }
@@ -442,20 +482,20 @@ public class WasmEntry {
         }
     }
 
+    @Export(name = "setFastMovieClockEnabled")
+    public static void setFastMovieClockEnabled(int enabled, int multiplier) {
+        if (wasmPlayer != null) {
+            wasmPlayer.setFastMovieClockEnabled(enabled != 0, Math.max(1, multiplier));
+        }
+    }
+
     /**
      * Get the number of active sprites in the current frame, without baking bitmaps.
      * @return sprite count, or 0 if not playing
      */
     @Export(name = "getSpriteCount")
     public static int getSpriteCount() {
-        if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return 0;
-        try {
-            return wasmPlayer.getPlayer().getStageRenderer()
-                    .getSpritesForFrame(wasmPlayer.getPlayer().getCurrentFrame()).size();
-        } catch (Throwable e) {
-            captureError("getSpriteCount", e);
-            return 0;
-        }
+        return lastSpriteCount;
     }
 
     /**
@@ -486,6 +526,13 @@ public class WasmEntry {
 
     /** RGBA buffer holding the last rendered frame. */
     private static byte[] renderBuffer;
+    private static int lastSpriteCount;
+    private static int cachedRenderFrame = -1;
+    private static int cachedRenderCastRevision = -1;
+    private static int cachedRenderSpriteRevision = -1;
+    private static boolean cachedRenderHasAnimatedFilmLoop;
+    private static boolean renderCacheDirty = true;
+    private static int renderCacheRevision;
 
     /**
      * Render the current frame into an RGBA buffer via SoftwareRenderer.
@@ -493,24 +540,77 @@ public class WasmEntry {
      * @return buffer byte length (width * height * 4), or 0 on failure
      */
     @Export(name = "render")
-    public static int render() {
+    public static int render(int frame) {
         if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return 0;
         try {
             SoftwareRenderer renderer = wasmPlayer.getSoftwareRenderer();
             if (renderer == null) return 0;
 
+            int castRevision = wasmPlayer.getCastRevision();
+            if (renderBuffer != null
+                    && !renderCacheDirty
+                    && !cachedRenderHasAnimatedFilmLoop
+                    && frame == cachedRenderFrame
+                    && castRevision == cachedRenderCastRevision
+                    && renderCacheRevision == cachedRenderSpriteRevision) {
+                return renderBuffer.length;
+            }
+
             var snapshot = wasmPlayer.getPlayer().getFrameSnapshot();
-            int spriteRev = wasmPlayer.getPlayer().getStageRenderer()
-                    .getSpriteRegistry().getRevision();
-            byte[] frameRgba = renderer.render(snapshot, wasmPlayer.getCastRevision(), spriteRev);
+            lastSpriteCount = snapshot.sprites().size();
+            byte[] frameRgba = renderer.render(snapshot, castRevision, renderCacheRevision);
 
             // Base frame only — cursor is composited on the main thread at 60fps
             renderBuffer = frameRgba;
+            cachedRenderFrame = frame;
+            cachedRenderCastRevision = castRevision;
+            cachedRenderSpriteRevision = renderCacheRevision;
+            cachedRenderHasAnimatedFilmLoop = containsAnimatedFilmLoop(snapshot);
+            renderCacheDirty = false;
             return renderBuffer.length;
         } catch (Throwable e) {
-            captureError("render", e);
+            captureRenderError(e);
             return 0;
         }
+    }
+
+    private static void clearRenderCache() {
+        renderBuffer = null;
+        cachedRenderFrame = -1;
+        cachedRenderCastRevision = -1;
+        cachedRenderSpriteRevision = -1;
+        cachedRenderHasAnimatedFilmLoop = false;
+        renderCacheDirty = true;
+        renderCacheRevision++;
+    }
+
+    static void markRenderCacheDirty() {
+        renderCacheDirty = true;
+        renderCacheRevision++;
+    }
+
+    private static boolean containsAnimatedFilmLoop(com.libreshockwave.player.render.pipeline.FrameSnapshot snapshot) {
+        if (snapshot == null || snapshot.sprites() == null) {
+            return false;
+        }
+        for (RenderSprite sprite : snapshot.sprites()) {
+            if (isAnimatedFilmLoop(sprite)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isAnimatedFilmLoop(RenderSprite sprite) {
+        if (sprite == null || sprite.getType() != RenderSprite.SpriteType.FILM_LOOP
+                || sprite.getCastMember() == null || sprite.getCastMember().file() == null) {
+            return false;
+        }
+        var score = sprite.getCastMember().file().getScoreForMember(sprite.getCastMember());
+        return score != null
+                && score.frameData() != null
+                && score.frameData().header() != null
+                && score.frameData().header().frameCount() > 1;
     }
 
     /**
@@ -524,12 +624,26 @@ public class WasmEntry {
 
     @Export(name = "getRenderBufferWidth")
     public static int getRenderBufferWidth() {
-        return getStageWidth();
+        if (wasmPlayer == null) return 0;
+        SoftwareRenderer renderer = wasmPlayer.getSoftwareRenderer();
+        return renderer != null ? renderer.getWidth() : 0;
     }
 
     @Export(name = "getRenderBufferHeight")
     public static int getRenderBufferHeight() {
-        return getStageHeight();
+        if (wasmPlayer == null) return 0;
+        SoftwareRenderer renderer = wasmPlayer.getSoftwareRenderer();
+        return renderer != null ? renderer.getHeight() : 0;
+    }
+
+    @Export(name = "getRenderPipelineStage")
+    public static int getRenderPipelineStage() {
+        String stage = FrameRenderPipeline.getLastStage();
+        if (stage == null) stage = "";
+        byte[] bytes = stage.getBytes(StandardCharsets.UTF_8);
+        int len = Math.min(bytes.length, stringBuffer.length);
+        System.arraycopy(bytes, 0, stringBuffer, 0, len);
+        return len;
     }
 
     // === Cursor bitmap exports (composited on main thread at 60fps) ===
@@ -827,6 +941,7 @@ public class WasmEntry {
             System.arraycopy(netBuffer, 0, rgba, 0, Math.min(dataLen, netBuffer.length));
         }
         WasmJpegDecoder.deliverDecoded(id, width, height, rgba);
+        markRenderCacheDirty();
     }
 
     /**
@@ -875,6 +990,23 @@ public class WasmEntry {
         }
     }
 
+    /**
+     * Return whether a completed fetch must be copied into WASM as bytes now.
+     * Cast payloads are cached as raw bytes in the Java runtime, but they are
+     * parsed/installed only when a concrete cast slot is waiting for them.
+     * Keeping the raw cache in the VM is important because authored Lingo may
+     * set castLib.fileName and use the cast in the same tick after netDone().
+     */
+    @Export(name = "shouldDeliverFetchData")
+    public static int shouldDeliverFetchData(int taskId, int urlLen) {
+        try {
+            return 1;
+        } catch (Throwable e) {
+            captureError("shouldDeliverFetchData", e);
+            return 1;
+        }
+    }
+
 
 
     /**
@@ -915,6 +1047,123 @@ public class WasmEntry {
         wasmPlayer.getPlayer().setExternalParams(null);
     }
 
+    @Export(name = "seedNetCache")
+    public static void seedNetCache(int urlLen, int dataSize) {
+        if (wasmPlayer == null || urlLen < 0 || dataSize < 0) return;
+        try {
+            String url = new String(stringBuffer, 0, urlLen, StandardCharsets.UTF_8);
+            byte[] data = new byte[dataSize];
+            System.arraycopy(stringBuffer, urlLen, data, 0, dataSize);
+            wasmPlayer.seedNetCache(url, data);
+        } catch (Throwable e) {
+            captureError("seedNetCache", e);
+        }
+    }
+
+    @Export(name = "setInitialBuiltinVariable")
+    public static void setInitialBuiltinVariable(int keyLen, int valueLen) {
+        String key = new String(stringBuffer, 0, keyLen);
+        String value = new String(stringBuffer, keyLen, valueLen);
+        Datum parsed = parseInitialBuiltinVariableValue(value);
+        initialBuiltinVariables.put(key, parsed);
+        if (wasmPlayer != null && wasmPlayer.getPlayer() != null) {
+            wasmPlayer.getPlayer().setInitialBuiltinVariable(key, parsed);
+        }
+    }
+
+    static Datum parseInitialBuiltinVariableValue(String value) {
+        if (value != null && value.length() > 1 && value.charAt(0) == '#') {
+            String name = value.substring(1);
+            if (isLingoIdentifier(name)) {
+                return Datum.symbol(name);
+            }
+        }
+        if (value != null && !value.isEmpty() && isIntegerLiteral(value)) {
+            try {
+                return Datum.of(Integer.parseInt(value));
+            } catch (NumberFormatException ignored) {
+                // Keep oversized numeric strings as strings.
+            }
+        }
+        if (value != null && !value.isEmpty() && isFloatLiteral(value)) {
+            try {
+                return Datum.of(Double.parseDouble(value));
+            } catch (NumberFormatException ignored) {
+                // Keep unparsable values as strings.
+            }
+        }
+        return Datum.of(value);
+    }
+
+    private static boolean isIntegerLiteral(String value) {
+        int start = value.charAt(0) == '-' ? 1 : 0;
+        if (start == value.length()) {
+            return false;
+        }
+        for (int i = start; i < value.length(); i++) {
+            if (!Character.isDigit(value.charAt(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isFloatLiteral(String value) {
+        int start = value.charAt(0) == '-' ? 1 : 0;
+        boolean sawDot = false;
+        boolean sawDigit = false;
+        for (int i = start; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (Character.isDigit(c)) {
+                sawDigit = true;
+            } else if (c == '.' && !sawDot) {
+                sawDot = true;
+            } else {
+                return false;
+            }
+        }
+        return sawDot && sawDigit;
+    }
+
+    private static boolean isLingoIdentifier(String value) {
+        if (value == null || value.isEmpty()) {
+            return false;
+        }
+        char first = value.charAt(0);
+        if (!Character.isLetter(first) && first != '_') {
+            return false;
+        }
+        for (int i = 1; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (!Character.isLetterOrDigit(c) && c != '_') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    @Export(name = "clearInitialBuiltinVariables")
+    public static void clearInitialBuiltinVariables() {
+        initialBuiltinVariables.clear();
+        if (wasmPlayer != null && wasmPlayer.getPlayer() != null) {
+            wasmPlayer.getPlayer().setInitialBuiltinVariables(null);
+        }
+    }
+
+    private static void applyPendingInitialBuiltinVariables() {
+        if (initialBuiltinVariables.isEmpty() || wasmPlayer == null || wasmPlayer.getPlayer() == null) {
+            return;
+        }
+        wasmPlayer.getPlayer().setInitialBuiltinVariables(initialBuiltinVariables);
+    }
+
+    @Export(name = "setRunMode")
+    public static void setRunMode(int valueLen) {
+        if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return;
+        String value = new String(stringBuffer, 0, valueLen);
+        wasmPlayer.getPlayer().getMovieProperties().setRunMode(value);
+    }
+
     // === Error tracking ===
 
     /**
@@ -924,7 +1173,7 @@ public class WasmEntry {
     @Export(name = "getLastError")
     public static int getLastError() {
         if (lastError == null) return 0;
-        byte[] bytes = lastError.getBytes();
+        byte[] bytes = lastError.getBytes(StandardCharsets.UTF_8);
         int len = Math.min(bytes.length, stringBuffer.length);
         System.arraycopy(bytes, 0, stringBuffer, 0, len);
         lastError = null;
@@ -955,6 +1204,7 @@ public class WasmEntry {
     @Export(name = "mouseMove")
     public static void mouseMove(int stageX, int stageY) {
         if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return;
+        markRenderCacheDirty();
         wasmPlayer.getPlayer().getInputHandler().onMouseMove(stageX, stageY);
     }
 
@@ -965,6 +1215,7 @@ public class WasmEntry {
     @Export(name = "mouseDown")
     public static void mouseDown(int stageX, int stageY, int button) {
         if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return;
+        markRenderCacheDirty();
         wasmPlayer.getPlayer().getInputHandler().onMouseDown(stageX, stageY, button == 2);
     }
 
@@ -975,6 +1226,7 @@ public class WasmEntry {
     @Export(name = "mouseUp")
     public static void mouseUp(int stageX, int stageY, int button) {
         if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return;
+        markRenderCacheDirty();
         wasmPlayer.getPlayer().getInputHandler().onMouseUp(stageX, stageY, button == 2);
     }
 
@@ -996,6 +1248,7 @@ public class WasmEntry {
     @Export(name = "keyDown")
     public static void keyDown(int browserKeyCode, int keyCharLen, int modifiers) {
         if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return;
+        markRenderCacheDirty();
         String keyChar = keyCharLen > 0 ? new String(stringBuffer, 0, keyCharLen) : "";
         int directorCode = com.libreshockwave.player.input.DirectorKeyCodes.fromBrowserKeyCode(browserKeyCode);
         wasmPlayer.getPlayer().getInputHandler().onKeyDown(directorCode, keyChar,
@@ -1011,6 +1264,7 @@ public class WasmEntry {
     @Export(name = "keyUp")
     public static void keyUp(int browserKeyCode, int keyCharLen, int modifiers) {
         if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return;
+        markRenderCacheDirty();
         String keyChar = keyCharLen > 0 ? new String(stringBuffer, 0, keyCharLen) : "";
         int directorCode = com.libreshockwave.player.input.DirectorKeyCodes.fromBrowserKeyCode(browserKeyCode);
         wasmPlayer.getPlayer().getInputHandler().onKeyUp(directorCode, keyChar,
@@ -1072,10 +1326,6 @@ public class WasmEntry {
                     .append(" stageColor=").append(Integer.toHexString(file.getConfig().stageColorRGB() & 0xFFFFFF))
                     .append('\n');
         }
-        appendAsianCatalogueProbe(sb);
-        for (String probe : com.libreshockwave.player.render.output.SimpleTextRenderer.getRecentRenderProbes()) {
-            sb.append("textRender ").append(probe).append('\n');
-        }
         for (RenderSprite sprite : renderer.getLastBakedSprites()) {
             if (!intersects(sprite.getX(), sprite.getY(), sprite.getWidth(), sprite.getHeight(),
                     40, 0, 930, 500)) {
@@ -1120,6 +1370,8 @@ public class WasmEntry {
             CastMemberChunk cast = sprite.getCastMember();
             CastMember dyn = sprite.getDynamicMember();
             Bitmap dynBitmap = dyn != null ? dyn.getBitmap() : null;
+            byte[] dynIndices = dynBitmap != null ? dynBitmap.getPaletteIndices() : null;
+            PixelStats dynStats = countPixels(dynBitmap);
             sb.append("ch=").append(sprite.getChannel())
                     .append(" z=").append(sprite.getLocZ())
                     .append(" loc=").append(sprite.getX()).append(',').append(sprite.getY())
@@ -1127,6 +1379,10 @@ public class WasmEntry {
                     .append(" type=").append(sprite.getType())
                     .append(" ink=").append(sprite.getInk())
                     .append(" blend=").append(sprite.getBlend())
+                    .append(" rot=").append(sprite.getRotation())
+                    .append(" skew=").append(sprite.getSkew())
+                    .append(" flipH=").append(sprite.isFlipH())
+                    .append(" flipV=").append(sprite.isFlipV())
                     .append(" back=").append(Integer.toHexString(sprite.getBackColor() & 0xFFFFFF))
                     .append(" dyn=").append(sprite.getDynamicMember() != null)
                     .append(" member=").append(sprite.getMemberName())
@@ -1141,8 +1397,15 @@ public class WasmEntry {
                     .append(" dynPal=").append(dynBitmap != null && dynBitmap.getImagePalette() != null
                             ? dynBitmap.getImagePalette().getName() : "")
                     .append(" dynPalRef=").append(dynBitmap != null ? paletteRefSummary(dynBitmap) : "")
+                    .append(" dynIdx=").append(dynIndices != null ? dynIndices.length : 0)
+                    .append(" dynIdxFirst=").append(dynIndices != null && dynIndices.length > 0
+                            ? (dynIndices[0] & 0xFF) : -1)
                     .append(" dynFirst=").append(dynBitmap != null && dynBitmap.getPixels().length > 0
                             ? Integer.toHexString(dynBitmap.getPixels()[0]) : "0")
+                    .append(" dynWhite=").append(dynStats.white)
+                    .append(" dynBlack=").append(dynStats.black)
+                    .append(" dynTransparent=").append(dynStats.transparent)
+                    .append(" dynNonWhite=").append(dynStats.nonWhite)
                     .append(" baked=").append(bw).append('x').append(bh)
                     .append(" first=").append(Integer.toHexString(first))
                     .append(" alpha=").append(minAlpha).append('-').append(maxAlpha)
@@ -1152,9 +1415,6 @@ public class WasmEntry {
                     .append(" black=").append(black)
                     .append(" transparent=").append(transparent)
                     .append('\n');
-            appendCatalogueTextProbe(sb, dyn);
-            appendCatalogueBitmapBounds(sb, dyn, dynBitmap);
-            appendCataloguePixelSamples(sb, sprite, dyn, dynBitmap, baked);
         }
         byte[] bytes = sb.toString().getBytes(StandardCharsets.UTF_8);
         int len = Math.min(bytes.length, stringBuffer.length);
@@ -1162,610 +1422,33 @@ public class WasmEntry {
         return len;
     }
 
-    /**
-     * Dump visible text-like sprite contents for browser visual tests.
-     */
-    @Export(name = "getVisibleTextDiagnostics")
-    public static int getVisibleTextDiagnostics() {
-        if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return 0;
-        var renderer = wasmPlayer.getPlayer().getStageRenderer();
-        if (renderer == null || renderer.getLastBakedSprites() == null) return 0;
-
-        StringBuilder sb = new StringBuilder(32768);
-        for (RenderSprite sprite : renderer.getLastBakedSprites()) {
-            CastMemberChunk cast = sprite.getCastMember();
-            CastMember dyn = sprite.getDynamicMember();
-            sb.append("ch=").append(sprite.getChannel())
-                    .append(" loc=").append(sprite.getX()).append(',').append(sprite.getY())
-                    .append(' ').append(sprite.getWidth()).append('x').append(sprite.getHeight())
-                    .append(" type=").append(sprite.getType())
-                    .append(" ink=").append(sprite.getInk())
-                    .append(" fore=").append(sprite.getForeColor())
-                    .append(" back=").append(sprite.getBackColor())
-                    .append(" hasFore=").append(sprite.hasForeColor())
-                    .append(" hasBack=").append(sprite.hasBackColor())
-                    .append(" member=").append(sprite.getMemberName())
-                    .append(" castName=").append(cast != null ? cast.name() : "")
-                    .append(" dynName=").append(dyn != null ? dyn.getName() : "")
-                    .append(" dynType=").append(dyn != null ? dyn.getMemberType() : "")
-                    .append('\n');
-            appendStaticTextProbe(sb, cast);
-            String text = dyn != null ? dyn.getTextContent() : null;
-            if (text == null || text.isEmpty()) {
-                continue;
-            }
-            sb.append("  text=\"").append(escapeDiagnosticText(text)).append('"')
-                    .append('\n');
+    private static PixelStats countPixels(Bitmap bitmap) {
+        if (bitmap == null || bitmap.getPixels() == null) {
+            return new PixelStats(0, 0, 0, 0);
         }
-        byte[] bytes = sb.toString().getBytes(StandardCharsets.UTF_8);
-        int len = Math.min(bytes.length, stringBuffer.length);
-        System.arraycopy(bytes, 0, stringBuffer, 0, len);
-        return len;
-    }
-
-    private static void appendStaticTextProbe(StringBuilder sb, CastMemberChunk cast) {
-        if (cast == null || (!cast.isText() && !cast.isTextXtra())) {
-            return;
-        }
-        DirectorFile file = cast.file();
-        if (file == null) {
-            return;
-        }
-
-        TextInfo info = TextInfo.parse(cast.specificData());
-        sb.append("  textInfo align=").append(info.textAlign())
-                .append(" size=").append(info.width()).append('x').append(info.height())
-                .append(" bg=").append(info.bgRed()).append(',')
-                .append(info.bgGreen()).append(',').append(info.bgBlue())
-                .append(" wrap=").append(info.isWordWrap())
-                .append(" specificLen=").append(cast.specificData() != null ? cast.specificData().length : 0)
-                .append(" specificHead=").append(hexHead(cast.specificData(), 24))
-                .append('\n');
-
-        var xmed = file.getXmedStyledTextForMember(cast);
-        if (xmed != null) {
-            sb.append("  xmed text=\"").append(escapeDiagnosticText(xmed.text())).append('"')
-                    .append(" font=").append(xmed.fontName())
-                    .append(" size=").append(xmed.fontSize())
-                    .append(" align=").append(xmed.alignment())
-                    .append(" rect=").append(xmed.width()).append('x').append(xmed.height())
-                    .append(" color=").append(xmed.colorR()).append(',')
-                    .append(xmed.colorG()).append(',').append(xmed.colorB())
-                    .append(" aa=").append(xmed.antialias()).append('/').append(xmed.antiAliasThreshold())
-                    .append(" bold=").append(xmed.memberBold())
-                    .append('\n');
-        }
-
-        var textChunk = file.getTextForMember(cast);
-        if (textChunk == null) {
-            return;
-        }
-        sb.append("  stxt text=\"").append(escapeDiagnosticText(textChunk.text())).append('"')
-                .append(" runs=").append(textChunk.runs().size())
-                .append('\n');
-        int runIndex = 0;
-        for (var run : textChunk.runs()) {
-            if (runIndex >= 4) {
-                break;
-            }
-            sb.append("    run").append(runIndex)
-                    .append(" start=").append(run.startOffset())
-                    .append(" end=").append(run.endOffset())
-                    .append(" fontId=").append(run.fontId())
-                    .append(" size=").append(run.fontSize())
-                    .append(" style=").append(run.fontStyle())
-                    .append(" color=").append(run.colorR()).append(',')
-                    .append(run.colorG()).append(',').append(run.colorB())
-                    .append('\n');
-            runIndex++;
-        }
-    }
-
-    private static String hexHead(byte[] data, int maxBytes) {
-        if (data == null || data.length == 0) {
-            return "";
-        }
-        StringBuilder sb = new StringBuilder(Math.min(data.length, maxBytes) * 2);
-        int limit = Math.min(data.length, maxBytes);
-        for (int i = 0; i < limit; i++) {
-            int value = data[i] & 0xFF;
-            if (value < 0x10) {
-                sb.append('0');
-            }
-            sb.append(Integer.toHexString(value));
-        }
-        return sb.toString();
-    }
-
-    /**
-     * Dump startup state that explains why Habbo component threads did or did not initialize.
-     */
-    @Export(name = "getBootstrapDiagnostics")
-    public static int getBootstrapDiagnostics() {
-        if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return 0;
-        StringBuilder sb = new StringBuilder(32768);
-        var player = wasmPlayer.getPlayer();
-        var castManager = player.getCastLibManager();
-
-        sb.append("state=").append(player.getState())
-                .append(" frame=").append(player.getCurrentFrame())
-                .append(" casts=").append(castManager.getCastLibCount())
-                .append('\n');
-        String systemProps = castManager.getFieldValue("System Props", 0);
-        String threadIndexField = findVariableValue(systemProps, "thread.index.field");
-        sb.append("thread.index.field=").append(threadIndexField).append('\n');
-        appendTruncated(sb, "System Props", systemProps, 3000);
-
-        for (int i = 1; i <= castManager.getCastLibCount(); i++) {
-            CastLib castLib = castManager.getCastLib(i);
-            if (castLib == null) {
-                continue;
-            }
-            sb.append("cast#").append(i)
-                    .append(" name=").append(castLib.getName())
-                    .append(" file=").append(castLib.getFileName())
-                    .append(" loaded=").append(castLib.isLoaded())
-                    .append(" fetched=").append(castLib.isFetched())
-                    .append(" members=").append(safeMemberCount(castLib))
-                    .append('\n');
-            if (!threadIndexField.isEmpty()) {
-                String threadIndex = castManager.getFieldValue(threadIndexField, i);
-                if (!threadIndex.isEmpty()) {
-                    appendTruncated(sb, "cast#" + i + " " + threadIndexField, threadIndex, 3000);
-                }
-            }
-        }
-
-        if (!player.getVM().getGlobals().isEmpty()) {
-            sb.append("globals:\n");
-            int count = 0;
-            for (var entry : player.getVM().getGlobals().entrySet()) {
-                if (count++ >= 80) {
-                    sb.append("  ...\n");
-                    break;
-                }
-                sb.append("  ").append(entry.getKey()).append('=').append(entry.getValue()).append('\n');
-                if (entry.getValue() instanceof Datum.ScriptInstance instance && !instance.properties().isEmpty()) {
-                    for (var prop : instance.properties().entrySet()) {
-                        sb.append("    .").append(prop.getKey()).append('=').append(prop.getValue()).append('\n');
-                    }
-                }
-            }
-        }
-
-        byte[] bytes = sb.toString().getBytes(StandardCharsets.UTF_8);
-        int len = Math.min(bytes.length, stringBuffer.length);
-        System.arraycopy(bytes, 0, stringBuffer, 0, len);
-        return len;
-    }
-
-    private static int safeMemberCount(CastLib castLib) {
-        try {
-            return castLib.getMemberCount();
-        } catch (Throwable ignored) {
-            return -1;
-        }
-    }
-
-    private static void appendTruncated(StringBuilder sb, String title, String value, int maxChars) {
-        if (value == null || value.isEmpty()) {
-            return;
-        }
-        sb.append(title).append(":\n");
-        String normalized = value.replace('\r', '\n');
-        if (normalized.length() > maxChars) {
-            sb.append(normalized, 0, maxChars).append("\n...\n");
-        } else {
-            sb.append(normalized).append('\n');
-        }
-    }
-
-    private static String findVariableValue(String text, String key) {
-        if (text == null || text.isEmpty() || key == null || key.isEmpty()) {
-            return "";
-        }
-        String[] lines = text.replace('\r', '\n').split("\n");
-        for (String line : lines) {
-            String trimmed = line.trim();
-            if (trimmed.startsWith("#")) {
-                continue;
-            }
-            int eq = trimmed.indexOf('=');
-            if (eq <= 0) {
-                continue;
-            }
-            if (trimmed.substring(0, eq).trim().equalsIgnoreCase(key)) {
-                return trimmed.substring(eq + 1).trim();
-            }
-        }
-        return "";
-    }
-
-    private static String escapeDiagnosticText(String text) {
-        return text.replace("\\", "\\\\")
-                .replace("\r", "\\r")
-                .replace("\n", "\\n")
-                .replace("\"", "\\\"");
-    }
-
-    private static void appendCatalogueBitmapBounds(StringBuilder sb, CastMember dyn, Bitmap bitmap) {
-        if (dyn == null || bitmap == null || dyn.getName() == null) {
-            return;
-        }
-        String name = dyn.getName();
-        if (!name.startsWith("Catalogue_catalog_")
-                && !name.equals("Catalogue_ctlg_pages")
-                && !name.equals("Catalogue_ctlg_productstrip")
-                && !name.equals("Catalogue_ctlg_header_text")
-                && !name.equals("Catalogue_ctlg_header_img")) {
-            return;
-        }
-
-        int minX = bitmap.getWidth();
-        int minY = bitmap.getHeight();
-        int maxX = -1;
-        int maxY = -1;
-        int opaque = 0;
-        int translucent = 0;
+        int white = 0;
         int black = 0;
+        int transparent = 0;
         int nonWhite = 0;
-        for (int y = 0; y < bitmap.getHeight(); y++) {
-            for (int x = 0; x < bitmap.getWidth(); x++) {
-                int pixel = bitmap.getPixel(x, y);
-                int alpha = (pixel >>> 24) & 0xFF;
-                int rgb = pixel & 0xFFFFFF;
-                if (alpha == 0) {
-                    continue;
-                }
-                if (alpha == 255) {
-                    opaque++;
-                } else {
-                    translucent++;
-                }
+        for (int pixel : bitmap.getPixels()) {
+            int alpha = (pixel >>> 24) & 0xFF;
+            int rgb = pixel & 0xFFFFFF;
+            if (alpha == 0) {
+                transparent++;
+                nonWhite++;
+            } else if (rgb == 0xFFFFFF) {
+                white++;
+            } else {
+                nonWhite++;
                 if (rgb == 0) {
                     black++;
                 }
-                if (rgb != 0xFFFFFF) {
-                    nonWhite++;
-                    minX = Math.min(minX, x);
-                    minY = Math.min(minY, y);
-                    maxX = Math.max(maxX, x);
-                    maxY = Math.max(maxY, y);
-                }
             }
         }
-        sb.append("bounds ").append(name)
-                .append(" nonWhite=").append(nonWhite)
-                .append(" black=").append(black)
-                .append(" opaque=").append(opaque)
-                .append(" translucent=").append(translucent)
-                .append(" box=");
-        if (maxX >= 0) {
-            sb.append(minX).append(',').append(minY).append('-').append(maxX).append(',').append(maxY);
-        } else {
-            sb.append("empty");
-        }
-        sb.append('\n');
+        return new PixelStats(white, black, transparent, nonWhite);
     }
 
-    private static void appendCatalogueTextProbe(StringBuilder sb, CastMember dyn) {
-        if (dyn == null || dyn.getName() == null) {
-            return;
-        }
-        String name = dyn.getName();
-        if (!name.equals("Catalogue_ctlg_header_text")
-                && !name.equals("Catalogue_ctlg_description")
-                && !name.equals("Catalogue_ctlg_selectproduct")
-                && !name.startsWith("Catalogue_catalog_")) {
-            return;
-        }
-        String text = dyn.getTextContent();
-        if (text == null || text.isEmpty()) {
-            return;
-        }
-        sb.append("text ").append(name)
-                .append(" font=").append(dyn.getProp("font"))
-                .append(" size=").append(dyn.getProp("fontSize"))
-                .append(" style=").append(dyn.getProp("fontStyle"))
-                .append(" wrap=").append(dyn.getProp("wordWrap"))
-                .append(" fixedLineSpace=").append(dyn.getProp("fixedLineSpace"))
-                .append(" topSpacing=").append(dyn.getProp("topSpacing"))
-                .append(" len=").append(text.length())
-                .append(" value=\"").append(text.replace("\r", "\\r").replace("\n", "\\n")).append('"')
-                .append('\n');
-    }
-
-    private static void appendCataloguePixelSamples(StringBuilder sb, RenderSprite sprite, CastMember dyn,
-                                                    Bitmap dynBitmap, Bitmap baked) {
-        if (sprite == null || dyn == null || dyn.getName() == null) {
-            return;
-        }
-        String name = dyn.getName();
-        if (!name.startsWith("Catalogue_")) {
-            return;
-        }
-        int[][] points = {
-                {523, 36}, {524, 37}, {315, 51}, {235, 117},
-                {241, 195}, {405, 203}, {360, 455}
-        };
-        boolean wroteHeader = false;
-        for (int[] point : points) {
-            int x = point[0];
-            int y = point[1];
-            if (x < sprite.getX() || y < sprite.getY()
-                    || x >= sprite.getX() + sprite.getWidth()
-                    || y >= sprite.getY() + sprite.getHeight()) {
-                continue;
-            }
-            if (!wroteHeader) {
-                sb.append("samples ").append(name)
-                        .append(" loc=").append(sprite.getX()).append(',').append(sprite.getY())
-                        .append(" size=").append(sprite.getWidth()).append('x').append(sprite.getHeight())
-                        .append(" ink=").append(sprite.getInk()).append(" blend=").append(sprite.getBlend());
-                wroteHeader = true;
-            }
-            int lx = x - sprite.getX();
-            int ly = y - sprite.getY();
-            int dynPixel = dynBitmap != null && lx >= 0 && ly >= 0
-                    && lx < dynBitmap.getWidth() && ly < dynBitmap.getHeight()
-                    ? dynBitmap.getPixel(lx, ly) : 0;
-            int bakedPixel = baked != null && lx >= 0 && ly >= 0
-                    && lx < baked.getWidth() && ly < baked.getHeight()
-                    ? baked.getPixel(lx, ly) : 0;
-            sb.append(" p").append(x).append(',').append(y)
-                    .append(" dyn=").append(Integer.toHexString(dynPixel))
-                    .append(" baked=").append(Integer.toHexString(bakedPixel));
-        }
-        if (wroteHeader) {
-            sb.append('\n');
-        }
-    }
-
-    private static void appendAsianCatalogueProbe(StringBuilder sb) {
-        try {
-            var metallic = com.libreshockwave.bitmap.Palette.getBuiltIn(
-                    com.libreshockwave.bitmap.Palette.METALLIC);
-            sb.append("probe metallic64=")
-                    .append(Integer.toHexString(metallic.getColor(64) & 0xFFFFFF))
-                    .append(" metallic110=")
-                    .append(Integer.toHexString(metallic.getColor(110) & 0xFFFFFF))
-                    .append('\n');
-
-            var castLibManager = wasmPlayer.getPlayer().getCastLibManager();
-            CastMember member = castLibManager != null
-                    ? castLibManager.findCastMemberByName("cn_sofa_small")
-                    : null;
-            Bitmap bitmap = member != null ? member.getBitmap() : null;
-            CastMemberChunk chunk = member != null ? member.getChunk() : null;
-            DirectorFile sourceFile = chunk != null ? chunk.file() : null;
-            com.libreshockwave.cast.BitmapInfo info = chunk != null
-                    ? com.libreshockwave.cast.BitmapInfo.parse(chunk)
-                    : null;
-            var resolvedPalette = sourceFile != null && info != null
-                    ? sourceFile.resolvePalette(info.paletteId())
-                    : null;
-            sb.append("probe cn_sofa_small member=")
-                    .append(member != null ? member.getCastLibNumber() : -1)
-                    .append(':')
-                    .append(member != null ? member.getMemberNumber() : -1)
-                    .append(" dir=")
-                    .append(sourceFile != null && sourceFile.getConfig() != null
-                            ? sourceFile.getConfig().directorVersion() : -1)
-                    .append(" infoPal=")
-                    .append(info != null ? info.paletteId() : 0)
-                    .append(" resolved=")
-                    .append(resolvedPalette != null ? resolvedPalette.getName() : "")
-                    .append(" pal=")
-                    .append(bitmap != null && bitmap.getImagePalette() != null
-                            ? bitmap.getImagePalette().getName() : "")
-                    .append(" size=")
-                    .append(bitmap != null ? bitmap.getWidth() : 0)
-                    .append('x')
-                    .append(bitmap != null ? bitmap.getHeight() : 0);
-            if (bitmap != null) {
-                appendProbeColorCount(sb, bitmap, 0x33FFFF);
-                appendProbeColorCount(sb, bitmap, 0xFFE1C2);
-                appendProbeColorCount(sb, bitmap, 0xD9BBA1);
-                appendProbeColorCount(sb, bitmap, 0x51201F);
-            }
-            sb.append('\n');
-            appendNamedBitmapProbe(sb, castLibManager, "ctlg.pagelist.left");
-            appendNamedBitmapProbe(sb, castLibManager, "ctlg.pagelist.left.active");
-            appendNamedBitmapProbe(sb, castLibManager, "tree_basicslot_unselected");
-            appendNamedBitmapProbe(sb, castLibManager, "tree_basicslot_selected");
-            appendNamedBitmapProbe(sb, castLibManager, "tree_col1_unselected");
-            appendNamedBitmapProbe(sb, castLibManager, "tree_col1_selected");
-            appendNamedBitmapProbe(sb, castLibManager, "katalogi_ikoni.furni");
-            appendNamedBitmapProbe(sb, castLibManager, "testarrow.down");
-            appendNamedBitmapProbe(sb, castLibManager, "testarrow.right");
-
-            CastMemberChunk fileChunk = castLibManager != null
-                    ? castLibManager.getCastMemberByName("cn_sofa_small")
-                    : null;
-            DirectorFile fileSource = fileChunk != null ? fileChunk.file() : null;
-            com.libreshockwave.cast.BitmapInfo fileInfo = fileChunk != null
-                    ? com.libreshockwave.cast.BitmapInfo.parse(fileChunk)
-                    : null;
-            Bitmap fileBitmap = null;
-            if (fileSource != null && fileChunk != null) {
-                fileBitmap = fileSource.decodeBitmap(fileChunk).orElse(null);
-            }
-            sb.append("probe file cn_sofa_small chunk=")
-                    .append(fileChunk != null ? fileChunk.id().value() : -1)
-                    .append(" dir=")
-                    .append(fileSource != null && fileSource.getConfig() != null
-                            ? fileSource.getConfig().directorVersion() : -1)
-                    .append(" infoPal=")
-                    .append(fileInfo != null ? fileInfo.paletteId() : 0)
-                    .append(" pal=")
-                    .append(fileBitmap != null && fileBitmap.getImagePalette() != null
-                            ? fileBitmap.getImagePalette().getName() : "")
-                    .append(" size=")
-                    .append(fileBitmap != null ? fileBitmap.getWidth() : 0)
-                    .append('x')
-                    .append(fileBitmap != null ? fileBitmap.getHeight() : 0);
-            if (fileBitmap != null) {
-                appendProbeColorCount(sb, fileBitmap, 0x33FFFF);
-                appendProbeColorCount(sb, fileBitmap, 0xFFE1C2);
-                appendProbeColorCount(sb, fileBitmap, 0xD9BBA1);
-                appendProbeColorCount(sb, fileBitmap, 0x51201F);
-            }
-            sb.append('\n');
-
-            if (castLibManager != null) {
-                var cast3 = castLibManager.getCastLib(3);
-                if (cast3 != null) {
-                    sb.append("probe castlib3 name=")
-                            .append(cast3.getName())
-                            .append(" file=")
-                            .append(cast3.getFileName())
-                            .append(" state=")
-                            .append(cast3.getState())
-                            .append(" count=")
-                            .append(cast3.getMemberCount())
-                            .append(" chunks=")
-                            .append(cast3.getMemberChunks().size())
-                            .append('\n');
-                    int shown = 0;
-                    for (var memberEntry : cast3.getMemberChunks().entrySet()) {
-                        int memberNumber = memberEntry.getKey();
-                        if (memberNumber >= 10240 && memberNumber <= 10310 && shown++ < 20) {
-                            CastMemberChunk candidate = memberEntry.getValue();
-                            sb.append("probe castlib3chunk ")
-                                    .append(memberNumber)
-                                    .append(':')
-                                    .append(candidate != null ? candidate.name() : "")
-                                    .append("#")
-                                    .append(candidate != null ? candidate.id().value() : -1)
-                                    .append('\n');
-                        }
-                    }
-                }
-                for (var entry : castLibManager.getCastLibs().entrySet()) {
-                    var castLib = entry.getValue();
-                    if (castLib == null || !castLib.isLoaded()) {
-                        continue;
-                    }
-                    int hits = 0;
-                    StringBuilder names = new StringBuilder();
-                    for (var memberEntry : castLib.getMemberChunks().entrySet()) {
-                        CastMemberChunk candidate = memberEntry.getValue();
-                        String name = candidate != null ? candidate.name() : null;
-                        if (name != null && name.toLowerCase().contains("sofa")) {
-                            if (hits++ > 0) {
-                                names.append(',');
-                            }
-                            names.append(memberEntry.getKey())
-                                    .append(':')
-                                    .append(name)
-                                    .append("#")
-                                    .append(candidate.id().value());
-                        }
-                    }
-                    if (hits > 0 || (castLib.getName() != null
-                            && castLib.getName().toLowerCase().contains("sofa"))) {
-                        sb.append("probe castlib ")
-                                .append(entry.getKey())
-                                .append(" name=")
-                                .append(castLib.getName())
-                                .append(" file=")
-                                .append(castLib.getFileName())
-                                .append(" chunks=")
-                                .append(names)
-                                .append('\n');
-                    }
-                }
-            }
-        } catch (Throwable t) {
-            sb.append("probe error=").append(t.getClass().getSimpleName()).append('\n');
-        }
-    }
-
-    private static void appendProbeColorCount(StringBuilder sb, Bitmap bitmap, int rgb) {
-        int count = 0;
-        for (int pixel : bitmap.getPixels()) {
-            if ((pixel & 0xFFFFFF) == (rgb & 0xFFFFFF)
-                    && ((pixel >>> 24) & 0xFF) != 0) {
-                count++;
-            }
-        }
-        sb.append(' ')
-                .append(Integer.toHexString(rgb & 0xFFFFFF))
-                .append('=')
-                .append(count);
-    }
-
-    private static void appendNamedBitmapProbe(StringBuilder sb, com.libreshockwave.player.cast.CastLibManager castLibManager,
-                                               String name) {
-        try {
-            CastMember member = castLibManager != null ? castLibManager.findCastMemberByName(name) : null;
-            Bitmap bitmap = member != null ? member.getBitmap() : null;
-            CastMemberChunk chunk = member != null ? member.getChunk() : null;
-            DirectorFile sourceFile = chunk != null ? chunk.file() : null;
-            com.libreshockwave.cast.BitmapInfo info = chunk != null && chunk.isBitmap()
-                    ? com.libreshockwave.cast.BitmapInfo.parse(chunk)
-                    : null;
-            com.libreshockwave.bitmap.Palette resolvedPalette = sourceFile != null && info != null
-                    ? sourceFile.resolvePalette(info.paletteId())
-                    : null;
-            sb.append("probe bitmap ").append(name)
-                    .append(" member=")
-                    .append(member != null ? member.getCastLibNumber() : -1)
-                    .append(':')
-                    .append(member != null ? member.getMemberNumber() : -1)
-                    .append(" infoPal=")
-                    .append(info != null ? info.paletteId() : 0)
-                    .append(" resolved=")
-                    .append(resolvedPalette != null ? resolvedPalette.getName() : "")
-                    .append(" imagePal=")
-                    .append(bitmap != null && bitmap.getImagePalette() != null
-                            ? bitmap.getImagePalette().getName() : "")
-                    .append(" size=")
-                    .append(bitmap != null ? bitmap.getWidth() : 0)
-                    .append('x')
-                    .append(bitmap != null ? bitmap.getHeight() : 0)
-                    .append(" depth=")
-                    .append(bitmap != null ? bitmap.getBitDepth() : 0)
-                    .append(" nativeAlpha=")
-                    .append(bitmap != null && bitmap.isNativeAlpha())
-                    .append(" transparent=")
-                    .append(bitmap != null && bitmap.hasTransparentPixels())
-                    .append(" translucent=")
-                    .append(bitmap != null && bitmap.hasTranslucentPixels());
-            if (bitmap != null) {
-                byte[] paletteIndices = bitmap.getPaletteIndices();
-                for (int x = 0; x < Math.min(4, bitmap.getWidth()); x++) {
-                    sb.append(" p").append(x).append('=')
-                            .append(Integer.toHexString(bitmap.getPixel(x, 0)));
-                    if (paletteIndices != null && x < paletteIndices.length) {
-                        sb.append("/i").append(paletteIndices[x] & 0xFF);
-                    }
-                }
-                com.libreshockwave.bitmap.Palette imagePalette = bitmap.getImagePalette();
-                if (imagePalette != null && ("tree_basicslot_unselected".equals(name)
-                        || "tree_col1_unselected".equals(name))) {
-                    appendNearestPaletteProbe(sb, imagePalette, 0x000000);
-                    appendNearestPaletteProbe(sb, imagePalette, 0xF0F0F0);
-                    appendNearestPaletteProbe(sb, imagePalette, 0xE4E4E4);
-                    appendNearestPaletteProbe(sb, imagePalette, 0xFFE6DF);
-                    appendNearestPaletteProbe(sb, imagePalette, 0x67A7A8);
-                }
-            }
-            sb.append('\n');
-        } catch (Exception ignored) {
-            sb.append("probe bitmap ").append(name).append(" error\n");
-        }
-    }
-
-    private static void appendNearestPaletteProbe(StringBuilder sb, com.libreshockwave.bitmap.Palette palette, int rgb) {
-        int index = palette.nearestIndex(rgb);
-        sb.append(" nearest")
-                .append(Integer.toHexString(rgb & 0xFFFFFF))
-                .append("=i")
-                .append(index)
-                .append('/')
-                .append(Integer.toHexString(palette.getColor(index) & 0xFFFFFF));
-    }
+    private record PixelStats(int white, int black, int transparent, int nonWhite) {}
 
     private static boolean intersects(int x, int y, int w, int h,
                                       int rx, int ry, int rw, int rh) {
@@ -1886,11 +1569,28 @@ public class WasmEntry {
         if (b != null) b.notifyDisconnected(instanceId);
     }
 
+    /** JS calls this when a WebSocket is closed with host-side close metadata. */
+    @Export(name = "musDeliverDisconnectedDetail")
+    public static void musDeliverDisconnectedDetail(int instanceId, int closeCode,
+                                                    int wasClean, int detailLen) {
+        WasmMultiuserBridge b = musBridge();
+        if (b != null) {
+            b.notifyDisconnected(instanceId, closeCode, wasClean != 0, stringBufferUtf8(detailLen));
+        }
+    }
+
     /** JS calls this on WebSocket error. */
     @Export(name = "musDeliverError")
     public static void musDeliverError(int instanceId, int errorCode) {
         WasmMultiuserBridge b = musBridge();
         if (b != null) b.notifyError(instanceId, errorCode);
+    }
+
+    /** JS calls this on WebSocket error with host-side diagnostic detail. */
+    @Export(name = "musDeliverErrorDetail")
+    public static void musDeliverErrorDetail(int instanceId, int errorCode, int detailLen) {
+        WasmMultiuserBridge b = musBridge();
+        if (b != null) b.notifyError(instanceId, errorCode, stringBufferUtf8(detailLen));
     }
 
     /**
@@ -1902,7 +1602,7 @@ public class WasmEntry {
         WasmMultiuserBridge b = musBridge();
         if (b == null) return;
         try {
-            String data = new String(stringBuffer, 0, dataLen, StandardCharsets.ISO_8859_1);
+            String data = latin1StringFromStringBuffer(dataLen);
             b.deliverMessage(instanceId, 0, "", "", data);
         } catch (Throwable e) {
             captureError("musDeliverMessage", e);
@@ -2037,6 +1737,42 @@ public class WasmEntry {
             cause = cause.getCause();
             depth++;
         }
+        try {
+            StackTraceElement[] stack = e.getStackTrace();
+            int limit = Math.min(stack.length, 8);
+            for (int i = 0; i < limit; i++) {
+                sb.append("\n  at ").append(stack[i].toString());
+            }
+        } catch (Throwable ignored) {
+            // TeaVM can throw while materializing some exception stacks.
+        }
+        lastError = sb.toString();
+    }
+
+    private static void captureRenderError(Throwable e) {
+        StringBuilder sb = new StringBuilder("[render]");
+        try {
+            sb.append(" ").append(e.getClass().getName());
+        } catch (Throwable ignored) {
+            sb.append(" error");
+        }
+        try {
+            String message = e.getMessage();
+            if (message != null && !message.isEmpty()) {
+                sb.append(": ").append(message);
+            }
+        } catch (Throwable ignored) {
+            // Keep render error reporting side-effect free in TeaVM.
+        }
+        try {
+            StackTraceElement[] stack = e.getStackTrace();
+            int limit = Math.min(stack.length, 8);
+            for (int i = 0; i < limit; i++) {
+                sb.append("\n  at ").append(stack[i].toString());
+            }
+        } catch (Throwable ignored) {
+            // TeaVM can throw while materializing some exception stacks.
+        }
         lastError = sb.toString();
     }
 
@@ -2061,7 +1797,20 @@ public class WasmEntry {
                 sb.append('\n').append(stack);
             }
         }
-        lastError = sb.toString();
+        String trace = sb.toString();
+        lastError = trace;
+        log(trace);
+        if (DebugConfig.isPauseOnScriptErrorEnabled()) {
+            requestScriptErrorPause();
+        }
+    }
+
+    private static void requestScriptErrorPause() {
+        scriptErrorPausePending = true;
+        log("[ScriptError] auto-pause requested before error/disconnect cascade");
+        if (wasmPlayer != null) {
+            wasmPlayer.pause();
+        }
     }
 
     private static QueuedNetProvider netProvider() {
@@ -2071,7 +1820,8 @@ public class WasmEntry {
     private static int writeToStringBuffer(String s) {
         if (s == null || s.isEmpty()) return 0;
         byte[] bytes = s.getBytes();
-        int len = Math.min(bytes.length, stringBuffer.length);
+        growStringBuffer(bytes.length);
+        int len = bytes.length;
         System.arraycopy(bytes, 0, stringBuffer, 0, len);
         return len;
     }
@@ -2079,9 +1829,38 @@ public class WasmEntry {
     private static int writeLatin1ToStringBuffer(String s) {
         if (s == null || s.isEmpty()) return 0;
         byte[] bytes = s.getBytes(StandardCharsets.ISO_8859_1);
-        int len = Math.min(bytes.length, stringBuffer.length);
+        growStringBuffer(bytes.length);
+        int len = bytes.length;
         System.arraycopy(bytes, 0, stringBuffer, 0, len);
         return len;
+    }
+
+    private static void growStringBuffer(int minCapacity) {
+        if (minCapacity <= stringBuffer.length) return;
+        int newCapacity = stringBuffer.length;
+        while (newCapacity < minCapacity) {
+            int doubled = newCapacity * 2;
+            if (doubled <= newCapacity) {
+                newCapacity = minCapacity;
+                break;
+            }
+            newCapacity = doubled;
+        }
+        stringBuffer = new byte[newCapacity];
+    }
+
+    private static String latin1StringFromStringBuffer(int requestedLength) {
+        int len = Math.max(0, Math.min(requestedLength, stringBuffer.length));
+        StringBuilder sb = new StringBuilder(len);
+        for (int i = 0; i < len; i++) {
+            sb.append((char) (stringBuffer[i] & 0xff));
+        }
+        return sb.toString();
+    }
+
+    private static String stringBufferUtf8(int requestedLength) {
+        int len = Math.max(0, Math.min(requestedLength, stringBuffer.length));
+        return len > 0 ? new String(stringBuffer, 0, len, StandardCharsets.UTF_8) : "";
     }
 
 }

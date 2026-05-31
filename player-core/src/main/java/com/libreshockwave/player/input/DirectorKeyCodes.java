@@ -1,7 +1,7 @@
 package com.libreshockwave.player.input;
 
 /**
- * Maps Java AWT KeyEvent VK_ codes to Director's Mac virtual keycodes.
+ * Maps host key codes to Director's Mac virtual keycodes.
  * Director uses Macintosh virtual key codes regardless of platform.
  *
  * Reference: Mac Carbon Events (kVK_*) values.
@@ -10,7 +10,7 @@ public final class DirectorKeyCodes {
 
     private DirectorKeyCodes() {}
 
-    // Java VK_ constants (duplicated here to avoid AWT dependency in player-core)
+    // Desktop host virtual-key values, duplicated here to avoid UI toolkit dependencies in player-core.
     private static final int VK_ENTER = 10;
     private static final int VK_BACK_SPACE = 8;
     private static final int VK_TAB = 9;
@@ -45,11 +45,11 @@ public final class DirectorKeyCodes {
     private static final int VK_0 = 48;
 
     /**
-     * Convert a Java AWT keyCode to a Director Mac virtual keycode.
+     * Convert a desktop host keyCode to a Director Mac virtual keycode.
      */
-    public static int fromJavaKeyCode(int javaVK) {
+    public static int fromDesktopKeyCode(int desktopKeyCode) {
         // Special keys
-        return switch (javaVK) {
+        return switch (desktopKeyCode) {
             case VK_ENTER -> 36;       // kVK_Return
             case VK_TAB -> 48;         // kVK_Tab
             case VK_SPACE -> 49;       // kVK_Space
@@ -81,23 +81,23 @@ public final class DirectorKeyCodes {
 
             // Letter keys (A-Z) → Mac kVK_ANSI_A..Z
             default -> {
-                if (javaVK >= VK_A && javaVK <= VK_A + 25) {
-                    yield macLetterCode(javaVK - VK_A);
+                if (desktopKeyCode >= VK_A && desktopKeyCode <= VK_A + 25) {
+                    yield macLetterCode(desktopKeyCode - VK_A);
                 }
                 // Digit keys (0-9) → Mac kVK_ANSI_0..9
-                if (javaVK >= VK_0 && javaVK <= VK_0 + 9) {
-                    yield macDigitCode(javaVK - VK_0);
+                if (desktopKeyCode >= VK_0 && desktopKeyCode <= VK_0 + 9) {
+                    yield macDigitCode(desktopKeyCode - VK_0);
                 }
-                // Fallback: return Java code (may not match Director expectations)
-                yield javaVK;
+                // Fallback: return host code (may not match Director expectations)
+                yield desktopKeyCode;
             }
         };
     }
 
     /**
      * Convert a browser KeyboardEvent.keyCode to a Director Mac virtual keycode.
-     * Explicit mapping — does NOT delegate to fromJavaKeyCode, since browser
-     * keyCodes differ from Java VK_ codes for Enter (13 vs 10) and Delete (46 vs 127).
+     * Explicit mapping because browser keyCodes differ from desktop host
+     * virtual-key values for Enter (13 vs 10) and Delete (46 vs 127).
      */
     public static int fromBrowserKeyCode(int browserKeyCode) {
         return switch (browserKeyCode) {

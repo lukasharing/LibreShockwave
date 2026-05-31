@@ -2,7 +2,9 @@ package com.libreshockwave.vm.opcode;
 
 import com.libreshockwave.lingo.Opcode;
 import com.libreshockwave.lingo.StringChunkType;
+import com.libreshockwave.vm.DebugConfig;
 import com.libreshockwave.vm.datum.Datum;
+import com.libreshockwave.vm.datum.DatumFormatter;
 import com.libreshockwave.vm.builtin.cast.CastLibProvider;
 import com.libreshockwave.vm.builtin.movie.MoviePropertyProvider;
 import com.libreshockwave.vm.builtin.sprite.SpritePropertyProvider;
@@ -14,6 +16,7 @@ import com.libreshockwave.vm.opcode.dispatch.SoundChannelMethodDispatcher;
 import com.libreshockwave.vm.util.AncestorChainWalker;
 import com.libreshockwave.vm.util.StringChunkUtils;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -54,6 +57,7 @@ public final class PropertyOpcodes {
         String propName = ctx.resolveName(ctx.getArgument());
         Datum value = ctx.pop();
         if (ctx.getReceiver() instanceof Datum.ScriptInstance si) {
+            traceScriptInstanceOpcodeWrite("SET_PROP", si, propName, value);
             AncestorChainWalker.setProperty(si, propName, value);
             ctx.tracePropertySet(propName, value);
         }
@@ -88,7 +92,7 @@ public final class PropertyOpcodes {
     /**
      * Get built-in constants that don't require a provider.
      */
-    static Datum getBuiltinConstant(String propName) {
+    public static Datum getBuiltinConstant(String propName) {
         if ("pi".equalsIgnoreCase(propName)) return Datum.of(Math.PI);
         if ("true".equalsIgnoreCase(propName)) return Datum.TRUE;
         if ("false".equalsIgnoreCase(propName)) return Datum.FALSE;
@@ -129,7 +133,14 @@ public final class PropertyOpcodes {
         String propName = ctx.resolveName(ctx.getArgument());
         Datum obj = ctx.pop();
 
-        Datum result = switch (obj) {
+        Datum result = getObjectProperty(obj, propName, ctx);
+
+        ctx.push(result);
+        return true;
+    }
+
+    private static Datum getObjectProperty(Datum obj, String propName, ExecutionContext ctx) {
+        return switch (obj) {
             case Datum.CastLibRef clr -> {
                 if ("member".equalsIgnoreCase(propName)) {
                     yield Datum.CastLibMemberAccessor.of(clr.castLibNum());
@@ -144,6 +155,8 @@ public final class PropertyOpcodes {
             case Datum.List list -> getListProp(list, propName);
             case Datum.Str str -> getStringProp(str.toStr(), propName);
             case Datum.FieldText fieldText -> getStringProp(fieldText.toStr(), propName);
+            case Datum.BinaryData binary -> getBinaryDataProp(binary, propName);
+            case Datum.StringChunkAccessor accessor -> getStringChunkAccessorProp(accessor, propName);
             case Datum.MovieRef m -> {
                 MoviePropertyProvider provider = MoviePropertyProvider.getProvider();
                 yield provider != null ? provider.getMovieProp(propName) : Datum.VOID;
@@ -172,6 +185,8 @@ public final class PropertyOpcodes {
                 yield stageProvider != null ? stageProvider.getStageProp(propName) : Datum.VOID;
             }
             case Datum.ImageRef ir -> ImageMethodDispatcher.getProperty(ir, propName);
+            case Datum.TextMemberRangeRef range -> getTextMemberRangeProp(range, propName);
+            case Datum.TextMemberChunkAccessor accessor -> getTextMemberChunkAccessorProp(accessor, propName);
             case Datum.Point point -> getPointProp(point, propName);
             case Datum.Rect rect -> getRectProp(rect, propName);
             case Datum.Color color -> {
@@ -187,18 +202,18 @@ public final class PropertyOpcodes {
                     yield Datum.symbol(TypeBuiltins.getIlkType(obj));
                 }
                 System.err.println("[LingoVM] Missing get accessor: " + propName + " on " + obj.getClass().getSimpleName());
-                System.err.println(ctx.formatCallStack());
+                if (ctx != null) {
+                    System.err.println(ctx.formatCallStack());
+                }
                 yield Datum.VOID;
             }
         };
-
-        ctx.push(result);
-        return true;
     }
 
     private static Datum getPointProp(Datum.Point point, String propName) {
         if ("loch".equalsIgnoreCase(propName) || "x".equalsIgnoreCase(propName)) return Datum.of(point.x());
         if ("locv".equalsIgnoreCase(propName) || "y".equalsIgnoreCase(propName)) return Datum.of(point.y());
+        if ("ilk".equalsIgnoreCase(propName)) return Datum.symbol("point");
         return Datum.VOID;
     }
 
@@ -209,6 +224,7 @@ public final class PropertyOpcodes {
         if ("bottom".equalsIgnoreCase(propName)) return Datum.of(rect.bottom());
         if ("width".equalsIgnoreCase(propName)) return Datum.of(rect.right() - rect.left());
         if ("height".equalsIgnoreCase(propName)) return Datum.of(rect.bottom() - rect.top());
+        if ("ilk".equalsIgnoreCase(propName)) return Datum.symbol("rect");
         return Datum.VOID;
     }
 
@@ -233,8 +249,30 @@ public final class PropertyOpcodes {
     }
 
     private static Datum getStringProp(String str, String propName) {
+        if (isTextMemberChunkProperty(propName)) return new Datum.StringChunkAccessor(str, propName.toLowerCase());
         if ("length".equalsIgnoreCase(propName)) return Datum.of(str.length());
         if ("ilk".equalsIgnoreCase(propName)) return Datum.symbol("string");
+        return Datum.VOID;
+    }
+
+    private static Datum getStringChunkAccessorProp(Datum.StringChunkAccessor accessor, String propName) {
+        int index = parsePositiveIndex(propName);
+        if (index <= 0) {
+            return Datum.VOID;
+        }
+        StringChunkType type;
+        try {
+            type = StringChunkType.fromName(accessor.chunkType());
+        } catch (IllegalArgumentException ex) {
+            type = StringChunkType.CHAR;
+        }
+        return Datum.of(StringChunkUtils.getChunk(
+                accessor.value(), type, index, MoviePropertyProvider.ItemDelimiterCache._char));
+    }
+
+    private static Datum getBinaryDataProp(Datum.BinaryData binary, String propName) {
+        if ("length".equalsIgnoreCase(propName)) return Datum.of(binary.value().length());
+        if ("ilk".equalsIgnoreCase(propName)) return Datum.symbol("binary");
         return Datum.VOID;
     }
 
@@ -247,6 +285,7 @@ public final class PropertyOpcodes {
             case Datum.CastLibRef clr -> setCastLibProp(clr, propName, value);
             case Datum.CastMemberRef cmr -> setCastMemberProp(cmr, propName, value);
             case Datum.ScriptInstance si -> {
+                traceScriptInstanceOpcodeWrite("SET_OBJ_PROP", si, propName, value);
                 AncestorChainWalker.setProperty(si, propName, value);
                 ctx.tracePropertySet(propName, value);
             }
@@ -294,6 +333,12 @@ public final class PropertyOpcodes {
                 else if ("locv".equalsIgnoreCase(propName) || "y".equalsIgnoreCase(propName)) point.setY(v);
             }
             case Datum.ImageRef ir -> ImageMethodDispatcher.setProperty(ir, propName, value);
+            case Datum.TextMemberRangeRef range -> setTextMemberRangeProp(range, propName, value);
+            case Datum.TextMemberChunkAccessor accessor -> setTextMemberRangeProp(
+                    new Datum.TextMemberRangeRef(accessor.castLibNum(), accessor.memberNum(),
+                            accessor.chunkType(), 1, -1),
+                    propName,
+                    value);
             case Datum d when d.isVoid() -> {
                 // Silently ignore property assignment on Void to match getObjProp and Director behavior.
             }
@@ -304,6 +349,23 @@ public final class PropertyOpcodes {
         }
 
         return true;
+    }
+
+    private static void traceScriptInstanceOpcodeWrite(String opcode, Datum.ScriptInstance receiver,
+                                                       String propName, Datum value) {
+        if (!DebugConfig.isDebugPlaybackEnabled()) {
+            return;
+        }
+        Datum.ScriptInstance owner = AncestorChainWalker.findOwner(receiver, propName);
+        System.out.println("[TRACE] " + opcode
+                + " receiver=" + describeInstance(receiver)
+                + " owner=" + describeInstance(owner != null ? owner : receiver)
+                + " prop=#" + propName
+                + " value=" + DatumFormatter.formatBrief(value));
+    }
+
+    private static String describeInstance(Datum.ScriptInstance instance) {
+        return instance == null ? "<none>" : "<script#" + instance.scriptId() + ">";
     }
 
     /**
@@ -358,6 +420,13 @@ public final class PropertyOpcodes {
             return Datum.VOID;
         }
 
+        if (isTextMemberChunkProperty(propName)) {
+            return new Datum.TextMemberChunkAccessor(
+                    cmr.castLibNum(),
+                    cmr.memberNum(),
+                    propName.toLowerCase());
+        }
+
         // Delegate to provider for full property access with lazy loading
         return provider.getMemberProp(cmr.castLibNum(), cmr.memberNum(), propName);
     }
@@ -367,6 +436,13 @@ public final class PropertyOpcodes {
             return true;
         }
         return provider != null && !provider.memberExists(cmr.castLibNum(), cmr.memberNum());
+    }
+
+    private static boolean isTextMemberChunkProperty(String propName) {
+        return "char".equalsIgnoreCase(propName)
+                || "word".equalsIgnoreCase(propName)
+                || "item".equalsIgnoreCase(propName)
+                || "line".equalsIgnoreCase(propName);
     }
 
     /**
@@ -381,21 +457,88 @@ public final class PropertyOpcodes {
         return provider.setMemberProp(cmr.castLibNum(), cmr.memberNum(), propName, value);
     }
 
-    private static boolean theBuiltin(ExecutionContext ctx) {
-        // THE_BUILTIN is used for "the" expressions that take an argument
-        // e.g., "the paramCount", "the name of member 1"
-        // An arglist is pushed before this opcode and must be popped
-        Datum argListDatum = ctx.pop();
+    private static boolean setTextMemberRangeProp(Datum.TextMemberRangeRef range, String propName, Datum value) {
+        CastLibProvider provider = CastLibProvider.getProvider();
+        return provider != null && provider.setMemberTextRangeProp(
+                range.castLibNum(),
+                range.memberNum(),
+                range.chunkType(),
+                range.start(),
+                range.end(),
+                propName,
+                value);
+    }
 
+    private static Datum getTextMemberRangeProp(Datum.TextMemberRangeRef range, String propName) {
+        CastLibProvider provider = CastLibProvider.getProvider();
+        return provider != null
+                ? provider.getMemberTextRangeProp(
+                        range.castLibNum(),
+                        range.memberNum(),
+                        range.chunkType(),
+                        range.start(),
+                        range.end(),
+                        propName)
+                : Datum.VOID;
+    }
+
+    private static Datum getTextMemberChunkAccessorProp(Datum.TextMemberChunkAccessor accessor,
+                                                        String propName) {
+        int index = parsePositiveIndex(propName);
+        if (index > 0) {
+            return new Datum.TextMemberRangeRef(
+                    accessor.castLibNum(),
+                    accessor.memberNum(),
+                    accessor.chunkType(),
+                    index,
+                    index);
+        }
+        return Datum.VOID;
+    }
+
+    private static int parsePositiveIndex(String propName) {
+        if (propName == null) {
+            return 0;
+        }
+        try {
+            int index = Integer.parseInt(propName);
+            return index > 0 ? index : 0;
+        } catch (NumberFormatException ignored) {
+            return 0;
+        }
+    }
+
+    private static boolean theBuiltin(ExecutionContext ctx) {
+        Datum argListDatum = ctx.pop();
         String propName = ctx.resolveName(ctx.getArgument());
+        ctx.push(resolveTheBuiltin(propName, argListDatum, ctx));
+        return true;
+    }
+
+    static Datum resolveTheBuiltin(String propName, Datum argListDatum, ExecutionContext ctx) {
+        // THE_BUILTIN is used for "the" expressions that take an argument,
+        // e.g. "the paramCount", "the string of tid", "the name of member 1".
+        List<Datum> args = extractArgList(argListDatum);
 
         if ("paramcount".equalsIgnoreCase(propName)) {
-            ctx.push(Datum.of(ctx.getScope().getArguments().size()));
-            return true;
+            return Datum.of(ctx.getScope().getArguments().size());
         }
         if ("result".equalsIgnoreCase(propName)) {
-            ctx.push(ctx.getScope().getReturnValue());
-            return true;
+            return ctx.getScope().getReturnValue();
+        }
+
+        if (!args.isEmpty()) {
+            if (args.size() == 1) {
+                Datum propertyResult = getObjectProperty(args.get(0), propName, ctx);
+                if (!propertyResult.isVoid()) {
+                    return propertyResult;
+                }
+            }
+
+            Datum builtinResult = ctx != null ? ctx.invokeBuiltinIfPresent(propName, args) : null;
+            if (builtinResult != null) {
+                return builtinResult;
+            }
         }
 
         // First try movie properties
@@ -403,14 +546,29 @@ public final class PropertyOpcodes {
         if (provider != null) {
             Datum value = provider.getMovieProp(propName);
             if (!value.isVoid()) {
-                ctx.push(value);
-                return true;
+                return value;
+            }
+        }
+
+        if (args.isEmpty()) {
+            Datum builtinResult = ctx.invokeBuiltinIfPresent(propName, args);
+            if (builtinResult != null && !builtinResult.isVoid()) {
+                return builtinResult;
             }
         }
 
         // Fall back to built-in constants
-        ctx.push(getBuiltinConstant(propName));
-        return true;
+        return getBuiltinConstant(propName);
+    }
+
+    private static List<Datum> extractArgList(Datum argListDatum) {
+        if (argListDatum instanceof Datum.ArgList al) {
+            return al.items();
+        }
+        if (argListDatum instanceof Datum.ArgListNoRet al) {
+            return al.items();
+        }
+        return List.of();
     }
 
     /**
@@ -633,7 +791,7 @@ public final class PropertyOpcodes {
                     // Lingo uses 1-based indexing
                     int zeroIndex = numericIndex - 1;
                     if (zeroIndex >= 0 && zeroIndex < list.items().size()) {
-                        yield Datum.valueOrVoid(list.items().get(zeroIndex));
+                        yield list.items().get(zeroIndex);
                     }
                     yield Datum.VOID;
                 }
@@ -687,6 +845,9 @@ public final class PropertyOpcodes {
                 yield stageProvider != null ? stageProvider.getStageProp(propName) : Datum.VOID;
             }
             case Datum.ImageRef ir -> ImageMethodDispatcher.getProperty(ir, propName);
+            case Datum.StringChunkAccessor accessor -> getStringChunkAccessorProp(accessor, propName);
+            case Datum.TextMemberRangeRef range -> getTextMemberRangeProp(range, propName);
+            case Datum.TextMemberChunkAccessor accessor -> getTextMemberChunkAccessorProp(accessor, propName);
             case Datum.Int intVal -> {
                 // Director: chained property access on integers routes to sprite properties.
                 // e.g., pBuffer.image where pBuffer is a sprite channel number (integer).
@@ -730,6 +891,9 @@ public final class PropertyOpcodes {
                 yield stageProvider != null ? stageProvider.getStageProp(propName) : Datum.VOID;
             }
             case Datum.ImageRef ir -> ImageMethodDispatcher.getProperty(ir, propName);
+            case Datum.StringChunkAccessor accessor -> getStringChunkAccessorProp(accessor, propName);
+            case Datum.TextMemberRangeRef range -> getTextMemberRangeProp(range, propName);
+            case Datum.TextMemberChunkAccessor accessor -> getTextMemberChunkAccessorProp(accessor, propName);
             case Datum.SoundChannel sc -> SoundChannelMethodDispatcher.getProperty(sc, propName);
             default -> Datum.VOID;
         };

@@ -74,7 +74,7 @@ class BitmapCacheTest {
     }
 
     @Test
-    void indexedBackgroundTransparentRemapUsesDirectForeColorAndResolvedBackColor() {
+    void indexedBackgroundTransparentDoesNotRequestPaletteRampRemap() {
         Bitmap raw = new Bitmap(3, 1, 8, new int[] {
                 0xFFFFFFFF,
                 0xFF7B5005,
@@ -89,9 +89,53 @@ class BitmapCacheTest {
         BitmapCache.IndexedMatteColorRemap remap = BitmapCache.resolveIndexedMatteColorRemap(
                 raw, InkMode.BACKGROUND_TRANSPARENT.code(), 0x000000, 1, true, true, palette);
 
-        assertNotNull(remap);
-        assertEquals(0x000000, remap.foreColor());
-        assertEquals(0x6699FF, remap.backColor());
+        assertNull(remap);
+    }
+
+    @Test
+    void backgroundTransparentKeepsIndexedSurvivorColorsWhenSpriteHasForeAndBackColor() {
+        Bitmap raw = new Bitmap(3, 1, 8, new int[] {
+                0xFFFFFFFF,
+                0xFF336699,
+                0xFF000000
+        });
+        raw.setPaletteIndices(new byte[] {0, (byte) 128, (byte) 255});
+        CastMember member = new CastMember(1, 10005, MemberType.BITMAP);
+        member.setBitmapDirectly(raw);
+
+        Bitmap processed = new BitmapCache().getProcessedDynamic(
+                member, InkMode.BACKGROUND_TRANSPARENT.code(), 0xFFFFFF,
+                0xCC0000, true, true);
+
+        assertNotNull(processed);
+        assertEquals(0x00000000, processed.getPixel(0, 0),
+                "backColor is only the transparent key for ink 36");
+        assertEquals(0xFF336699, processed.getPixel(1, 0),
+                "surviving indexed pixels must keep their source color");
+        assertEquals(0xFF000000, processed.getPixel(2, 0));
+    }
+
+    @Test
+    void backgroundTransparentScriptTextImageKeysItsRenderedBackground() {
+        Bitmap raw = new Bitmap(3, 1, 32, new int[] {
+                0xFF6794A7,
+                0xFFFFFFFF,
+                0xFF6794A7
+        });
+        raw.markScriptModified();
+        raw.markTextRenderedImage(0xFF6794A7);
+        CastMember member = new CastMember(1, 10006, MemberType.BITMAP);
+        member.setBitmapDirectly(raw);
+
+        Bitmap processed = new BitmapCache().getProcessedScriptModifiedDynamic(
+                member, InkMode.BACKGROUND_TRANSPARENT.code(), 0xFFFFFF,
+                0, false, false, false);
+
+        assertNotNull(processed);
+        assertEquals(0x00000000, processed.getPixel(0, 0),
+                "script-rendered text images use their own backing color as ink 36 key");
+        assertEquals(0xFFFFFFFF, processed.getPixel(1, 0));
+        assertEquals(0x00000000, processed.getPixel(2, 0));
     }
 
     @Test
@@ -173,8 +217,140 @@ class BitmapCacheTest {
     }
 
     @Test
-    void quadCopiedPalettedWrapperKeepsIndicesAndDynamicMatteRemap() {
-        Palette sourcePalette = new Palette(new int[] {0xFFFFFF, 0xFF808080, 0xFF000000}, "furni-ramp");
+    void drawnCalendarGridSurvivesMatteWindowElementInk() {
+        Bitmap calendar = new Bitmap(169, 145, 32);
+        calendar.fill(0xFFFFFFFF);
+        Datum.PropList drawProps = new Datum.PropList();
+        drawProps.add(new Datum.Symbol("shapeType"), new Datum.Symbol("rect"));
+        drawProps.add(new Datum.Symbol("lineSize"), Datum.of(1));
+        drawProps.add(new Datum.Symbol("color"), new Datum.Color(0, 0, 0));
+
+        for (int row = 0; row < 6; row++) {
+            for (int col = 0; col < 7; col++) {
+                int left = col * 24;
+                int top = row * 24;
+                ImageMethodDispatcher.dispatch(new Datum.ImageRef(calendar), "draw",
+                        List.of(new Datum.Rect(left, top, left + 25, top + 25), drawProps));
+            }
+        }
+
+        CastMember member = new CastMember(1, 10002, MemberType.BITMAP);
+        member.setBitmapDirectly(calendar);
+        RenderSprite sprite = new RenderSprite(
+                1, 0, 0, 169, 145, 0, true,
+                RenderSprite.SpriteType.BITMAP,
+                null, member,
+                0x000000, 0xFFFFFF, false, true,
+                InkMode.MATTE.code(), 100, false, false, null, false
+        );
+
+        RenderSprite baked = new SpriteBaker(new BitmapCache(), null, null).bake(sprite);
+
+        assertNotNull(baked.getBakedBitmap());
+        assertEquals(0xFF000000, baked.getBakedBitmap().getPixel(24, 12),
+                "calendar grid lines drawn by image.draw(rect, props) must be present before matte processing");
+        assertEquals(0xFF000000, baked.getBakedBitmap().getPixel(168, 12),
+                "the rightmost calendar border must survive rect drawing and matte processing");
+        assertEquals(0xFFFFFFFF, baked.getBakedBitmap().getPixel(12, 12),
+                "matte must not flood through the outer drawn border and erase cell backgrounds");
+    }
+
+    @Test
+    void drawnCalendarGridSurvivesBackgroundTransparentWindowElementInk() {
+        Bitmap calendar = new Bitmap(169, 145, 32);
+        calendar.fill(0xFFFFFFFF);
+        Datum.PropList drawProps = new Datum.PropList();
+        drawProps.add(new Datum.Symbol("shapeType"), new Datum.Symbol("rect"));
+        drawProps.add(new Datum.Symbol("lineSize"), Datum.of(1));
+        drawProps.add(new Datum.Symbol("color"), new Datum.Color(0, 0, 0));
+
+        for (int row = 0; row < 6; row++) {
+            for (int col = 0; col < 7; col++) {
+                int left = col * 24;
+                int top = row * 24;
+                if (row == 0 && col == 1) {
+                    calendar.fillRect(left, top + 11, 25, 2, 0xFF66BB22);
+                }
+                ImageMethodDispatcher.dispatch(new Datum.ImageRef(calendar), "draw",
+                        List.of(new Datum.Rect(left, top, left + 25, top + 25), drawProps));
+            }
+        }
+
+        CastMember member = new CastMember(1, 10003, MemberType.BITMAP);
+        member.setBitmapDirectly(calendar);
+        RenderSprite sprite = new RenderSprite(
+                1, 0, 0, 169, 145, 0, true,
+                RenderSprite.SpriteType.BITMAP,
+                null, member,
+                0x000000, 0x000000, false, true,
+                InkMode.BACKGROUND_TRANSPARENT.code(), 100, false, false, null, false
+        );
+
+        RenderSprite baked = new SpriteBaker(new BitmapCache(), null, null).bake(sprite);
+
+        assertNotNull(baked.getBakedBitmap());
+        assertEquals(0xFF000000, baked.getBakedBitmap().getPixel(24, 12),
+                "ink 36 on a 32-bit script image must remove white, not drawn black grid lines");
+        assertEquals(0xFF000000, baked.getBakedBitmap().getPixel(168, 12),
+                "the final right calendar border must not be keyed out by ink 36");
+        assertEquals(0xFF66BB22, baked.getBakedBitmap().getPixel(30, 11),
+                "event fills should remain visible under window-element ink");
+    }
+
+    @Test
+    void drawnCalendarGridSurvivesCopiedSelectionAndBackgroundTransparentWindowElementInk() {
+        Bitmap calendar = new Bitmap(169, 145, 32);
+        calendar.fill(0xFFFFFFFF);
+        Datum.PropList drawProps = new Datum.PropList();
+        drawProps.add(new Datum.Symbol("shapeType"), new Datum.Symbol("rect"));
+        drawProps.add(new Datum.Symbol("lineSize"), Datum.of(1));
+        drawProps.add(new Datum.Symbol("color"), new Datum.Color(0, 0, 0));
+
+        for (int row = 0; row < 6; row++) {
+            for (int col = 0; col < 7; col++) {
+                int left = col * 24;
+                int top = row * 24;
+                if (row == 0 && col == 1) {
+                    calendar.fillRect(left, top + 11, 25, 2, 0xFF66BB22);
+                }
+                ImageMethodDispatcher.dispatch(new Datum.ImageRef(calendar), "draw",
+                        List.of(new Datum.Rect(left, top, left + 25, top + 25), drawProps));
+            }
+        }
+
+        Bitmap selected = new Bitmap(169, 145, 32);
+        selected.fill(0xFFFFFFFF);
+        selected.fillRect(1, 1, 23, 23, 0xFFD3D3D3);
+        Datum.PropList inkProps = new Datum.PropList();
+        inkProps.add(new Datum.Symbol("ink"), Datum.of(36));
+        ImageMethodDispatcher.dispatch(new Datum.ImageRef(selected), "copyPixels",
+                List.of(new Datum.ImageRef(calendar), new Datum.Rect(0, 0, 169, 145),
+                        new Datum.Rect(0, 0, 169, 145), inkProps));
+
+        CastMember member = new CastMember(1, 10004, MemberType.BITMAP);
+        member.setBitmapDirectly(selected);
+        RenderSprite sprite = new RenderSprite(
+                1, 0, 0, 169, 145, 0, true,
+                RenderSprite.SpriteType.BITMAP,
+                null, member,
+                0x000000, 0x000000, false, true,
+                InkMode.BACKGROUND_TRANSPARENT.code(), 100, false, false, null, false
+        );
+
+        RenderSprite baked = new SpriteBaker(new BitmapCache(), null, null).bake(sprite);
+
+        assertNotNull(baked.getBakedBitmap());
+        assertEquals(0xFF000000, baked.getBakedBitmap().getPixel(24, 12),
+                "grid lines must survive both the Lingo selection copy and the final sprite ink");
+        assertEquals(0xFF000000, baked.getBakedBitmap().getPixel(168, 12),
+                "the right calendar border must survive both the Lingo copy and final sprite ink");
+        assertEquals(0xFFD3D3D3, baked.getBakedBitmap().getPixel(12, 12),
+                "the selected cell fill should remain after final baking");
+    }
+
+    @Test
+    void quadCopiedPalettedTargetKeepsIndicesAndDynamicMatteRemap() {
+        Palette sourcePalette = new Palette(new int[] {0xFFFFFF, 0xFF808080, 0xFF000000}, "shade-ramp");
         Bitmap src = new Bitmap(2, 3, 8, new int[] {
                 0xFFFFFFFF, 0xFF000000,
                 0xFF808080, 0xFF000000,
@@ -188,7 +364,7 @@ class BitmapCacheTest {
                 0, (byte) 128
         });
 
-        Bitmap dest = new Bitmap(3, 2, 32);
+        Bitmap dest = new Bitmap(3, 2, 8);
         Datum.List quad = new Datum.List(new ArrayList<>(List.of(
                 new Datum.Point(3, 0),
                 new Datum.Point(3, 2),
@@ -226,6 +402,58 @@ class BitmapCacheTest {
         assertEquals(0xFF196633, baked.getBakedBitmap().getPixel(1, 0));
         assertEquals(0x00000000, baked.getBakedBitmap().getPixel(2, 0));
         assertEquals(0xFF196633, baked.getBakedBitmap().getPixel(0, 1));
+        assertEquals(0xFF000000, baked.getBakedBitmap().getPixel(1, 1));
+        assertEquals(0xFF000000, baked.getBakedBitmap().getPixel(2, 1));
+    }
+
+    @Test
+    void quadCopiedPalettedSourceDoesNotMakeRgbTargetIndexed() {
+        Palette sourcePalette = new Palette(new int[] {0xFFFFFF, 0xFF808080, 0xFF000000}, "shade-ramp");
+        Bitmap src = new Bitmap(2, 3, 8, new int[] {
+                0xFFFFFFFF, 0xFF000000,
+                0xFF808080, 0xFF000000,
+                0xFFFFFFFF, 0xFF808080
+        });
+        src.setImagePalette(sourcePalette);
+        src.setPaletteIndices(new byte[] {
+                0, (byte) 255,
+                (byte) 128, (byte) 255,
+                0, (byte) 128
+        });
+
+        Bitmap dest = new Bitmap(3, 2, 32);
+        Datum.List quad = new Datum.List(new ArrayList<>(List.of(
+                new Datum.Point(3, 0),
+                new Datum.Point(3, 2),
+                new Datum.Point(0, 2),
+                new Datum.Point(0, 0)
+        )));
+
+        ImageMethodDispatcher.dispatch(new Datum.ImageRef(dest), "copyPixels",
+                List.of(new Datum.ImageRef(src), quad, new Datum.Rect(0, 0, 2, 3)));
+
+        assertNull(dest.getImagePalette());
+        assertNull(dest.getPaletteIndices());
+
+        CastMember member = new CastMember(1, 10006, MemberType.BITMAP);
+        member.setBitmapDirectly(dest);
+
+        RenderSprite sprite = new RenderSprite(
+                1, 0, 0, 3, 2, 0, true,
+                RenderSprite.SpriteType.BITMAP,
+                null, member,
+                0x000000, 0x33CC66, true, true,
+                8, 100, false, false, null, false
+        );
+
+        SpriteBaker baker = new SpriteBaker(new BitmapCache(), null, null);
+        RenderSprite baked = baker.bake(sprite);
+
+        assertNotNull(baked.getBakedBitmap());
+        assertEquals(0x00000000, baked.getBakedBitmap().getPixel(0, 0));
+        assertEquals(0xFF808080, baked.getBakedBitmap().getPixel(1, 0));
+        assertEquals(0x00000000, baked.getBakedBitmap().getPixel(2, 0));
+        assertEquals(0xFF808080, baked.getBakedBitmap().getPixel(0, 1));
         assertEquals(0xFF000000, baked.getBakedBitmap().getPixel(1, 1));
         assertEquals(0xFF000000, baked.getBakedBitmap().getPixel(2, 1));
     }

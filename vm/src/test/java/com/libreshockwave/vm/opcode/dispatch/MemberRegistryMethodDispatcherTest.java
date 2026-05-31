@@ -120,6 +120,138 @@ class MemberRegistryMethodDispatcherTest {
     }
 
     @Test
+    void memberExistsDoesNotRememberRegistrySlotForFieldZeroLookup() {
+        int propsSlot = (5 << 16) | 1763;
+        Datum.PropList registry = new Datum.PropList();
+        registry.putTyped("lamp_armas.props", false, Datum.of(propsSlot));
+        Datum.ScriptInstance instance = new Datum.ScriptInstance(1, new LinkedHashMap<>());
+        instance.properties().put("pAllMemNumList", registry);
+
+        RegistryFieldSlotProvider provider = new RegistryFieldSlotProvider();
+        CastLibProvider.setProvider(provider);
+        try {
+            MemberRegistryMethodDispatcher.DispatchResult result =
+                    MemberRegistryMethodDispatcher.dispatch(
+                            instance,
+                            "memberExists",
+                            List.of(Datum.of("lamp_armas.props")));
+
+            assertTrue(result.handled());
+            assertEquals(1, result.value().toInt());
+        } finally {
+            CastLibProvider.clearProvider();
+            MemberRegistryMethodDispatcher.clearRememberedAliases();
+        }
+    }
+
+    @Test
+    void getmemnumNormalizesRawRegistrySlotWithoutRememberingFieldZeroContext() {
+        int rawPropsMember = 1763;
+        int propsSlot = (5 << 16) | rawPropsMember;
+        Datum.PropList registry = new Datum.PropList();
+        registry.putTyped("lamp_armas.props", false, Datum.of(rawPropsMember));
+        Datum.ScriptInstance instance = new Datum.ScriptInstance(1, new LinkedHashMap<>());
+        instance.properties().put("pAllMemNumList", registry);
+
+        RegistryFieldSlotProvider provider = new RegistryFieldSlotProvider();
+        CastLibProvider.setProvider(provider);
+        try {
+            MemberRegistryMethodDispatcher.DispatchResult result =
+                    MemberRegistryMethodDispatcher.dispatch(
+                            instance,
+                            "getmemnum",
+                            List.of(Datum.of("lamp_armas.props")));
+
+            assertTrue(result.handled());
+            assertEquals(propsSlot, result.value().toInt());
+            assertEquals(propsSlot, registry.get("lamp_armas.props").toInt());
+        } finally {
+            CastLibProvider.clearProvider();
+            MemberRegistryMethodDispatcher.clearRememberedAliases();
+        }
+    }
+
+    @Test
+    void getmemnumNormalizesRawRegistrySlotForArbitraryFieldName() {
+        int rawFieldMember = 321;
+        int fieldSlot = (7 << 16) | rawFieldMember;
+        Datum.PropList registry = new Datum.PropList();
+        registry.putTyped("room_config", false, Datum.of(rawFieldMember));
+        Datum.ScriptInstance instance = new Datum.ScriptInstance(1, new LinkedHashMap<>());
+        instance.properties().put("pAllMemNumList", registry);
+
+        GenericNamedFieldProvider provider = new GenericNamedFieldProvider("room_config", 7, rawFieldMember);
+        CastLibProvider.setProvider(provider);
+        try {
+            MemberRegistryMethodDispatcher.DispatchResult result =
+                    MemberRegistryMethodDispatcher.dispatch(
+                            instance,
+                            "getmemnum",
+                            List.of(Datum.of("room_config")));
+
+            assertTrue(result.handled());
+            assertEquals(fieldSlot, result.value().toInt());
+            assertEquals(fieldSlot, registry.get("room_config").toInt());
+        } finally {
+            CastLibProvider.clearProvider();
+            MemberRegistryMethodDispatcher.clearRememberedAliases();
+        }
+    }
+
+    @Test
+    void getmemnumNormalizesRawRegistrySlotBeforeUsingCollidingNameLookup() {
+        int rawFieldMember = 162;
+        int fieldSlot = (7 << 16) | rawFieldMember;
+        Datum.PropList registry = new Datum.PropList();
+        registry.putTyped("layout.element", false, Datum.of(rawFieldMember));
+        Datum.ScriptInstance instance = new Datum.ScriptInstance(1, new LinkedHashMap<>());
+        instance.properties().put("pAllMemNumList", registry);
+
+        RawRegistryCollisionProvider provider = new RawRegistryCollisionProvider();
+        CastLibProvider.setProvider(provider);
+        try {
+            MemberRegistryMethodDispatcher.DispatchResult result =
+                    MemberRegistryMethodDispatcher.dispatch(
+                            instance,
+                            "getmemnum",
+                            List.of(Datum.of("layout.element")));
+
+            assertTrue(result.handled());
+            assertEquals(fieldSlot, result.value().toInt());
+            assertEquals(fieldSlot, registry.get("layout.element").toInt());
+        } finally {
+            CastLibProvider.clearProvider();
+            MemberRegistryMethodDispatcher.clearRememberedAliases();
+        }
+    }
+
+    @Test
+    void getmemnumKeepsRawNonFieldRegistrySlotsWithoutScanningCasts() {
+        Datum.PropList registry = new Datum.PropList();
+        registry.putTyped("lamp_armas_a_0_1_1_0_0", false, Datum.of(1762));
+        Datum.ScriptInstance instance = new Datum.ScriptInstance(1, new LinkedHashMap<>());
+        instance.properties().put("pAllMemNumList", registry);
+
+        CountingProvider provider = new CountingProvider();
+        CastLibProvider.setProvider(provider);
+        try {
+            MemberRegistryMethodDispatcher.DispatchResult result =
+                    MemberRegistryMethodDispatcher.dispatch(
+                            instance,
+                            "getmemnum",
+                            List.of(Datum.of("lamp_armas_a_0_1_1_0_0")));
+
+            assertTrue(result.handled());
+            assertEquals(1762, result.value().toInt());
+            assertEquals(1762, registry.get("lamp_armas_a_0_1_1_0_0").toInt());
+            assertEquals(0, provider.registryVisibilityChecks);
+        } finally {
+            CastLibProvider.clearProvider();
+            MemberRegistryMethodDispatcher.clearRememberedAliases();
+        }
+    }
+
+    @Test
     void getmemberReturnsVoidWhenRegistryLookupMisses() {
         Datum.PropList registry = new Datum.PropList();
         Datum.ScriptInstance instance = new Datum.ScriptInstance(1, new LinkedHashMap<>());
@@ -143,7 +275,7 @@ class MemberRegistryMethodDispatcherTest {
     }
 
     @Test
-    void prefillDirectlyServesRegistryGetmemberForRegistryOwners() {
+    void prefillSeedsRegistryGetmemberForRegistryOwnersWithoutBypassingLingo() {
         Datum.PropList registry = new Datum.PropList();
         Datum.ScriptInstance instance = new Datum.ScriptInstance(1, new LinkedHashMap<>());
         instance.properties().put("pAllMemNumList", registry);
@@ -158,10 +290,7 @@ class MemberRegistryMethodDispatcherTest {
                             "getMember",
                             List.of(Datum.of("friend_list_icon_notification")));
 
-            assertTrue(result.handled());
-            Datum.CastMemberRef ref = assertInstanceOf(Datum.CastMemberRef.class, result.value());
-            assertEquals(78, ref.castLibNum());
-            assertEquals(581, ref.memberNum());
+            assertTrue(!result.handled());
             assertEquals((78 << 16) | 581, registry.get("friend_list_icon_notification").toInt());
         } finally {
             CastLibProvider.clearProvider();
@@ -189,6 +318,38 @@ class MemberRegistryMethodDispatcherTest {
             assertEquals(1, result.value().toInt());
             assertEquals((11 << 16) | 4, registry.get("hcc_stool_a_0_1_1_0_0").toInt());
             assertEquals((11 << 16) | 4, registry.get("hcc_stool_alias").toInt());
+        } finally {
+            CastLibProvider.clearProvider();
+            MemberRegistryMethodDispatcher.clearRememberedAliases();
+        }
+    }
+
+    @Test
+    void readAliasIndexesFromFieldReplacesAliasesFromSameSourceOnly() {
+        Datum.PropList registry = new Datum.PropList();
+        Datum.ScriptInstance instance = new Datum.ScriptInstance(1, new LinkedHashMap<>());
+        instance.properties().put("pAllMemNumList", registry);
+
+        CastLibProvider.setProvider(new AliasFieldRegistryProvider(
+                "old_alias=target_a\r\n",
+                Map.of("target_a", Datum.CastMemberRef.of(11, 4))));
+        try {
+            MemberRegistryMethodDispatcher.dispatch(
+                    instance,
+                    "readAliasIndexesFromField",
+                    List.of(Datum.of("memberalias.index"), Datum.of(11)));
+            assertEquals((11 << 16) | 4, registry.get("old_alias").toInt());
+
+            CastLibProvider.setProvider(new AliasFieldRegistryProvider(
+                    "new_alias=target_b\r\n",
+                    Map.of("target_b", Datum.CastMemberRef.of(11, 5))));
+            MemberRegistryMethodDispatcher.dispatch(
+                    instance,
+                    "readAliasIndexesFromField",
+                    List.of(Datum.of("memberalias.index"), Datum.of(11)));
+
+            assertNull(registry.get("old_alias"));
+            assertEquals((11 << 16) | 5, registry.get("new_alias").toInt());
         } finally {
             CastLibProvider.clearProvider();
             MemberRegistryMethodDispatcher.clearRememberedAliases();
@@ -269,7 +430,7 @@ class MemberRegistryMethodDispatcherTest {
     }
 
     @Test
-    void getmemnumLazilyDiscoversAliasAfterCopiedTargetIsRegistered() {
+    void getmemnumDoesNotImplicitlyScanAliasFieldsAfterCopiedTargetIsRegistered() {
         Datum.PropList registry = new Datum.PropList();
         Datum.ScriptInstance instance = new Datum.ScriptInstance(1, new LinkedHashMap<>());
         instance.properties().put("pAllMemNumList", registry);
@@ -301,8 +462,8 @@ class MemberRegistryMethodDispatcherTest {
                             List.of(Datum.of("room_bar.window")));
 
             assertTrue(restored.handled());
-            assertEquals(copiedSlot, restored.value().toInt());
-            assertEquals(copiedSlot, registry.get("room_bar.window").toInt());
+            assertEquals(0, restored.value().toInt());
+            assertNull(registry.get("room_bar.window"));
         } finally {
             CastLibProvider.clearProvider();
             MemberRegistryMethodDispatcher.clearRememberedAliases();
@@ -462,7 +623,32 @@ class MemberRegistryMethodDispatcherTest {
     }
 
     @Test
-    void prefillSeedsStableVisibleMembersAndReturnsAccessorResult() {
+    void getmemnumDoesNotTreatHighSlotBroadLookupAsRegistryVisible() {
+        Datum.PropList registry = new Datum.PropList();
+        Datum.ScriptInstance instance = new Datum.ScriptInstance(1, new LinkedHashMap<>());
+        instance.properties().put("pAllMemNumList", registry);
+
+        CastLibProvider.setProvider(new BroadLookupVisibilityProvider(
+                Map.of("login_b_shadow", Datum.CastMemberRef.of(1, 10000)),
+                Set.of()));
+        try {
+            MemberRegistryMethodDispatcher.DispatchResult result =
+                    MemberRegistryMethodDispatcher.dispatch(
+                            instance,
+                            "memberExists",
+                            List.of(Datum.of("login_b_shadow")));
+
+            assertTrue(result.handled());
+            assertEquals(0, result.value().toInt());
+            assertNull(registry.get("login_b_shadow"));
+        } finally {
+            CastLibProvider.clearProvider();
+            MemberRegistryMethodDispatcher.clearRememberedAliases();
+        }
+    }
+
+    @Test
+    void prefillSeedsStableVisibleMembersWithoutReturningAccessorResult() {
         Datum.PropList registry = new Datum.PropList();
         Datum.ScriptInstance instance = new Datum.ScriptInstance(1, new LinkedHashMap<>());
         instance.properties().put("pAllMemNumList", registry);
@@ -475,8 +661,7 @@ class MemberRegistryMethodDispatcherTest {
                             instance,
                             "getmemnum",
                             List.of(Datum.of("Object Base Class")));
-            assertTrue(resolved.handled());
-            assertEquals((2 << 16) | 74, resolved.value().toInt());
+            assertTrue(!resolved.handled());
             assertEquals((2 << 16) | 74, registry.get("Object Base Class").toInt());
 
             MemberRegistryMethodDispatcher.DispatchResult unresolved =
@@ -484,8 +669,7 @@ class MemberRegistryMethodDispatcherTest {
                             instance,
                             "getmemnum",
                             List.of(Datum.of("Missing Class")));
-            assertTrue(unresolved.handled());
-            assertEquals(0, unresolved.value().toInt());
+            assertTrue(!unresolved.handled());
         } finally {
             CastLibProvider.clearProvider();
             MemberRegistryMethodDispatcher.clearRememberedAliases();
@@ -628,6 +812,114 @@ class MemberRegistryMethodDispatcherTest {
         }
     }
 
+    private static final class GenericNamedFieldProvider extends NoOpCastLibProvider {
+        private final String name;
+        private final int castLibNumber;
+        private final int memberNumber;
+
+        private GenericNamedFieldProvider(String name, int castLibNumber, int memberNumber) {
+            this.name = name;
+            this.castLibNumber = castLibNumber;
+            this.memberNumber = memberNumber;
+        }
+
+        @Override
+        public Datum getMemberByName(int castLibNumber, String memberName) {
+            return name.equalsIgnoreCase(memberName)
+                    ? Datum.CastMemberRef.of(this.castLibNumber, memberNumber)
+                    : Datum.VOID;
+        }
+
+        @Override
+        public boolean memberExists(int castLibNumber, int memberNumber) {
+            return castLibNumber == this.castLibNumber && memberNumber == this.memberNumber;
+        }
+
+        @Override
+        public Datum getMemberProp(int castLibNumber, int memberNumber, String propName) {
+            if (castLibNumber == this.castLibNumber
+                    && memberNumber == this.memberNumber
+                    && "type".equalsIgnoreCase(propName)) {
+                return Datum.symbol("field");
+            }
+            return Datum.VOID;
+        }
+
+    }
+
+    private static final class CountingProvider extends NoOpCastLibProvider {
+        private int registryVisibilityChecks;
+
+        @Override
+        public int getCastLibCount() {
+            return 648;
+        }
+
+        @Override
+        public boolean isRegistryVisibleMember(int castLibNumber, int memberNumber) {
+            registryVisibilityChecks++;
+            return false;
+        }
+    }
+
+    private static final class RawRegistryCollisionProvider extends NoOpCastLibProvider {
+        @Override
+        public Datum getRegistryMemberByName(int castLibNumber, String memberName) {
+            return "layout.element".equalsIgnoreCase(memberName)
+                    ? Datum.CastMemberRef.of(7, 2650)
+                    : Datum.VOID;
+        }
+
+        @Override
+        public Datum getMemberByName(int castLibNumber, String memberName) {
+            return getRegistryMemberByName(castLibNumber, memberName);
+        }
+
+        @Override
+        public boolean memberExists(int castLibNumber, int memberNumber) {
+            return castLibNumber == 7 && (memberNumber == 162 || memberNumber == 2650);
+        }
+
+        @Override
+        public boolean isRegistryVisibleMember(int castLibNumber, int memberNumber) {
+            return memberExists(castLibNumber, memberNumber);
+        }
+
+        @Override
+        public int resolveRawRegistryMemberSlot(String registryName, int memberNumber) {
+            if ("layout.element".equalsIgnoreCase(registryName) && memberNumber == 162) {
+                return (7 << 16) | 162;
+            }
+            return 0;
+        }
+
+    }
+
+    private static final class RegistryFieldSlotProvider extends NoOpCastLibProvider {
+        @Override
+        public int getCastLibCount() {
+            return 8;
+        }
+
+        @Override
+        public boolean isRegistryVisibleMember(int castLibNumber, int memberNumber) {
+            return castLibNumber == 5 && memberNumber == 1763;
+        }
+
+        @Override
+        public boolean memberExists(int castLibNumber, int memberNumber) {
+            return isRegistryVisibleMember(castLibNumber, memberNumber);
+        }
+
+        @Override
+        public Datum getRegistryMemberByName(int castLibNumber, String memberName) {
+            if ("lamp_armas.props".equalsIgnoreCase(memberName)) {
+                return Datum.CastMemberRef.of(5, 1763);
+            }
+            return Datum.VOID;
+        }
+    }
+
     private static class AliasFieldProvider extends NoOpCastLibProvider {
         private final String fieldText;
 
@@ -680,6 +972,7 @@ class MemberRegistryMethodDispatcherTest {
             this.registryVisibleSlots = registryVisibleSlots;
             this.liveSlots = new java.util.HashSet<>();
             this.liveSlots.add((aliasCastLibNumber << 16) | 2);
+            this.liveSlots.addAll(registryVisibleSlots);
             for (Datum ref : refsByName.values()) {
                 if (ref instanceof Datum.CastMemberRef cmr) {
                     this.liveSlots.add((cmr.castLibNum() << 16) | cmr.memberNum());

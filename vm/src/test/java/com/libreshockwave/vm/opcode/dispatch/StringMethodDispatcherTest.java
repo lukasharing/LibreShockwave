@@ -86,6 +86,27 @@ class StringMethodDispatcherTest {
     }
 
     @Test
+    void lineMethodsTreatMixedDirectorBreaksAsLineSeparators() {
+        String payload = "wall-item\r\nfloor-item\nstrip-item\rarticle";
+
+        assertEquals(4, countChunk(payload, "line"));
+        assertEquals("wall-item", getChunk(payload, "line", 1, 1));
+        assertEquals("floor-item", getChunk(payload, "line", 2, 2));
+        assertEquals("strip-item", getChunk(payload, "line", 3, 3));
+        assertEquals("article", getChunk(payload, "line", 4, 4));
+    }
+
+    @Test
+    void lineMethodsDoNotExposeProtocolFieldTerminatorsAsLines() {
+        String payload = "2147418201\twindow_skyscraper\towner\t:w=1,2 3,4 l=5,6 l\t\r\n\u0002";
+
+        assertEquals(2, countChunk(payload, "line"));
+        assertEquals("2147418201\twindow_skyscraper\towner\t:w=1,2 3,4 l=5,6 l\t",
+                getChunk(payload, "line", 1, 1));
+        assertEquals("", getChunk(payload, "line", 2, 2));
+    }
+
+    @Test
     void parsesSingleStringClassListsUsedBySystemProps() {
         Datum parsed = LingoValueParser.parseWithPartial("[\"Broker Manager Class\"]", new LingoVM(null));
 

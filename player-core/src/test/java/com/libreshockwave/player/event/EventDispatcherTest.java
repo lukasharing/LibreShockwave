@@ -11,29 +11,22 @@ import java.util.LinkedHashMap;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class EventDispatcherTest {
 
     @Test
-    void brokerRegisteredKeyDownProcedureIsRecognizedAndDispatched() {
-        Datum.ScriptInstance target = new Datum.ScriptInstance(200, new LinkedHashMap<>());
-        RecordingVM vm = new RecordingVM(target);
+    void procListWithoutAuthoredMouseHandlerIsNotDispatchedByJavaShortcut() {
+        RecordingVM vm = new RecordingVM();
         EventDispatcher dispatcher = new EventDispatcher(null, vm, new BehaviorManager(null));
-        dispatcher.setSpriteRegistry(spriteRegistryWithBroker("keyDown"));
+        dispatcher.setSpriteRegistry(spriteRegistryWithBroker("mouseDown"));
 
-        assertTrue(dispatcher.spriteHasHandler(12, "keyDown"));
+        assertFalse(dispatcher.spriteHasHandler(12, "mouseDown"));
 
-        dispatcher.dispatchSpriteEvent(12, "keyDown", List.of());
+        dispatcher.dispatchSpriteEvent(12, "mouseDown", List.of());
 
-        assertEquals("call", vm.lastHandlerName);
-        assertEquals(4, vm.lastArgs.size());
-        assertEquals("eventProcBroker", vm.lastArgs.get(0).toKeyName());
-        assertSame(target, vm.lastArgs.get(1));
-        assertEquals("keyDown", vm.lastArgs.get(2).toKeyName());
-        assertEquals("editable_field", vm.lastArgs.get(3).toKeyName());
+        assertEquals("", vm.lastHandlerName);
+        assertEquals(List.of(), vm.lastArgs);
     }
 
     private static SpriteRegistry spriteRegistryWithBroker(String eventName) {
@@ -54,26 +47,18 @@ class EventDispatcherTest {
     }
 
     private static final class RecordingVM extends LingoVM {
-        private final Datum.ScriptInstance resolvedTarget;
-        private String lastHandlerName;
+        private String lastHandlerName = "";
         private List<Datum> lastArgs = List.of();
 
-        private RecordingVM(Datum.ScriptInstance resolvedTarget) {
+        private RecordingVM() {
             super(null);
-            this.resolvedTarget = resolvedTarget;
         }
 
         @Override
         public Datum callHandler(String handlerName, List<Datum> args) {
-            if ("getObject".equals(handlerName)) {
-                assertEquals(1, args.size());
-                assertEquals("controller_object", args.get(0).toKeyName());
-                return resolvedTarget;
-            }
             if ("call".equals(handlerName)) {
                 lastHandlerName = handlerName;
                 lastArgs = List.copyOf(args);
-                assertInstanceOf(Datum.Symbol.class, args.get(0));
                 return Datum.TRUE;
             }
             return Datum.VOID;

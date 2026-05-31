@@ -1,9 +1,12 @@
 package com.libreshockwave.player.wasm;
 
 import com.libreshockwave.util.FileUtil;
+import com.libreshockwave.vm.DebugConfig;
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.builtin.net.NetBuiltins;
 
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.Locale;
@@ -11,7 +14,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Predicate;
 
 /**
  * Polling-based network provider for WASM.
@@ -26,13 +28,14 @@ public class QueuedNetProvider implements NetBuiltins.NetProvider {
     private final String basePath;
     private final Map<Integer, NetTask> tasks = new HashMap<>();
     private final Map<String, byte[]> urlCache = new HashMap<>();
+    private final Map<Integer, Integer> netDonePollCounts = new HashMap<>();
+    private final Set<Integer> loggedDoneTasks = new LinkedHashSet<>();
     private final List<PendingRequest> pendingRequests = new ArrayList<>();
     private int nextTaskId = 1;
     private int lastTaskId = 0;
 
     /** Called when a fetch completes with data, allowing Player to cache external cast data. */
     private java.util.function.BiConsumer<String, byte[]> fetchCompleteCallback;
-    private Predicate<String> satisfiedFetchPredicate;
 
     public QueuedNetProvider(String basePath) {
         this.basePath = basePath;
@@ -42,8 +45,19 @@ public class QueuedNetProvider implements NetBuiltins.NetProvider {
         this.fetchCompleteCallback = callback;
     }
 
-    public void setSatisfiedFetchPredicate(Predicate<String> predicate) {
-        this.satisfiedFetchPredicate = predicate;
+    public void seedCache(String url, byte[] data) {
+        if (url == null || data == null) {
+            return;
+        }
+        String resolvedUrl = resolveUrl(url);
+        if (!isCastResourceUrl(resolvedUrl)) {
+            cacheData(resolvedUrl, data);
+            cacheData(url, data);
+        }
+        debug("seed cache url=" + resolvedUrl + " bytes=" + data.length);
+        if (fetchCompleteCallback != null) {
+            fetchCompleteCallback.accept(resolvedUrl, data);
+        }
     }
 
     @Override
@@ -51,66 +65,31 @@ public class QueuedNetProvider implements NetBuiltins.NetProvider {
         int taskId = nextTaskId++;
         lastTaskId = taskId;
 
-        if (url == null || url.isEmpty()) {
-            NetTask task = new NetTask(taskId, url);
-            task.done = true;
-            tasks.put(taskId, task);
-            return taskId;
-        }
-
         String resolvedUrl = resolveUrl(url);
-        if (isDirectoryOnlyUrl(resolvedUrl)) {
-            NetTask task = new NetTask(taskId, resolvedUrl);
-            task.done = true;
-            tasks.put(taskId, task);
-            return taskId;
-        }
-        String[] fallbacks = withMovieDirectoryCastFallbacks(resolvedUrl, FileUtil.getUrlsWithFallbacks(resolvedUrl));
+        String[] requestUrls = shouldUseCastFallbacks(resolvedUrl)
+                ? FileUtil.getUrlsWithFallbacks(resolvedUrl)
+                : new String[] { resolvedUrl };
+        String[] fallbacks = withMovieDirectoryCastFallbacks(resolvedUrl, requestUrls);
 
         NetTask task = new NetTask(taskId, resolvedUrl);
         task.fallbackUrls = fallbacks;
         tasks.put(taskId, task);
 
-        if (isFetchAlreadySatisfied(url, resolvedUrl, fallbacks)) {
-            task.done = true;
-            return taskId;
-        }
-
         byte[] cached = findCachedData(url, resolvedUrl);
         if (cached != null) {
-            task.data = cached;
-            task.byteCount = cached.length;
-            task.done = true;
+            debug("preload cache-hit task=" + taskId + " url=" + resolvedUrl
+                    + " bytes=" + cached.length);
+            completeTaskFromCache(task, cached);
             if (fetchCompleteCallback != null) {
                 fetchCompleteCallback.accept(task.url, cached);
             }
             return taskId;
         }
 
+        debug("preload queued task=" + taskId + " url=" + fallbacks[0]
+                + " fallbacks=" + fallbacks.length);
         pendingRequests.add(new PendingRequest(taskId, fallbacks[0], "GET", null, fallbacks));
         return taskId;
-    }
-
-    private boolean isDirectoryOnlyUrl(String url) {
-        String fileName = FileUtil.getFileName(url);
-        return fileName == null || fileName.isEmpty();
-    }
-
-    private boolean isFetchAlreadySatisfied(String originalUrl, String resolvedUrl, String[] fallbacks) {
-        if (satisfiedFetchPredicate == null) {
-            return false;
-        }
-        if (satisfiedFetchPredicate.test(originalUrl) || satisfiedFetchPredicate.test(resolvedUrl)) {
-            return true;
-        }
-        if (fallbacks != null) {
-            for (String fallback : fallbacks) {
-                if (satisfiedFetchPredicate.test(fallback)) {
-                    return true;
-                }
-            }
-        }
-        return false;
     }
 
     @Override
@@ -129,14 +108,33 @@ public class QueuedNetProvider implements NetBuiltins.NetProvider {
     @Override
     public boolean netDone(Integer taskId) {
         NetTask task = getTask(taskId);
-        return task != null && task.done;
+        boolean done = task != null && task.done;
+        if (DebugConfig.isDebugPlaybackEnabled()) {
+            int effectiveTaskId = taskId == null || taskId == 0 ? lastTaskId : taskId;
+            if (!done) {
+                Integer previousCount = netDonePollCounts.get(effectiveTaskId);
+                int count = previousCount == null ? 1 : previousCount + 1;
+                netDonePollCounts.put(effectiveTaskId, count);
+                if (count <= 5 || count % 60 == 0) {
+                    debug("netDone pending task=" + effectiveTaskId
+                            + " url=" + (task != null ? task.url : "<missing>")
+                            + " polls=" + count);
+                }
+            } else if (loggedDoneTasks.add(effectiveTaskId)) {
+                debug("netDone complete task=" + effectiveTaskId
+                        + " url=" + task.url
+                        + " bytes=" + task.byteCount
+                        + " error=" + task.errorCode);
+            }
+        }
+        return done;
     }
 
     @Override
     public String netTextResult(Integer taskId) {
         NetTask task = getTask(taskId);
         if (task != null && task.done && task.data != null) {
-            return new String(task.data);
+            return new String(task.data, StandardCharsets.UTF_8);
         }
         return "";
     }
@@ -162,20 +160,6 @@ public class QueuedNetProvider implements NetBuiltins.NetProvider {
     @Override
     public Datum getStreamStatusDatum(Integer taskId) {
         NetTask task = getTask(taskId);
-        return streamStatusDatum(task);
-    }
-
-    @Override
-    public Datum getStreamStatusDatum(String url) {
-        NetTask task = getTask(url);
-        if (task == null && isDirectoryOnlyUrl(url)) {
-            task = new NetTask(0, url);
-            task.done = true;
-        }
-        return streamStatusDatum(task);
-    }
-
-    private Datum streamStatusDatum(NetTask task) {
         java.util.LinkedHashMap<String, Datum> props = new java.util.LinkedHashMap<>();
         if (task == null) {
             props.put("URL",        Datum.EMPTY_STRING);
@@ -189,15 +173,15 @@ public class QueuedNetProvider implements NetBuiltins.NetProvider {
         if (task.done) {
             byteCount = task.byteCount;
         } else {
-            // Report incrementing bytesSoFar while loading to prevent
-            // Lingo CastLoad Instance from thinking the download stalled.
+            // Report incrementing bytesSoFar while loading so authored polling
+            // code can observe progress instead of treating the request as stalled.
             // JS fetch() doesn't provide intermediate progress, but the
             // Director plugin would report bytes as they stream in.
             task.pollCount++;
             byteCount = task.pollCount;
         }
         String state  = task.done ? (task.errorCode == 0 ? "Complete" : "Error") : "Loading";
-        props.put("URL",        Datum.of(task.url != null ? task.url : ""));
+        props.put("URL",        Datum.EMPTY_STRING);
         props.put("state",      Datum.of(state));
         props.put("bytesSoFar", Datum.of(byteCount));
         props.put("bytesTotal", Datum.of(task.done ? task.byteCount : 0));
@@ -241,10 +225,14 @@ public class QueuedNetProvider implements NetBuiltins.NetProvider {
     public void onFetchComplete(int taskId, byte[] data) {
         NetTask task = tasks.get(taskId);
         if (task != null) {
-            task.data = data;
+            debug("fetch complete task=" + taskId + " url=" + task.url
+                    + " bytes=" + (data != null ? data.length : 0));
             task.byteCount = data != null ? data.length : 0;
             task.done = true;
-            if (task.url != null && data != null) {
+
+            boolean retainData = !isCastResourceUrl(task.url);
+            task.data = retainData ? data : null;
+            if (retainData && task.url != null && data != null) {
                 cacheData(task.url, data);
             }
 
@@ -262,6 +250,8 @@ public class QueuedNetProvider implements NetBuiltins.NetProvider {
     public void onFetchStatusComplete(int taskId, int byteCount) {
         NetTask task = tasks.get(taskId);
         if (task != null) {
+            debug("fetch status-complete task=" + taskId + " url=" + task.url
+                    + " bytes=" + byteCount);
             task.data = null;
             task.byteCount = byteCount;
             task.done = true;
@@ -274,8 +264,16 @@ public class QueuedNetProvider implements NetBuiltins.NetProvider {
     public void onFetchError(int taskId, int status) {
         NetTask task = tasks.get(taskId);
         if (task != null) {
+            debug("fetch error task=" + taskId + " url=" + task.url
+                    + " status=" + status);
             task.errorCode = status != 0 ? status : -1;
             task.done = true;
+        }
+    }
+
+    private static void debug(String message) {
+        if (DebugConfig.isDebugPlaybackEnabled()) {
+            System.out.println("[QueuedNet] " + message);
         }
     }
 
@@ -284,37 +282,6 @@ public class QueuedNetProvider implements NetBuiltins.NetProvider {
             return lastTaskId > 0 ? tasks.get(lastTaskId) : null;
         }
         return tasks.get(taskId);
-    }
-
-    private NetTask getTask(String url) {
-        if (url == null || url.isEmpty()) {
-            return null;
-        }
-        for (NetTask task : tasks.values()) {
-            if (taskMatchesUrl(task, url)) {
-                return task;
-            }
-        }
-        return null;
-    }
-
-    private boolean taskMatchesUrl(NetTask task, String url) {
-        if (task == null) {
-            return false;
-        }
-        for (String key : buildCacheKeys(url, url)) {
-            if (buildCacheKeys(task.url, task.url).contains(key)) {
-                return true;
-            }
-            if (task.fallbackUrls != null) {
-                for (String fallback : task.fallbackUrls) {
-                    if (buildCacheKeys(fallback, fallback).contains(key)) {
-                        return true;
-                    }
-                }
-            }
-        }
-        return false;
     }
 
     private String resolveUrl(String url) {
@@ -356,6 +323,9 @@ public class QueuedNetProvider implements NetBuiltins.NetProvider {
 
     private String[] withMovieDirectoryCastFallbacks(String resolvedUrl, String[] fallbacks) {
         if (resolvedUrl == null || basePath == null || basePath.isEmpty()) {
+            return fallbacks;
+        }
+        if (!shouldUseCastFallbacks(resolvedUrl)) {
             return fallbacks;
         }
 
@@ -408,6 +378,12 @@ public class QueuedNetProvider implements NetBuiltins.NetProvider {
         return null;
     }
 
+    private void completeTaskFromCache(NetTask task, byte[] data) {
+        task.data = data;
+        task.byteCount = data.length;
+        task.done = true;
+    }
+
     private void cacheData(String url, byte[] data) {
         if (url == null || url.isEmpty() || data == null) {
             return;
@@ -428,8 +404,15 @@ public class QueuedNetProvider implements NetBuiltins.NetProvider {
         if (url == null || url.isEmpty()) {
             return;
         }
+        String normalizedUrl = normalizedUrlCacheKey(url);
+        if (normalizedUrl != null && !normalizedUrl.isEmpty()) {
+            keys.add(normalizedUrl);
+        }
         String fileName = FileUtil.getFileName(url);
         if (fileName == null || fileName.isEmpty()) {
+            return;
+        }
+        if (isAmbiguousCacheFileName(fileName)) {
             return;
         }
         keys.add(fileName.toLowerCase(Locale.ROOT));
@@ -437,6 +420,71 @@ public class QueuedNetProvider implements NetBuiltins.NetProvider {
         if (baseName != null && !baseName.isEmpty()) {
             keys.add(baseName.toLowerCase(Locale.ROOT));
         }
+    }
+
+    private static boolean shouldUseCastFallbacks(String url) {
+        return !isExtensionlessHttpResource(url);
+    }
+
+    private static boolean isExtensionlessHttpResource(String url) {
+        if (!isAbsoluteHttpUrl(url)) {
+            return false;
+        }
+        String fileName = FileUtil.getFileName(url);
+        return fileName != null && !fileName.isEmpty() && !fileName.contains(".");
+    }
+
+    private static boolean isAmbiguousCacheFileName(String fileName) {
+        if (fileName == null || fileName.isEmpty()) {
+            return true;
+        }
+        String clean = fileName;
+        int query = clean.indexOf('?');
+        if (query >= 0) {
+            clean = clean.substring(0, query);
+        }
+        return clean.matches("\\d+");
+    }
+
+    private static String normalizedUrlCacheKey(String url) {
+        if (url == null || url.isEmpty()) {
+            return null;
+        }
+        if (isAbsoluteHttpUrl(url)) {
+            try {
+                URI uri = URI.create(url);
+                String scheme = uri.getScheme();
+                String host = uri.getHost();
+                String path = uri.getPath();
+                if (scheme == null || host == null || path == null || path.isEmpty()) {
+                    return null;
+                }
+                int port = uri.getPort();
+                String authority = port >= 0 ? host + ":" + port : host;
+                return (scheme + "://" + authority + path).toLowerCase(Locale.ROOT);
+            } catch (Exception ignored) {
+                return null;
+            }
+        }
+        int query = url.indexOf('?');
+        String clean = query >= 0 ? url.substring(0, query) : url;
+        return clean.toLowerCase(Locale.ROOT);
+    }
+
+    private static boolean isAbsoluteHttpUrl(String url) {
+        return url != null && (url.startsWith("http://") || url.startsWith("https://"));
+    }
+
+    private static boolean isCastResourceUrl(String url) {
+        if (url == null || url.isEmpty()) {
+            return false;
+        }
+        String lower = url.toLowerCase(Locale.ROOT);
+        int query = lower.indexOf('?');
+        if (query >= 0) {
+            lower = lower.substring(0, query);
+        }
+        return lower.endsWith(".cct") || lower.endsWith(".cst");
     }
 
     /** Extract the origin (scheme + host + port) from an absolute URL. */

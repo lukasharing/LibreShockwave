@@ -3,6 +3,8 @@ package com.libreshockwave.vm;
 import com.libreshockwave.chunks.ScriptChunk;
 import com.libreshockwave.vm.datum.Datum;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.function.Consumer;
@@ -16,7 +18,7 @@ import java.util.function.Consumer;
  */
 public class AlertHookHandler {
 
-    static final Set<String> ERROR_HANDLER_NAMES = Set.of("alerthook");
+    static final Set<String> ERROR_HANDLER_NAMES = Collections.singleton("alerthook");
 
     // Track if we're currently inside an error handler to prevent recursive error handling
     private int errorHandlerDepth = 0;
@@ -124,15 +126,17 @@ public class AlertHookHandler {
         }
 
         try {
-            List<Datum> alertArgs = List.of(
-                    Datum.of(errorType != null ? errorType : ""),
-                    Datum.of(errorMsg != null ? errorMsg : "")
-            );
+            List<Datum> alertArgs = new ArrayList<>(2);
+            alertArgs.add(Datum.of(errorType != null ? errorType : ""));
+            alertArgs.add(Datum.of(errorMsg != null ? errorMsg : ""));
             Datum result = executeHandler.execute(script, handler, alertArgs, hookInstance);
             return result != null && result.isTruthy();
-        } catch (Exception e) {
+        } catch (Throwable e) {
             System.err.println("[LingoVM] alertHook handler failed: " + e.getMessage());
-            return false;
+            // The hook is already the movie's error containment path. Re-throwing
+            // the original script error after the hook's own UI failed can trap
+            // Director movies in recursive modal cleanup and kill the frame loop.
+            return true;
         }
     }
 

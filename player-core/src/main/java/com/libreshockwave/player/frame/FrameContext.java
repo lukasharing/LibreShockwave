@@ -34,9 +34,10 @@ public class FrameContext {
     private TimeoutManager timeoutManager;  // Set by Player for system event forwarding
     private ValueProvider<Datum> actorListSupplier;  // Provides _movie.actorList
     private SpriteRegistry spriteRegistry;  // For checking puppet state during frame transitions
+    private Consumer<Integer> frameEntryListener;
 
     private int currentFrame = 1;
-    private Integer pendingFrame = null;  // Set by go/jump commands
+    private int pendingFrame = 0;  // Set by go/jump commands; 0 means no pending frame
     private boolean inFrameScript = false;
 
     // Active sprite channels
@@ -77,12 +78,16 @@ public class FrameContext {
         this.spriteRegistry = registry;
     }
 
+    public void setFrameEntryListener(Consumer<Integer> listener) {
+        this.frameEntryListener = listener;
+    }
+
     public int getCurrentFrame() {
         return currentFrame;
     }
 
     public int getEffectiveFrame() {
-        return pendingFrame != null ? pendingFrame : currentFrame;
+        return pendingFrame > 0 ? pendingFrame : currentFrame;
     }
 
     public int getFrameCount() {
@@ -130,7 +135,7 @@ public class FrameContext {
         behaviorManager.clearFrameScript();
 
         currentFrame = frame;
-        pendingFrame = null;  // Clear any pending to prevent exitFrame override
+        pendingFrame = 0;  // Clear any pending to prevent exitFrame override
         enterFrame(frame);
     }
 
@@ -151,12 +156,13 @@ public class FrameContext {
      */
     public void initializeFirstFrame() {
         currentFrame = 1;
-        pendingFrame = null;
+        pendingFrame = 0;
         activeChannels.clear();
         enteredChannels.clear();
         behaviorManager.clear();
 
         logEvent("initializeFirstFrame");
+        notifyFrameEntry(currentFrame);
 
         // Begin sprites for frame 1
         beginSpritesForFrame(currentFrame);
@@ -223,9 +229,9 @@ public class FrameContext {
 
         // 2. NOW decide destination (picks up pendingFrame set by go() during exitFrame)
         int newFrame;
-        if (pendingFrame != null) {
+        if (pendingFrame > 0) {
             newFrame = pendingFrame;
-            pendingFrame = null;
+            pendingFrame = 0;
         } else {
             newFrame = currentFrame + 1;
         }
@@ -253,6 +259,8 @@ public class FrameContext {
      * Enter a new frame (initialization).
      */
     private void enterFrame(int frame) {
+        notifyFrameEntry(frame);
+
         // Begin new sprites
         beginSpritesForFrame(frame);
 
@@ -284,9 +292,6 @@ public class FrameContext {
 
                 // Create behavior instances for this sprite
                 for (ScoreBehaviorRef behaviorRef : span.getBehaviors()) {
-                    if (spriteRegistry != null) {
-                        spriteRegistry.markScoreBehaviorChannel(channel);
-                    }
                     behaviorManager.createInstance(behaviorRef, channel);
                 }
 
@@ -378,8 +383,12 @@ public class FrameContext {
         for (Datum.ScriptInstance instance : actors) {
             try {
                 AncestorChainWalker.invokeHandler(vm, instance, handlerName, List.of(instance));
-            } catch (Exception ignored) {
-                // Silently skip errors in actorList event dispatch
+            } catch (Exception e) {
+                if (debugEnabled) {
+                    System.err.println("[FrameActor] error event=" + handlerName
+                            + " instance=" + instance.scriptId()
+                            + " message=\"" + e.getMessage() + "\"");
+                }
             }
         }
     }
@@ -402,7 +411,7 @@ public class FrameContext {
             List<BehaviorInstance> instances = behaviorManager.getInstancesForChannel(channel);
             for (BehaviorInstance instance : instances) {
                 if (!instance.isBeginSpriteCalled()) {
-                    eventDispatcher.dispatchBehaviorEvent(instance, PlayerEvent.BEGIN_SPRITE, List.of());
+                    eventDispatcher.dispatchSpriteEvent(channel, PlayerEvent.BEGIN_SPRITE, List.of());
                     instance.setBeginSpriteCalled(true);
                 }
             }
@@ -430,12 +439,18 @@ public class FrameContext {
         }
     }
 
+    private void notifyFrameEntry(int frame) {
+        if (frameEntryListener != null) {
+            frameEntryListener.accept(frame);
+        }
+    }
+
     /**
      * Reset the context (called on stop).
      */
     public void reset() {
         currentFrame = 1;
-        pendingFrame = null;
+        pendingFrame = 0;
         activeChannels.clear();
         enteredChannels.clear();
         behaviorManager.clear();

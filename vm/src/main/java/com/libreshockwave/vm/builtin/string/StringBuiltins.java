@@ -2,6 +2,7 @@ package com.libreshockwave.vm.builtin.string;
 
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.LingoVM;
+import com.libreshockwave.vm.util.LingoValueParser;
 
 import java.util.List;
 import java.util.Map;
@@ -21,6 +22,8 @@ public final class StringBuiltins {
         builtins.put("chartonum", StringBuiltins::charToNum);
         builtins.put("numtochar", StringBuiltins::numToChar);
         builtins.put("offset", StringBuiltins::offset);
+        builtins.put("converttoproplist", StringBuiltins::convertToPropList);
+        builtins.put("getstringvariable", StringBuiltins::getStringVariable);
         builtins.put("getpref", StringBuiltins::getPref);
         builtins.put("setpref", StringBuiltins::setPref);
     }
@@ -89,6 +92,143 @@ public final class StringBuiltins {
             }
         }
         return Datum.ZERO;
+    }
+
+    private static Datum convertToPropList(LingoVM vm, List<Datum> args) {
+        if (args.isEmpty()) return new Datum.PropList();
+
+        String source = args.get(0).toStr();
+        String delimiter = ",";
+        if (args.size() > 1 && !args.get(1).isVoid()) {
+            delimiter = args.get(1).toStr();
+            if (delimiter.isEmpty()) {
+                delimiter = ",";
+            }
+        }
+
+        Datum.PropList props = new Datum.PropList();
+        int start = 0;
+        while (start <= source.length()) {
+            int end = source.indexOf(delimiter, start);
+            if (end < 0) {
+                end = source.length();
+            }
+
+            addPropertyItem(props, source.substring(start, end), vm);
+
+            if (end == source.length()) {
+                break;
+            }
+            start = end + delimiter.length();
+        }
+        return props;
+    }
+
+    private static void addPropertyItem(Datum.PropList props, String rawItem, LingoVM vm) {
+        String item = rawItem.trim();
+        if (item.isEmpty()) {
+            return;
+        }
+
+        int equals = item.indexOf('=');
+        if (equals <= 0) {
+            return;
+        }
+
+        String key = item.substring(0, equals).trim();
+        String value = item.substring(equals + 1).trim();
+        if (!key.isEmpty()) {
+            props.putTyped(key, false, parsePropertyValue(value, vm));
+        }
+    }
+
+    private static Datum parsePropertyValue(String value, LingoVM vm) {
+        if (value == null || value.isEmpty()) {
+            return Datum.EMPTY_STRING;
+        }
+        String trimmed = value.trim();
+        if (shouldParseStructuredPropertyValue(trimmed)) {
+            Datum parsed = LingoValueParser.parseWithPartial(trimmed, vm);
+            if (parsed != null && !parsed.isVoid()) {
+                return parsed;
+            }
+            if ("VOID".equalsIgnoreCase(trimmed)) {
+                return Datum.VOID;
+            }
+            if ("EMPTY".equalsIgnoreCase(trimmed)) {
+                return Datum.EMPTY_STRING;
+            }
+        }
+        return Datum.of(value);
+    }
+
+    private static boolean shouldParseStructuredPropertyValue(String value) {
+        if (value.isEmpty()) {
+            return false;
+        }
+        if ((value.startsWith("[") && value.endsWith("]"))
+                || (value.startsWith("\"") && value.endsWith("\""))
+                || value.startsWith("#")
+                || startsStructuredCall(value, "rgb")
+                || startsStructuredCall(value, "color")
+                || startsStructuredCall(value, "rect")
+                || startsStructuredCall(value, "point")) {
+            return true;
+        }
+        if ("TRUE".equalsIgnoreCase(value)
+                || "FALSE".equalsIgnoreCase(value)
+                || "VOID".equalsIgnoreCase(value)
+                || "EMPTY".equalsIgnoreCase(value)) {
+            return true;
+        }
+        return isPlainNumber(value);
+    }
+
+    private static boolean startsStructuredCall(String value, String name) {
+        return value.regionMatches(true, 0, name + "(", 0, name.length() + 1)
+                && value.endsWith(")");
+    }
+
+    private static boolean isPlainNumber(String value) {
+        int start = 0;
+        boolean seenDigit = false;
+        boolean seenDot = false;
+        if (value.startsWith("-") || value.startsWith("+")) {
+            start = 1;
+        }
+        if (start >= value.length()) {
+            return false;
+        }
+        for (int i = start; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (ch >= '0' && ch <= '9') {
+                seenDigit = true;
+                continue;
+            }
+            if (ch == '.' && !seenDot) {
+                seenDot = true;
+                continue;
+            }
+            return false;
+        }
+        return seenDigit;
+    }
+
+    private static Datum getStringVariable(LingoVM vm, List<Datum> args) {
+        if (args.isEmpty()) {
+            return Datum.EMPTY_STRING;
+        }
+
+        Datum value = vm.callHandler("getVariable", args);
+        if (value.isVoid()) {
+            return Datum.EMPTY_STRING;
+        }
+
+        String text = value.toStr();
+        if (text.length() >= 2 && text.charAt(0) == '"' && text.charAt(text.length() - 1) == '"') {
+            return Datum.of(text.substring(1, text.length() - 1));
+        }
+        return Datum.of(text);
     }
 
     private static Datum getPref(LingoVM vm, List<Datum> args) {

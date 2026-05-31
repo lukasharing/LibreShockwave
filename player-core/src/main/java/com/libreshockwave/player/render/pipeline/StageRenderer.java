@@ -238,9 +238,16 @@ public class StageRenderer {
         int height = pos.height();
         boolean visible = state.isVisible();
 
-        // Get cast member — use CASp-based lookup for internal casts,
-        // fall back to CastLibManager for external casts
-        CastMemberChunk member = file.getCastMemberByNumber(data.castLib(), data.castMember());
+        // External score casts can be demand-loaded. Consult CastLibManager
+        // first so placeholder CASp data in the root movie does not mask the
+        // real external member.
+        CastMemberChunk member = null;
+        if (castLibManager != null && castLibManager.isCastLibExternal(data.castLib())) {
+            member = castLibManager.getCastMember(data.castLib(), data.castMember());
+        }
+        if (member == null) {
+            member = file.getCastMemberByNumber(data.castLib(), data.castMember());
+        }
         if (member == null && castLibManager != null) {
             member = castLibManager.getCastMember(data.castLib(), data.castMember());
         }
@@ -271,23 +278,16 @@ public class StageRenderer {
             type = RenderSprite.SpriteType.SHAPE;
         }
 
-        int foreColor = state.hasForeColor()
-                ? state.getForeColor()
-                : resolveScoreColor(data.resolvedForeColor(), data.isForeColorRGB());
-        int backColor = state.hasBackColor()
-                ? state.getBackColor()
-                : resolveScoreColor(data.resolvedBackColor(), data.isBackColorRGB());
-
         return new RenderSprite(
             channel, x, y, width, height, locZ, visible, type, member, null,
-            foreColor,
-            backColor,
+            state.hasForeColor() ? state.getForeColor() : data.resolvedForeColor(),
+            state.hasBackColor() ? state.getBackColor() : data.resolvedBackColor(),
             state.hasForeColor(), state.hasBackColor(),
             state.getInk(), state.getBlend(),
             baseFlipH(state), state.isFlipV(),
             state.getRotation(), state.getSkew(),
             null,
-            state.hasScriptBehaviors() || spriteRegistry.hasScoreBehaviorChannel(channel)
+            state.hasScriptBehaviors()
         );
     }
 
@@ -323,7 +323,7 @@ public class StageRenderer {
                         true, state.hasBackColor(),
                         0, state.getBlend(), // COPY ink for solid fill
                         state.isFlipH(), state.isFlipV(),
-                        null, hasAnyBehavior(state));
+                        null, state.hasScriptBehaviors());
                 }
             }
             return null;
@@ -419,7 +419,7 @@ public class StageRenderer {
             state.isFlipH() ^ state.isEffectiveMemberMirrored(), state.isFlipV(),
             state.getRotation(), state.getSkew(),
             null,
-            hasAnyBehavior(state)
+            state.hasScriptBehaviors()
         );
     }
 
@@ -430,11 +430,6 @@ public class StageRenderer {
                 && bitmap.isScriptModified()
                 && bitmap.getWidth() > 0
                 && bitmap.getHeight() > 0;
-    }
-
-    private boolean hasAnyBehavior(SpriteState state) {
-        return state != null && (state.hasScriptBehaviors()
-                || spriteRegistry.hasScoreBehaviorChannel(state.getChannel()));
     }
 
     /**
@@ -497,10 +492,10 @@ public class StageRenderer {
             int bmpW = bi.width();
             int bmpH = bi.height();
             if (spriteWidth > 0 && bmpW > 0 && bmpW != spriteWidth) {
-                regX = scaleRegistrationOffset(regX, spriteWidth, bmpW);
+                regX = regX * spriteWidth / bmpW;
             }
             if (spriteHeight > 0 && bmpH > 0 && bmpH != spriteHeight) {
-                regY = scaleRegistrationOffset(regY, spriteHeight, bmpH);
+                regY = regY * spriteHeight / bmpH;
             }
             regX = mirrorOffset(regX, spriteWidth > 0 ? spriteWidth : bmpW, flipH);
             regY = mirrorOffset(regY, spriteHeight > 0 ? spriteHeight : bmpH, flipV);
@@ -538,19 +533,6 @@ public class StageRenderer {
         return span - reg;
     }
 
-    private int scaleRegistrationOffset(int reg, int spriteSpan, int bitmapSpan) {
-        if (usesLegacyRoundedRegistrationScale()) {
-            return Math.round((float) reg * spriteSpan / bitmapSpan);
-        }
-        return reg * spriteSpan / bitmapSpan;
-    }
-
-    private boolean usesLegacyRoundedRegistrationScale() {
-        return file != null
-                && file.getConfig() != null
-                && file.getConfig().directorVersion() <= 1600;
-    }
-
     private boolean effectiveFlipH(SpriteState state) {
         return baseFlipH(state)
                 ^ hasDirectorHorizontalMirror(state.getRotation(), state.getSkew());
@@ -578,41 +560,23 @@ public class StageRenderer {
      * If the color is already RGB (colorFlag set), return it directly.
      * Otherwise, treat it as a Director color number and look up through the default palette.
      *
-     * Director score color bytes are palette color numbers. In the default
-     * Director palette used by Habbo v1, color number 255 resolves to black.
+     * Director's score foreColor/backColor bytes use inverted palette indexing:
+     * foreColor 0 = black (palette index 255), foreColor 255 = white (palette index 0).
+     * This is the standard Director color model for D5+ movies.
      */
     private int resolveScoreColor(int color, boolean isRGB) {
         if (isRGB) {
-            return usesRgb555ScoreColors() ? expandScoreRgb555(color) : color;
+            return color;
         }
         // Director color number → palette index (inverted mapping)
         if (color >= 0 && color <= 255 && file != null) {
             Palette palette = file.resolvePalette(-1); // Default palette
             if (palette != null) {
-                return palette.getColor(color);
+                int paletteIndex = 255 - color;
+                return palette.getColor(paletteIndex);
             }
         }
         return color;
-    }
-
-    private boolean usesRgb555ScoreColors() {
-        // Older Shockwave-era movies render score RGB colors through a 15-bit
-        // display path; newer Habbo clients match their authored 24-bit values.
-        return file != null
-                && file.getConfig() != null
-                && file.getConfig().directorVersion() <= 1600;
-    }
-
-    static int expandScoreRgb555(int color) {
-        int r = expand5Bit((color >> 16) & 0xFF);
-        int g = expand5Bit((color >> 8) & 0xFF);
-        int b = expand5Bit(color & 0xFF);
-        return (r << 16) | (g << 8) | b;
-    }
-
-    private static int expand5Bit(int value) {
-        int fiveBit = value >> 3;
-        return (fiveBit << 3) | (fiveBit >> 2);
     }
 
     public void reset() {
@@ -625,7 +589,7 @@ public class StageRenderer {
         spriteRegistry.remove(channel);
     }
 
-    public void onFrameEnter(int frame) {
+    public void syncScoreStateForFrame(int frame) {
         if (file == null) return;
 
         ScoreChunk score = file.getScoreChunk();
@@ -644,8 +608,14 @@ public class StageRenderer {
                 int channel = entry.channelIndex().value();
                 if (spriteRegistry.contains(channel)) {
                     spriteRegistry.updateFromScore(channel, entry.data());
+                } else if (!entry.data().isEmpty() && entry.data().spriteType() != 0) {
+                    spriteRegistry.getOrCreate(channel, entry.data());
                 }
             }
         }
+    }
+
+    public void onFrameEnter(int frame) {
+        syncScoreStateForFrame(frame);
     }
 }

@@ -5,19 +5,102 @@ import com.libreshockwave.cast.MemberType;
 import com.libreshockwave.player.cast.CastMember;
 import com.libreshockwave.player.render.output.SimpleTextRenderer;
 import com.libreshockwave.vm.datum.Datum;
+import com.libreshockwave.vm.opcode.dispatch.ImageMethodDispatcher;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.*;
 
 class SpriteBakerTextTest {
 
     @Test
-    void dynamicTextUsesEffectiveSpriteBackColor() {
+    void scriptModifiedTextMemberImageIsUsedByBaker() {
+        CastMember.setTextRenderer(new SimpleTextRenderer());
+        CastMember member = new CastMember(1, 1, MemberType.TEXT);
+        member.setProp("rect", new Datum.Rect(0, 0, 16, 12));
+
+        Datum.ImageRef image = (Datum.ImageRef) member.getProp("image");
+
+        ImageMethodDispatcher.dispatch(image, "fill",
+                List.of(new Datum.Rect(0, 0, 16, 12), new Datum.Color(255, 0, 0)));
+
+        assertFalse(member.hasDynamicText());
+        assertTrue(image.bitmap().isScriptModified());
+
+        RenderSprite sprite = new RenderSprite(
+                1, 0, 0, 16, 12, 0, true,
+                RenderSprite.SpriteType.TEXT,
+                null, member,
+                0, 0,
+                false, false,
+                0, 100,
+                false, false,
+                null, false);
+
+        Bitmap baked = new SpriteBaker(new BitmapCache(), null, null)
+                .bake(sprite)
+                .getBakedBitmap();
+
+        assertNotNull(baked);
+        assertEquals(0xFFFF0000, baked.getPixel(4, 4));
+    }
+
+    @Test
+    void unmodifiedTextMemberImageDoesNotExpandSpriteBounds() {
+        CastMember.setTextRenderer(new SimpleTextRenderer());
+        CastMember member = new CastMember(1, 1, MemberType.TEXT);
+        member.setProp("rect", new Datum.Rect(0, 0, 64, 12));
+        member.setProp("text", Datum.of(""));
+
+        assertNotNull(member.getProp("image"));
+
+        RenderSprite sprite = new RenderSprite(
+                1, 0, 0, 16, 12, 0, true,
+                RenderSprite.SpriteType.TEXT,
+                null, member,
+                0, 0,
+                false, false,
+                0, 100,
+                false, false,
+                null, false);
+
+        RenderSprite baked = new SpriteBaker(new BitmapCache(), null, null).bake(sprite);
+
+        assertNotNull(baked.getBakedBitmap());
+        assertEquals(16, baked.getWidth());
+        assertEquals(12, baked.getHeight());
+    }
+
+    @Test
+    void dynamicTextUsesExplicitMemberBackgroundColor() {
         CastMember.setTextRenderer(new SimpleTextRenderer());
         CastMember member = new CastMember(1, 1, MemberType.TEXT);
         member.setProp("text", Datum.of("Title"));
         member.setProp("bgColor", Datum.of(0xEFEFEF));
+
+        RenderSprite sprite = new RenderSprite(
+                1, 0, 0, 64, 16, 0, true,
+                RenderSprite.SpriteType.TEXT,
+                null, member,
+                0xEEEEEE, 0x6794A7,
+                true, false,
+                0, 100,
+                false, false,
+                null, false);
+
+        Bitmap baked = new SpriteBaker(new BitmapCache(), null, null)
+                .bake(sprite)
+                .getBakedBitmap();
+
+        assertEquals(0xFFEFEFEF, baked.getPixel(0, 0));
+    }
+
+    @Test
+    void dynamicTextFallsBackToEffectiveSpriteBackColor() {
+        CastMember.setTextRenderer(new SimpleTextRenderer());
+        CastMember member = new CastMember(1, 1, MemberType.TEXT);
+        member.setProp("text", Datum.of("Title"));
 
         RenderSprite sprite = new RenderSprite(
                 1, 0, 0, 64, 16, 0, true,
@@ -46,8 +129,8 @@ class SpriteBakerTextTest {
         member.setProp("text", Datum.of("Title"));
 
         Bitmap memberImage = ((Datum.ImageRef) member.getProp("image")).bitmap();
-        assertEquals(0xFFFFFFFF, sampleBackgroundPixel(memberImage),
-                "member.image is the pre-compositing member surface with its default backing");
+        assertEquals(0, (memberImage.getPixel(0, 0) >>> 24) & 0xFF,
+                "member.image should not turn the default white bgColor into an opaque box");
 
         RenderSprite sprite = new RenderSprite(
                 1, 0, 0, 64, 16, 0, true,
@@ -63,7 +146,7 @@ class SpriteBakerTextTest {
                 .bake(sprite)
                 .getBakedBitmap();
 
-        assertEquals(0, (sampleBackgroundPixel(baked) >>> 24) & 0xFF,
+        assertEquals(0, (baked.getPixel(0, 0) >>> 24) & 0xFF,
                 "backgroundTransparent belongs to sprite ink/compositing, not member.image alpha");
     }
 
@@ -90,32 +173,7 @@ class SpriteBakerTextTest {
                 .bake(sprite)
                 .getBakedBitmap();
 
-        assertEquals(0, (sampleBackgroundPixel(baked) >>> 24) & 0xFF,
+        assertEquals(0, (baked.getPixel(0, 0) >>> 24) & 0xFF,
                 "palette-index backColor must not survive as an opaque text backing");
-    }
-
-    @Test
-    void shiftBitmapDownPreservesSizeAndClearsLeadingRows() {
-        Bitmap source = new Bitmap(3, 4, 32, new int[] {
-                0xFF000001, 0xFF000002, 0xFF000003,
-                0xFF000004, 0xFF000005, 0xFF000006,
-                0xFF000007, 0xFF000008, 0xFF000009,
-                0xFF00000A, 0xFF00000B, 0xFF00000C
-        });
-        source.setNativeAlpha(true);
-
-        Bitmap shifted = SpriteBaker.shiftBitmapDown(source, 2, 0x00000000);
-
-        assertEquals(3, shifted.getWidth());
-        assertEquals(4, shifted.getHeight());
-        assertEquals(0x00000000, shifted.getPixel(0, 0));
-        assertEquals(0x00000000, shifted.getPixel(2, 1));
-        assertEquals(0xFF000001, shifted.getPixel(0, 2));
-        assertEquals(0xFF000006, shifted.getPixel(2, 3));
-        assertTrue(shifted.isNativeAlpha());
-    }
-
-    private static int sampleBackgroundPixel(Bitmap bitmap) {
-        return bitmap.getPixel(bitmap.getWidth() - 1, bitmap.getHeight() - 1);
     }
 }

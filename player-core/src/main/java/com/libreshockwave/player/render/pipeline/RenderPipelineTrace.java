@@ -1,5 +1,6 @@
 package com.libreshockwave.player.render.pipeline;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -7,9 +8,9 @@ import java.util.List;
  */
 public record RenderPipelineTrace(List<RenderPipelineStepTrace> steps) {
 
-    public static final RenderPipelineTrace EMPTY = new RenderPipelineTrace(List.of());
+    public static final RenderPipelineTrace EMPTY = new RenderPipelineTrace(new ArrayList<>());
 
     public RenderPipelineTrace {
-        steps = List.copyOf(steps);
+        steps = new ArrayList<>(steps);
     }
 }

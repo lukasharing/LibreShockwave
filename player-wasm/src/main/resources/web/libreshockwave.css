@@ -19,11 +19,12 @@ a:hover { color: #ff6600; }
 /* === Page Layout === */
 
 .page-table {
-    width: min(780px, 100%);
+    width: 980px;
+    max-width: calc(100vw - 24px);
     margin: 0 auto;
     border-collapse: collapse;
     border: 1px solid #999999;
-    table-layout: fixed;
+    table-layout: auto;
 }
 
 .page-cell {
@@ -51,6 +52,13 @@ a:hover { color: #ff6600; }
     font-size: 10px;
     float: right;
     line-height: 18px;
+}
+
+.header-stats {
+    color: #d8e9f8;
+    font-size: 10px;
+    line-height: 18px;
+    margin-left: 18px;
 }
 
 /* === Menu Bar === */
@@ -235,6 +243,95 @@ a:hover { color: #ff6600; }
     font-size: 10px;
 }
 
+/* === Debug Console === */
+
+.debug-toolbar {
+    display: flex;
+    justify-content: flex-start;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+    min-height: 0;
+}
+
+.debug-toolbar input[type="text"] {
+    flex: 1 1 360px;
+    min-width: 260px;
+    padding: 4px 6px;
+    border: 1px solid #aaaaaa;
+    font: 11px Verdana, Arial, Helvetica, sans-serif;
+}
+
+.debug-toggle {
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
+    white-space: nowrap;
+}
+
+.debug-presets {
+    display: inline-flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.debug-log {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    min-height: 0;
+    max-height: 260px;
+    overflow: auto;
+    white-space: normal;
+    font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    line-height: 1.35;
+    background: #101418;
+    color: #d9e2ec;
+    padding: 0;
+    contain: layout paint;
+}
+
+.debug-row {
+    display: grid;
+    grid-template-columns: 118px minmax(0, 1fr);
+    gap: 8px;
+    padding: 3px 8px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    min-width: 0;
+}
+
+.debug-row:nth-child(even) {
+    background: rgba(255,255,255,0.025);
+}
+
+.debug-tag {
+    color: #91a4b7;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.debug-message {
+    min-width: 0;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: normal;
+}
+
+.debug-row-input .debug-tag { color: #6ee7b7; }
+.debug-row-handler .debug-tag,
+.debug-row-broker .debug-tag { color: #93c5fd; }
+.debug-row-frameactor .debug-tag,
+.debug-row-actor .debug-tag,
+.debug-row-update .debug-tag { color: #fbbf24; }
+.debug-row-mus .debug-tag,
+.debug-row-xtra .debug-tag,
+.debug-row-net .debug-tag { color: #c4b5fd; }
+.debug-row-error .debug-tag { color: #fca5a5; }
+.debug-row-lingo .debug-tag,
+.debug-row-trace .debug-tag,
+.debug-row-put .debug-tag { color: #fde68a; }
+
 /* === Stage Area === */
 
 .stage-panel {
@@ -242,20 +339,22 @@ a:hover { color: #ff6600; }
     background: #eeeeee;
     display: flex;
     justify-content: center;
-    overflow: hidden;
+    overflow: auto;
 }
 
 .stage-inset {
     background: #000000;
     display: inline-block;
     line-height: 0;
-    max-width: 100%;
+    max-width: none;
 }
 
 canvas {
     display: block;
-    max-width: 100%;
+    width: auto;
     height: auto;
+    max-width: none;
+    image-rendering: pixelated;
     touch-action: none;
 }
 

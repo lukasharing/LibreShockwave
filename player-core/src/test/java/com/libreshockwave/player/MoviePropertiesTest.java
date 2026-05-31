@@ -6,11 +6,7 @@ import com.libreshockwave.vm.xtra.Xtra;
 import com.libreshockwave.vm.xtra.XtraManager;
 import org.junit.jupiter.api.Test;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.List;
-
-import com.libreshockwave.DirectorFile;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -35,6 +31,18 @@ class MoviePropertiesTest {
     }
 
     @Test
+    void environmentReflectsSimulatedRunMode() {
+        MovieProperties properties = new MovieProperties(null, null);
+
+        assertEquals("Plugin", properties.getMovieProp("environment").toStr());
+
+        properties.setRunMode("Projector");
+
+        assertEquals("Projector", properties.getMovieProp("runMode").toStr());
+        assertEquals("Projector", properties.getMovieProp("environment").toStr());
+    }
+
+    @Test
     void xtraListExposesRegisteredXtrasWithDirectorNames() {
         XtraManager xtraManager = new XtraManager();
         xtraManager.registerXtra(new FakeXtra("Multiuser"));
@@ -52,7 +60,7 @@ class MoviePropertiesTest {
     }
 
     @Test
-    void settingKeyboardFocusSpriteRestartsCaretBlink() {
+    void settingKeyboardFocusSpriteRestartsCaretBlinkWithoutShowingProgrammaticCaret() {
         InputState inputState = new InputState();
         inputState.setCaretBlinkRate(1);
         inputState.setKeyboardFocusSprite(7);
@@ -65,27 +73,7 @@ class MoviePropertiesTest {
         properties.setMovieProp("keyboardFocusSprite", Datum.of(9));
 
         assertEquals(9, properties.getMovieProp("keyboardFocusSprite").toInt());
-        assertTrue(inputState.isCaretVisible());
-    }
-
-    @Test
-    void randomSeedMoviePropertyControlsVmRandomSequence() throws Exception {
-        Path v1Movie = Path.of("/opt/git/v1_assets/projectorrays_lingo/habbo_entry/habbo_entry.dir");
-        if (!Files.isRegularFile(v1Movie)) {
-            return;
-        }
-        Player player = new Player(DirectorFile.load(v1Movie));
-        MovieProperties properties = player.getMovieProperties();
-
-        assertTrue(properties.setMovieProp("randomSeed", Datum.of(777)));
-        int first = player.getVM().callHandler("random", List.of(Datum.of(1000))).toInt();
-        int second = player.getVM().callHandler("random", List.of(Datum.of(1000))).toInt();
-
-        properties.setMovieProp("randomSeed", Datum.of(777));
-
-        assertEquals(777, properties.getMovieProp("randomSeed").toInt());
-        assertEquals(first, player.getVM().callHandler("random", List.of(Datum.of(1000))).toInt());
-        assertEquals(second, player.getVM().callHandler("random", List.of(Datum.of(1000))).toInt());
+        assertFalse(inputState.isCaretVisible());
     }
 
     private record FakeXtra(String name) implements Xtra {

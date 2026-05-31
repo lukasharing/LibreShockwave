@@ -3,11 +3,10 @@ package com.libreshockwave.player.render;
 import com.libreshockwave.chunks.ScoreChunk;
 import com.libreshockwave.player.sprite.SpriteState;
 
-import java.util.Collections;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Registry of runtime sprite states.
@@ -16,9 +15,9 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class SpriteRegistry {
 
-    private final Map<Integer, SpriteState> sprites = new ConcurrentHashMap<>();
-    private final Set<Integer> scoreBehaviorChannels = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    private final Map<Integer, SpriteState> sprites = new HashMap<>();
     private int revision;
+    private Runnable revisionListener;
 
     /**
      * Get or create a sprite state for a channel from Score data.
@@ -48,14 +47,6 @@ public class SpriteRegistry {
         return state;
     }
 
-    public void markScoreBehaviorChannel(int channel) {
-        scoreBehaviorChannels.add(channel);
-    }
-
-    public boolean hasScoreBehaviorChannel(int channel) {
-        return scoreBehaviorChannels.contains(channel);
-    }
-
     /**
      * Get a sprite state by channel, or null if not registered.
      */
@@ -83,7 +74,6 @@ public class SpriteRegistry {
      */
     public void remove(int channel) {
         sprites.remove(channel);
-        scoreBehaviorChannels.remove(channel);
     }
 
     /**
@@ -91,12 +81,11 @@ public class SpriteRegistry {
      */
     public void clear() {
         sprites.clear();
-        scoreBehaviorChannels.clear();
     }
 
     /**
      * Clear dynamic sprite bindings that still reference a retired member slot.
-     * This prevents recycled Habbo bitmap-bin members from leaking into stale sprites.
+     * This prevents recycled runtime bitmap-bin members from leaking into stale sprites.
      */
     public boolean clearDynamicMemberBindings(int castLib, int memberNum) {
         boolean changed = false;
@@ -130,9 +119,13 @@ public class SpriteRegistry {
      * (e.g., color swatches with bgColor set).
      */
     public List<SpriteState> getDynamicSprites() {
-        return sprites.values().stream()
-            .filter(s -> s.hasDynamicMember() || s.isDynamic() || s.isPuppet())
-            .toList();
+        List<SpriteState> dynamicSprites = new ArrayList<>();
+        for (SpriteState sprite : sprites.values()) {
+            if (sprite.hasDynamicMember() || sprite.isDynamic() || sprite.isPuppet()) {
+                dynamicSprites.add(sprite);
+            }
+        }
+        return dynamicSprites;
     }
 
     /**
@@ -170,6 +163,9 @@ public class SpriteRegistry {
      */
     public void bumpRevision() {
         revision++;
+        if (revisionListener != null) {
+            revisionListener.run();
+        }
     }
 
     /**
@@ -177,5 +173,9 @@ public class SpriteRegistry {
      */
     public int getRevision() {
         return revision;
+    }
+
+    public void setRevisionListener(Runnable listener) {
+        this.revisionListener = listener;
     }
 }

@@ -3,6 +3,7 @@ package com.libreshockwave.vm.opcode.dispatch;
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.builtin.movie.MoviePropertyProvider;
 import com.libreshockwave.vm.util.StringChunkUtils;
+import com.libreshockwave.lingo.StringChunkType;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -120,13 +121,16 @@ public final class StringMethodDispatcher {
     // ========================================================================
 
     private static String getItemChunk(String str, int start, int end, char delimiter) {
-        // Always use direct scan for ITEM to avoid burst allocation of thousands of substrings
+        if (end == 0 || end == start) {
+            return StringChunkUtils.getChunk(str, StringChunkType.ITEM, start, delimiter);
+        }
+        if (end > 0) {
+            if (end < start) return "";
+            return StringChunkUtils.getItemRangeDirect(str, start, end, delimiter);
+        }
         int totalItems = countItemsDirect(str, delimiter);
-        int actualEnd = resolveEnd(end, start, totalItems);
         if (start > totalItems) return "";
-        int e = Math.min(totalItems, actualEnd);
-        if (start == e) return getItemDirect(str, start, delimiter);
-        return StringChunkUtils.getItemRangeDirect(str, start, e, delimiter);
+        return StringChunkUtils.getItemRangeDirect(str, start, totalItems, delimiter);
     }
 
     // extractFromArray removed — ITEM chunks no longer use split+cache
@@ -234,7 +238,10 @@ public final class StringMethodDispatcher {
     private static int countItemsDirect(String str, char delimiter) {
         int count = 1;
         for (int i = 0; i < str.length(); i++) {
-            if (str.charAt(i) == delimiter) count++;
+            if (isItemDelimiterAt(str, i, delimiter)) {
+                count++;
+                i += itemDelimiterWidth(str, i, delimiter) - 1;
+            }
         }
         return count;
     }
@@ -243,13 +250,33 @@ public final class StringMethodDispatcher {
         int current = 1;
         int start = 0;
         for (int i = 0; i < str.length(); i++) {
-            if (str.charAt(i) == delimiter) {
+            if (isItemDelimiterAt(str, i, delimiter)) {
                 if (current == index) return str.substring(start, i);
                 current++;
-                start = i + 1;
+                int width = itemDelimiterWidth(str, i, delimiter);
+                start = i + width;
+                i += width - 1;
             }
         }
         return current == index ? str.substring(start) : "";
+    }
+
+    private static boolean isItemDelimiterAt(String str, int index, char delimiter) {
+        char ch = str.charAt(index);
+        if (delimiter == '\r') {
+            return ch == '\r' || ch == '\n';
+        }
+        return ch == delimiter;
+    }
+
+    private static int itemDelimiterWidth(String str, int index, char delimiter) {
+        if (delimiter == '\r'
+                && str.charAt(index) == '\r'
+                && index + 1 < str.length()
+                && str.charAt(index + 1) == '\n') {
+            return 2;
+        }
+        return 1;
     }
 
     private static int countWordsDirect(String str) {
@@ -267,14 +294,13 @@ public final class StringMethodDispatcher {
     }
 
     private static int countLinesDirect(String str) {
-        String delim = StringChunkUtils.pickLineDelimiter(str);
         int count = 1;
-        int dLen = delim.length();
         int i = 0;
-        while (i <= str.length() - dLen) {
-            if (str.regionMatches(i, delim, 0, dLen)) {
+        int limit = lineContentLength(str);
+        while (i < limit) {
+            if (isLineDelimiterAt(str, i)) {
                 count++;
-                i += dLen;
+                i += lineDelimiterWidth(str, i);
             } else {
                 i++;
             }
@@ -325,22 +351,48 @@ public final class StringMethodDispatcher {
         if (str == _lineCacheStr && _lineCacheResult != null) {
             return _lineCacheResult;
         }
-        String lineDelimiter = StringChunkUtils.pickLineDelimiter(str);
-        int delimLen = lineDelimiter.length();
         ArrayList<String> lines = new ArrayList<>();
         int start = 0;
-        while (true) {
-            int idx = str.indexOf(lineDelimiter, start);
-            if (idx == -1) {
-                lines.add(str.substring(start));
-                break;
+        int i = 0;
+        int limit = lineContentLength(str);
+        while (i < limit) {
+            if (isLineDelimiterAt(str, i)) {
+                lines.add(str.substring(start, i));
+                i += lineDelimiterWidth(str, i);
+                start = i;
+            } else {
+                i++;
             }
-            lines.add(str.substring(start, idx));
-            start = idx + delimLen;
         }
+        lines.add(str.substring(start, limit));
         String[] result = lines.toArray(new String[0]);
         _lineCacheStr = str;
         _lineCacheResult = result;
         return result;
+    }
+
+    private static boolean isLineDelimiterAt(String str, int index) {
+        char ch = str.charAt(index);
+        return ch == '\r' || ch == '\n';
+    }
+
+    private static int lineContentLength(String str) {
+        int end = str.length();
+        while (end > 0) {
+            char ch = str.charAt(end - 1);
+            if (ch != '\u0001' && ch != '\u0002') {
+                break;
+            }
+            end--;
+        }
+        return end;
+    }
+
+    private static int lineDelimiterWidth(String str, int index) {
+        return str.charAt(index) == '\r'
+                && index + 1 < str.length()
+                && str.charAt(index + 1) == '\n'
+                ? 2
+                : 1;
     }
 }

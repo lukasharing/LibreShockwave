@@ -1,9 +1,12 @@
 package com.libreshockwave.vm.builtin.data;
 
+import com.libreshockwave.lingo.StringChunkType;
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.datum.LingoException;
 import com.libreshockwave.vm.LingoVM;
 import com.libreshockwave.vm.builtin.cast.CastLibProvider;
+import com.libreshockwave.vm.builtin.movie.MoviePropertyProvider;
+import com.libreshockwave.vm.util.StringChunkUtils;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -50,8 +53,48 @@ public final class ListBuiltins {
             return Datum.of(l.items().size());
         } else if (a instanceof Datum.PropList p) {
             return Datum.of(p.size());
+        } else if (a instanceof Datum.StringChunkAccessor accessor) {
+            return countStringChunks(accessor.value(), accessor.chunkType());
+        } else if (a instanceof Datum.TextMemberChunkAccessor accessor) {
+            return countTextMemberChunks(accessor.castLibNum(), accessor.memberNum(), accessor.chunkType());
+        } else if (a instanceof Datum.TextMemberRangeRef range) {
+            Datum text = readTextMemberRange(range.castLibNum(), range.memberNum(),
+                    range.chunkType(), range.start(), range.end());
+            return countStringChunks(text.toStr(), range.chunkType());
         }
         return Datum.ZERO;
+    }
+
+    private static Datum countTextMemberChunks(int castLibNumber, int memberNumber, String chunkType) {
+        Datum text = readTextMemberRange(castLibNumber, memberNumber, chunkType, 1, -1);
+        if (text.isVoid()) {
+            return Datum.ZERO;
+        }
+        return countStringChunks(text.toStr(), chunkType);
+    }
+
+    private static Datum readTextMemberRange(int castLibNumber, int memberNumber,
+                                             String chunkType, int start, int end) {
+        CastLibProvider provider = CastLibProvider.getProvider();
+        return provider != null
+                ? provider.getMemberTextRangeProp(castLibNumber, memberNumber,
+                        chunkType, start, end, "text")
+                : Datum.VOID;
+    }
+
+    private static Datum countStringChunks(String text, String chunkType) {
+        String normalized = chunkType != null ? chunkType.toLowerCase() : "char";
+        if ("char".equals(normalized)) {
+            return Datum.of(text.length());
+        }
+        StringChunkType type;
+        try {
+            type = StringChunkType.fromName(normalized);
+        } catch (IllegalArgumentException ex) {
+            return Datum.of(text.length());
+        }
+        return Datum.of(StringChunkUtils.countChunks(
+                text, type, MoviePropertyProvider.ItemDelimiterCache._char));
     }
 
     /**
@@ -59,7 +102,7 @@ public final class ListBuiltins {
      */
     private static Datum duplicate(LingoVM vm, List<Datum> args) {
         if (args.isEmpty()) return Datum.VOID;
-        return Datum.valueOrVoid(args.get(0)).deepCopy();
+        return args.get(0).deepCopy();
     }
 
     /**
@@ -74,26 +117,13 @@ public final class ListBuiltins {
         if (container instanceof Datum.List l) {
             int index = keyOrIndex.toInt() - 1;
             if (index >= 0 && index < l.items().size()) {
-                return Datum.valueOrVoid(l.items().get(index));
+                return l.items().get(index);
             }
             return Datum.VOID;
         }
 
         if (container instanceof Datum.PropList pl) {
-            if (keyOrIndex instanceof Datum.Symbol || keyOrIndex instanceof Datum.Str) {
-                return pl.getOrDefault(keyOrIndex, Datum.VOID);
-            }
-            if (keyOrIndex instanceof Datum.Int || keyOrIndex instanceof Datum.Float) {
-                // Integer positional access (1-based)
-                int index = keyOrIndex.toInt() - 1;
-                if (index >= 0 && index < pl.size()) {
-                    return pl.getValue(index);
-                }
-                Datum keyedValue = pl.get(keyOrIndex);
-                return keyedValue != null ? keyedValue : Datum.VOID;
-            }
-            Datum keyedValue = pl.get(keyOrIndex);
-            return keyedValue != null ? keyedValue : Datum.VOID;
+            return pl.getAtOrDefault(keyOrIndex, Datum.VOID);
         }
 
         if (container instanceof Datum.CastLibMemberAccessor accessor) {
@@ -139,7 +169,7 @@ public final class ListBuiltins {
         if (args.size() < 3) return Datum.VOID;
         Datum container = args.get(0);
         Datum keyOrIndex = args.get(1);
-        Datum value = Datum.valueOrVoid(args.get(2));
+        Datum value = args.get(2);
         if (container instanceof Datum.List l) {
             int index = keyOrIndex.toInt() - 1;
             if (index >= 0) {
@@ -192,7 +222,7 @@ public final class ListBuiltins {
         if (args.size() < 2) return Datum.VOID;
         Datum datum = args.get(0);
         if (datum instanceof Datum.List list) {
-            list.items().add(Datum.valueOrVoid(args.get(1)));
+            list.items().add(args.get(1));
         }
         return Datum.VOID;
     }
@@ -207,7 +237,7 @@ public final class ListBuiltins {
             return Datum.VOID;
         }
         int position = args.get(1).toInt() - 1;
-        Datum value = Datum.valueOrVoid(args.get(2));
+        Datum value = args.get(2);
         if (position < 0) position = 0;
         if (position > list.items().size()) position = list.items().size();
         list.items().add(position, value);
@@ -317,11 +347,11 @@ public final class ListBuiltins {
     private static Datum getOne(LingoVM vm, List<Datum> args) {
         if (args.size() < 2) return Datum.ZERO;
         Datum container = args.get(0);
-        Datum target = Datum.valueOrVoid(args.get(1));
+        Datum target = args.get(1);
 
         if (container instanceof Datum.List l) {
             for (int i = 0; i < l.items().size(); i++) {
-                if (Datum.valueOrVoid(l.items().get(i)).lingoEquals(target)) {
+                if (l.items().get(i).lingoEquals(target)) {
                     return Datum.of(i + 1);
                 }
             }
@@ -335,11 +365,11 @@ public final class ListBuiltins {
     private static Datum deleteOne(LingoVM vm, List<Datum> args) {
         if (args.size() < 2) return Datum.VOID;
         Datum container = args.get(0);
-        Datum target = Datum.valueOrVoid(args.get(1));
+        Datum target = args.get(1);
 
         if (container instanceof Datum.List l) {
             for (int i = 0; i < l.items().size(); i++) {
-                if (Datum.valueOrVoid(l.items().get(i)).lingoEquals(target)) {
+                if (l.items().get(i).lingoEquals(target)) {
                     l.items().remove(i);
                     break;
                 }
@@ -356,11 +386,11 @@ public final class ListBuiltins {
         Datum container = args.get(0);
         if (container instanceof Datum.List l) {
             l.items().sort((a, b) -> {
-                    if (a instanceof Datum.Int ai && b instanceof Datum.Int bi) {
-                        return Integer.compare(ai.value(), bi.value());
-                    }
-                    return Datum.valueOrVoid(a).toStr().compareToIgnoreCase(Datum.valueOrVoid(b).toStr());
-                });
+                if (a instanceof Datum.Int ai && b instanceof Datum.Int bi) {
+                    return Integer.compare(ai.value(), bi.value());
+                }
+                return a.toStr().compareToIgnoreCase(b.toStr());
+            });
         }
         return Datum.VOID;
     }
@@ -390,7 +420,7 @@ public final class ListBuiltins {
         Datum container = args.get(0);
         if (container instanceof Datum.List l) {
             if (l.items().isEmpty()) return Datum.VOID;
-            return Datum.valueOrVoid(l.items().get(l.items().size() - 1));
+            return l.items().get(l.items().size() - 1);
         }
         if (container instanceof Datum.PropList pl) {
             if (pl.isEmpty()) return Datum.VOID;

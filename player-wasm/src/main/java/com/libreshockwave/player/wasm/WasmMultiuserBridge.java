@@ -44,6 +44,7 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
     private final Map<Integer, Boolean> connectedMap = new HashMap<>();
     private final Map<Integer, List<NetMessage>> messageQueues = new HashMap<>();
     private final Set<Integer> closingInstances = new HashSet<>();
+    private final Set<Integer> terminalInstances = new HashSet<>();
     private final Map<Integer, MultiuserTransportState> transports = new HashMap<>();
 
     // --- MultiuserNetBridge implementation ---
@@ -58,6 +59,7 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
         debug("request connect instance=" + instanceId + " host=" + host + " port=" + port
                 + " mode=" + modeFlag + (modeFlag != 0 ? " content-only" : " smus"));
         closingInstances.remove(instanceId);
+        terminalInstances.remove(instanceId);
         connectedMap.remove(instanceId);
         messageQueues.remove(instanceId);
         transports.put(instanceId, new MultiuserTransportState(modeFlag));
@@ -70,6 +72,12 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
     @Override
     public void requestSend(int instanceId, String senderID, String subject, Datum content) {
         String contentString = content.toStr();
+        if (terminalInstances.contains(instanceId)) {
+            debug("request send ignored for terminal instance=" + instanceId
+                    + " sender=" + senderID + " subject=" + subject
+                    + " bytes=" + contentString.length());
+            return;
+        }
         MultiuserTransportState transport =
                 transports.computeIfAbsent(instanceId, ignored -> new MultiuserTransportState(0));
         boolean contentOnly = transport.willSendContentOnly(senderID, subject);
@@ -88,6 +96,7 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
     public void requestDisconnect(int instanceId) {
         debug("request disconnect instance=" + instanceId);
         closingInstances.add(instanceId);
+        terminalInstances.add(instanceId);
         messageQueues.remove(instanceId);
         PendingRequest req = new PendingRequest(REQ_DISCONNECT, instanceId);
         pendingRequests.add(req);
@@ -110,6 +119,7 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
     public void destroyInstance(int instanceId) {
         debug("destroy instance=" + instanceId);
         closingInstances.add(instanceId);
+        terminalInstances.add(instanceId);
         connectedMap.remove(instanceId);
         messageQueues.remove(instanceId);
         transports.remove(instanceId);
@@ -133,6 +143,7 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
 
     void notifyConnected(int instanceId) {
         closingInstances.remove(instanceId);
+        terminalInstances.remove(instanceId);
         connectedMap.put(instanceId, true);
         debug("connected instance=" + instanceId);
         // Director's Multiuser Xtra reports a successful connection with this
@@ -147,11 +158,15 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
     void notifyDisconnected(int instanceId, int closeCode, boolean wasClean, String detail) {
         connectedMap.remove(instanceId);
         if (closingInstances.contains(instanceId)) {
+            terminalInstances.add(instanceId);
+            transports.remove(instanceId);
             debug("disconnected ignored for closing instance=" + instanceId
                     + formatCloseDetail(closeCode, wasClean, detail));
             return;
         }
         String diagnostic = formatCloseDetail(closeCode, wasClean, detail);
+        terminalInstances.add(instanceId);
+        transports.remove(instanceId);
         debug("disconnected instance=" + instanceId + diagnostic);
         queueMessage(instanceId, new NetMessage(-2, "System", "ConnectionProblem", new Datum.Str(diagnostic.trim())));
     }
@@ -162,6 +177,8 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
 
     void notifyError(int instanceId, int errorCode, String detail) {
         connectedMap.remove(instanceId);
+        terminalInstances.add(instanceId);
+        transports.remove(instanceId);
         if (closingInstances.contains(instanceId)) {
             debug("error ignored for closing instance=" + instanceId + " code=" + errorCode
                     + formatTextDetail(detail));

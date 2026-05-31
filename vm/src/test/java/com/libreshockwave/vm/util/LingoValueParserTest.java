@@ -99,6 +99,27 @@ class LingoValueParserTest {
     }
 
     @Test
+    void parsesAvailableBbcodeCompatibilityVariable() {
+        Datum parsed = LingoValueParser.parseWithPartial(
+                "[\"b\":[#style:#fontStyle,#default:[#bold]],\"i\":[#style:#fontStyle,#default:[#italic]]," +
+                        "\"u\":[#style:#fontStyle,#default:[#underline]],\"color\":[#style:#color]," +
+                        "\"c\":[#style:#color],\"size\":[#style:#fontSize],\"br\":[#replace:\"\\r\"]," +
+                        "\"url\":[#style:#url]]",
+                new LingoVM(null));
+
+        Datum.PropList props = assertInstanceOf(Datum.PropList.class, parsed);
+
+        assertFalse(props.entries().get(0).isSymbolKey(), "BBCode names are string keys");
+        Datum.PropList color = assertInstanceOf(Datum.PropList.class, props.get("color", false));
+        assertEquals("color", color.get("style", true).toKeyName());
+        Datum.PropList bold = assertInstanceOf(Datum.PropList.class, props.get("b", false));
+        Datum.List boldDefault = assertInstanceOf(Datum.List.class, bold.get("default", true));
+        assertEquals("bold", boldDefault.items().get(0).toKeyName());
+        Datum.PropList breakCode = assertInstanceOf(Datum.PropList.class, props.get("br", false));
+        assertEquals("\r", breakCode.get("replace", true).toStr());
+    }
+
+    @Test
     void parsesFlatMixedLiteralListsWithoutRegexDependency() {
         Datum parsed = LingoValueParser.parseWithPartial(
                 "[#core, 7, 3.5, \"Broker Manager Class\"]",

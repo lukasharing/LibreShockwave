@@ -21,29 +21,30 @@ public final class XtraBuiltins {
 
     private XtraBuiltins() {}
 
-    // Thread-local XtraManager for VM access
-    private static final ThreadLocal<XtraManager> currentManager = new ThreadLocal<>();
+    // Manager for VM access. Avoid ThreadLocal in the single-threaded WASM
+    // runtime; TeaVM's ThreadLocal implementation can trap under repeated use.
+    private static XtraManager currentManager;
 
     /**
      * Set the XtraManager for the current thread.
      * Call this before executing scripts that use Xtra functions.
      */
     public static void setManager(XtraManager manager) {
-        currentManager.set(manager);
+        currentManager = manager;
     }
 
     /**
      * Clear the XtraManager for the current thread.
      */
     public static void clearManager() {
-        currentManager.remove();
+        currentManager = null;
     }
 
     /**
      * Get the current XtraManager.
      */
     public static XtraManager getManager() {
-        return currentManager.get();
+        return currentManager;
     }
 
     public static void register(Map<String, BiFunction<LingoVM, List<Datum>, Datum>> builtins) {
@@ -62,7 +63,7 @@ public final class XtraBuiltins {
         }
 
         String xtraName = args.get(0).toStr();
-        XtraManager manager = currentManager.get();
+        XtraManager manager = currentManager;
 
         if (manager == null) {
             System.err.println("[XtraBuiltins] No XtraManager registered");
@@ -82,7 +83,7 @@ public final class XtraBuiltins {
      * Called via ConstructorBuiltins new() when given an XtraRef.
      */
     public static Datum createInstance(Datum.XtraRef xtraRef, List<Datum> args) {
-        XtraManager manager = currentManager.get();
+        XtraManager manager = currentManager;
         if (manager == null) {
             System.err.println("[XtraBuiltins] No XtraManager registered");
             return Datum.VOID;
@@ -95,7 +96,7 @@ public final class XtraBuiltins {
      * Call a handler on an Xtra instance.
      */
     public static Datum callHandler(Datum.XtraInstance instance, String handlerName, List<Datum> args) {
-        XtraManager manager = currentManager.get();
+        XtraManager manager = currentManager;
         if (manager == null) {
             return Datum.VOID;
         }
@@ -107,7 +108,7 @@ public final class XtraBuiltins {
      * Get a property from an Xtra instance.
      */
     public static Datum getProperty(Datum.XtraInstance instance, String propertyName) {
-        XtraManager manager = currentManager.get();
+        XtraManager manager = currentManager;
         if (manager == null) {
             return Datum.VOID;
         }
@@ -119,7 +120,7 @@ public final class XtraBuiltins {
      * Set a property on an Xtra instance.
      */
     public static void setProperty(Datum.XtraInstance instance, String propertyName, Datum value) {
-        XtraManager manager = currentManager.get();
+        XtraManager manager = currentManager;
         if (manager != null) {
             manager.setProperty(instance, propertyName, value);
         }

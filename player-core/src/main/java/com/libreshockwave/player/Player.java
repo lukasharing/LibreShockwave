@@ -2,11 +2,13 @@ package com.libreshockwave.player;
 
 import com.libreshockwave.DirectorFile;
 import com.libreshockwave.util.FileUtil;
+import com.libreshockwave.util.IntValueProvider;
+import com.libreshockwave.util.ValueProvider;
 import com.libreshockwave.bitmap.Bitmap;
 import com.libreshockwave.chunks.ScriptChunk;
 import com.libreshockwave.chunks.ScriptNamesChunk;
 import com.libreshockwave.player.behavior.BehaviorManager;
-import com.libreshockwave.player.cast.CastLib;
+import com.libreshockwave.player.cast.CastMember;
 import com.libreshockwave.player.cast.CastLibManager;
 import com.libreshockwave.player.event.EventDispatcher;
 import com.libreshockwave.player.frame.FrameContext;
@@ -20,6 +22,7 @@ import com.libreshockwave.player.render.pipeline.StageRenderer;
 import com.libreshockwave.player.score.ScoreNavigator;
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.datum.LingoException;
+import com.libreshockwave.vm.DebugConfig;
 import com.libreshockwave.vm.LingoVM;
 import com.libreshockwave.vm.TraceListener;
 import com.libreshockwave.vm.builtin.cast.CastLibProvider;
@@ -32,12 +35,15 @@ import com.libreshockwave.vm.builtin.timeout.TimeoutProvider;
 import com.libreshockwave.vm.builtin.xtra.XtraBuiltins;
 import com.libreshockwave.vm.builtin.flow.ControlFlowBuiltins;
 import com.libreshockwave.vm.builtin.flow.UpdateProvider;
+import com.libreshockwave.vm.opcode.dispatch.MemberRegistryMethodDispatcher;
 import com.libreshockwave.player.audio.AudioBackend;
 import com.libreshockwave.player.audio.SoundManager;
 import com.libreshockwave.player.debug.LifecycleDiagnostics;
 import com.libreshockwave.player.timeout.TimeoutManager;
+import com.libreshockwave.vm.xtra.CurlXtra;
 import com.libreshockwave.vm.xtra.MultiuserNetBridge;
 import com.libreshockwave.vm.xtra.MultiuserXtra;
+import com.libreshockwave.vm.xtra.ScriptCallback;
 import com.libreshockwave.player.xtra.SocketMultiuserBridge;
 import com.libreshockwave.vm.xtra.XmlParserXtra;
 import com.libreshockwave.vm.xtra.XtraManager;
@@ -86,6 +92,12 @@ public class Player implements UpdateProvider {
 
     private PlayerState state = PlayerState.STOPPED;
     private int tempo;  // Frames per second
+    private boolean fastMovieClockEnabled = false;
+    private int fastMovieClockMultiplier = 1;
+    private long movieClockMs = System.currentTimeMillis();
+    private long movieClockOffsetMs = 0L;
+    private long fastMovieClockWallAnchorMs = movieClockMs;
+    private long fastMovieClockMovieAnchorMs = movieClockMs;
 
     // Event listeners for external notification
     private Consumer<PlayerEventInfo> eventListener;
@@ -119,7 +131,7 @@ public class Player implements UpdateProvider {
     private final java.util.List<ExternalCastLoadHandler> externalCastLoadHandlers = new java.util.ArrayList<>();
     private final List<Datum> updatingObjects = new ArrayList<>();
     private final Map<String, Datum> initialBuiltinVariables = new LinkedHashMap<>();
-    private boolean eagerExternalCastPreloadEnabled = true;
+    private final Map<String, String> externalParamVariables = new LinkedHashMap<>();
 
     // External parameters (Shockwave PARAM tags)
     private final Map<String, String> externalParams = new LinkedHashMap<>();
@@ -154,6 +166,16 @@ public class Player implements UpdateProvider {
         public Map<String, String> getAllParams() {
             return Collections.unmodifiableMap(externalParams);
         }
+
+        @Override
+        public String getLaunchVariable(String name) {
+            for (var entry : externalParamVariables.entrySet()) {
+                if (entry.getKey().equalsIgnoreCase(name)) {
+                    return entry.getValue();
+                }
+            }
+            return null;
+        }
     };
 
     // Optional override for the network provider (used by player-wasm to substitute FetchNetManager)
@@ -170,7 +192,7 @@ public class Player implements UpdateProvider {
         }
         this.netManager = new NetManager();
         this.xtraManager = new XtraManager();
-        registerCoreXtras();
+        registerBundledXtras();
         registerMultiuserXtra(new SocketMultiuserBridge());
         this.movieProperties = new MovieProperties(this, file);
         this.spriteProperties = new SpriteProperties(stageRenderer.getSpriteRegistry());
@@ -185,9 +207,10 @@ public class Player implements UpdateProvider {
         // NetManager's cache (already downloaded by preloadNetThing) into the specific cast.
         this.castLibManager = new CastLibManager(file, (castLibNumber, fileName) ->
             loadCastFromNetCache(castLibNumber, fileName));
+        this.castLibManager.setRegistryChangeCallback(this::onCastRegistryChanged);
         this.stageRenderer.setCastLibManager(castLibManager);
         this.spriteProperties.setCastLibManager(castLibManager);
-        this.timeoutManager = new TimeoutManager();
+        this.timeoutManager = new TimeoutManager(this::getMovieTimeMs);
         this.soundManager = new SoundManager(castLibManager);
         this.bitmapCache = new BitmapCache();
         this.spriteBaker = new SpriteBaker(bitmapCache, castLibManager, this);
@@ -197,10 +220,11 @@ public class Player implements UpdateProvider {
         // Set initial palette (updated each tick in setupProviders)
         com.libreshockwave.vm.datum.Datum.setActivePalette(bitmapResolver.getMoviePalette());
         this.cursorManager = new CursorManager(stageRenderer, inputState, castLibManager,
-                bitmapResolver, this::getCurrentFrame, () -> frameContext.getEventDispatcher(),
-                () -> movieProperties.getMovieProp("cursor"));
+                bitmapResolver, frameProvider(), eventDispatcherProvider(), cursorProvider());
         this.inputHandler = new InputHandler(inputState, stageRenderer, castLibManager,
-                this::getCurrentFrame, () -> frameContext.getEventDispatcher());
+                frameProvider(), eventDispatcherProvider());
+        this.inputHandler.setAfterInputEventCallback(() ->
+                timeoutManager.processInputEventTimeouts(vm, getMovieTimeMs()));
         this.movieProperties.setInputState(inputState);
         this.frameContext.setTimeoutManager(timeoutManager);
         this.frameContext.getEventDispatcher().setCastLibManager(castLibManager);
@@ -253,19 +277,10 @@ public class Player implements UpdateProvider {
         // This runs synchronously so cast member lookup/state is ready before
         // scripts observe a completed net task.
         netManager.setCompletionCallback((fileName, data) -> {
-            handleExternalCastFetch(fileName, data);
+            onNetFetchComplete(fileName, data);
         });
 
-        // Wire up event notifications
-        frameContext.setEventListener(event -> {
-            if (eventListener != null) {
-                eventListener.accept(new PlayerEventInfo(event.event(), event.frame(), 0));
-            }
-            // Notify stage renderer of frame changes
-            if (event.event() == PlayerEvent.ENTER_FRAME) {
-                stageRenderer.onFrameEnter(event.frame());
-            }
-        });
+        wireFrameCallbacks();
     }
 
     /**
@@ -285,7 +300,7 @@ public class Player implements UpdateProvider {
         this.netManager = null;
         this.overrideNetProvider = netProvider;
         this.xtraManager = new XtraManager();
-        registerCoreXtras();
+        registerBundledXtras();
         // No auto-register here — TeaVM has no socket support.
         // WASM callers should call registerMultiuserXtra() with their own bridge.
         this.movieProperties = new MovieProperties(this, file);
@@ -293,9 +308,10 @@ public class Player implements UpdateProvider {
         this.castLibManager = new CastLibManager(file, (castLibNum, fileName) -> {
             handleCastDataRequest(castLibNum, fileName, castDataRequestCallback);
         });
+        this.castLibManager.setRegistryChangeCallback(this::onCastRegistryChanged);
         this.stageRenderer.setCastLibManager(castLibManager);
         this.spriteProperties.setCastLibManager(castLibManager);
-        this.timeoutManager = new TimeoutManager();
+        this.timeoutManager = new TimeoutManager(this::getMovieTimeMs);
         this.soundManager = new SoundManager(castLibManager);
         this.bitmapCache = new BitmapCache();
         this.spriteBaker = new SpriteBaker(bitmapCache, castLibManager, this);
@@ -305,10 +321,11 @@ public class Player implements UpdateProvider {
         // Set initial palette (updated each tick in setupProviders)
         com.libreshockwave.vm.datum.Datum.setActivePalette(bitmapResolver.getMoviePalette());
         this.cursorManager = new CursorManager(stageRenderer, inputState, castLibManager,
-                bitmapResolver, this::getCurrentFrame, () -> frameContext.getEventDispatcher(),
-                () -> movieProperties.getMovieProp("cursor"));
+                bitmapResolver, frameProvider(), eventDispatcherProvider(), cursorProvider());
         this.inputHandler = new InputHandler(inputState, stageRenderer, castLibManager,
-                this::getCurrentFrame, () -> frameContext.getEventDispatcher());
+                frameProvider(), eventDispatcherProvider());
+        this.inputHandler.setAfterInputEventCallback(() ->
+                timeoutManager.processInputEventTimeouts(vm, getMovieTimeMs()));
         this.movieProperties.setInputState(inputState);
         // Set simple text renderer for TeaVM/WASM (no AWT)
         com.libreshockwave.player.cast.CastMember.setTextRenderer(new com.libreshockwave.player.render.output.SimpleTextRenderer());
@@ -333,19 +350,19 @@ public class Player implements UpdateProvider {
         // Score tempo channel and puppetTempo can still override this per-frame.
         this.tempo = file.getConfig().tempo() > 0 ? file.getConfig().tempo() : 15;
 
-        // Wire up event notifications
+        wireFrameCallbacks();
+    }
+
+    // Accessors
+
+    private void wireFrameCallbacks() {
+        frameContext.setFrameEntryListener(stageRenderer::syncScoreStateForFrame);
         frameContext.setEventListener(event -> {
             if (eventListener != null) {
                 eventListener.accept(new PlayerEventInfo(event.event(), event.frame(), 0));
             }
-            // Notify stage renderer of frame changes
-            if (event.event() == PlayerEvent.ENTER_FRAME) {
-                stageRenderer.onFrameEnter(event.frame());
-            }
         });
     }
-
-    // Accessors
 
     public DirectorFile getFile() {
         return file;
@@ -353,6 +370,57 @@ public class Player implements UpdateProvider {
 
     public LingoVM getVM() {
         return vm;
+    }
+
+    public long getMovieTimeMs() {
+        if (fastMovieClockEnabled) {
+            return getFastMovieTimeMs(System.currentTimeMillis());
+        }
+        return System.currentTimeMillis() + movieClockOffsetMs;
+    }
+
+    public void setFastMovieClockEnabled(boolean enabled) {
+        setFastMovieClockEnabled(enabled, 1);
+    }
+
+    public void setFastMovieClockEnabled(boolean enabled, int multiplier) {
+        int normalizedMultiplier = Math.max(1, multiplier);
+        long wallNow = System.currentTimeMillis();
+        long currentMovieTime = fastMovieClockEnabled
+                ? getFastMovieTimeMs(wallNow)
+                : wallNow + movieClockOffsetMs;
+        movieClockMs = currentMovieTime;
+        if (enabled) {
+            fastMovieClockEnabled = true;
+            fastMovieClockMultiplier = normalizedMultiplier;
+            fastMovieClockWallAnchorMs = wallNow;
+            fastMovieClockMovieAnchorMs = currentMovieTime;
+        } else {
+            fastMovieClockEnabled = false;
+            fastMovieClockMultiplier = 1;
+            fastMovieClockWallAnchorMs = wallNow;
+            fastMovieClockMovieAnchorMs = currentMovieTime;
+            movieClockOffsetMs = currentMovieTime - wallNow;
+        }
+    }
+
+    private void advanceMovieClockForTick() {
+        if (!fastMovieClockEnabled) {
+            movieClockMs = getMovieTimeMs();
+            return;
+        }
+        int fps = Math.max(1, getTempo());
+        long wallNow = System.currentTimeMillis();
+        long currentMovieTime = getFastMovieTimeMs(wallNow);
+        long frameStep = Math.max(1, Math.round(1000.0f / fps)) * (long) fastMovieClockMultiplier;
+        movieClockMs = currentMovieTime + frameStep;
+        fastMovieClockWallAnchorMs = wallNow;
+        fastMovieClockMovieAnchorMs = movieClockMs;
+    }
+
+    private long getFastMovieTimeMs(long wallNow) {
+        long wallElapsedMs = Math.max(0L, wallNow - fastMovieClockWallAnchorMs);
+        return fastMovieClockMovieAnchorMs + wallElapsedMs * (long) fastMovieClockMultiplier;
     }
 
     public FrameContext getFrameContext() {
@@ -383,8 +451,14 @@ public class Player implements UpdateProvider {
         return xtraManager;
     }
 
-    private void registerCoreXtras() {
+    private void registerBundledXtras() {
+        // These are Director-facing Xtra implementations bundled with the player.
+        // They are registered by Xtra name so authored movies can request them
+        // through xtra("..."), but they are not VM opcodes or builtins.
         xtraManager.registerXtra(new XmlParserXtra());
+        xtraManager.registerXtra(new CurlXtra(
+                () -> overrideNetProvider != null ? overrideNetProvider : netManager,
+                scriptCallback("CurlXtra")));
     }
 
     /**
@@ -392,18 +466,39 @@ public class Player implements UpdateProvider {
      * Call this before play() to enable Lingo's xtra("Multiuser") functionality.
      */
     public void registerMultiuserXtra(MultiuserNetBridge netBridge) {
-        MultiuserXtra multiuserXtra = new MultiuserXtra(netBridge, (target, handlerName, args) -> {
+        MultiuserXtra multiuserXtra = new MultiuserXtra(netBridge, scriptCallback("MultiuserXtra"));
+        xtraManager.registerXtra(multiuserXtra);
+    }
+
+    /**
+     * Deliver pending Xtra callbacks outside the normal frame tick.
+     *
+     * Host event loops can receive socket open/data/close notifications between
+     * rendered frames. Director exposes those through the Xtra callback handler,
+     * so the callback pump needs the same provider setup as a normal tick even
+     * when no score frame is being advanced.
+     */
+    public void processXtraCallbacks() {
+        setupProviders();
+        try {
+            xtraManager.tickAll();
+        } finally {
+            flushDeferredVmTasksAndClearProviders();
+        }
+    }
+
+    private ScriptCallback scriptCallback(String source) {
+        return (target, handlerName, args) -> {
             if (target instanceof Datum.ScriptInstance si) {
                 invokeOnScriptInstance(si, handlerName, args);
             } else {
                 try {
                     vm.callHandler(handlerName, args);
                 } catch (Exception e) {
-                    System.err.println("[MultiuserXtra] Callback error: " + e.getMessage());
+                    System.err.println("[" + source + "] Callback error: " + e.getMessage());
                 }
             }
-        });
-        xtraManager.registerXtra(multiuserXtra);
+        };
     }
 
     /**
@@ -465,18 +560,20 @@ public class Player implements UpdateProvider {
     }
 
     /**
-     * Called when a network fetch completes. If the fetched URL is a cast file
-     * (.cct/.cst), caches the raw data in CastLibManager and parses it into
-     * the matching cast library so members are available immediately.
+     * Called when a network fetch completes. Cast files are cached as raw
+     * bytes and parsed immediately only for slots that Director/Lingo has
+     * already requested.
      */
     public void onNetFetchComplete(String url, byte[] data) {
         if (url == null || data == null) return;
-        castLibManager.cacheExternalData(url, data);
-
         String lower = url.toLowerCase();
         int qi = lower.indexOf('?');
         if (qi > 0) lower = lower.substring(0, qi);
-        if (!lower.endsWith(".cct") && !lower.endsWith(".cst")) return;
+        boolean castFile = lower.endsWith(".cct") || lower.endsWith(".cst");
+
+        castLibManager.cacheExternalData(url, data);
+
+        if (!castFile) return;
 
         handleExternalCastFetch(url, data);
     }
@@ -501,8 +598,10 @@ public class Player implements UpdateProvider {
      */
     public void setExternalParams(Map<String, String> params) {
         externalParams.clear();
+        externalParamVariables.clear();
         if (params != null) {
             externalParams.putAll(params);
+            externalParamVariables.putAll(parseShockwaveParamVariables(params));
         }
     }
 
@@ -521,11 +620,41 @@ public class Player implements UpdateProvider {
         if (castLibNumber <= 0) {
             return;
         }
-        bitmapCache.clear();
+        onCastRegistryChanged(castLibNumber);
+        notifyExternalCastLoaded(castLibNumber);
+    }
+
+    private void onCastRegistryChanged(int castLibNumber) {
         castLibManager.clearHandlerLookupCache();
         vm.invalidateHandlerCache();
+        if (bitmapCache != null) {
+            bitmapCache.clear();
+        }
+        if (bitmapResolver != null) {
+            bitmapResolver.invalidateMoviePalette();
+        }
+        reapplyPersistentMemberAliases(castLibNumber);
+        applyInitialBuiltinVariableFieldOverrides();
         stageRenderer.getSpriteRegistry().bumpRevision();
-        notifyExternalCastLoaded(castLibNumber);
+    }
+
+    private void reapplyPersistentMemberAliases(int castLibNumber) {
+        CastLibProvider previousProvider = CastLibProvider.getProvider();
+        boolean restoreProvider = previousProvider != castLibManager;
+        if (restoreProvider) {
+            CastLibProvider.setProvider(castLibManager);
+        }
+        try {
+            if (castLibNumber > 0) {
+                MemberRegistryMethodDispatcher.reapplyPersistentAliases(castLibNumber);
+            } else {
+                MemberRegistryMethodDispatcher.reapplyAllPersistentAliases();
+            }
+        } finally {
+            if (restoreProvider) {
+                CastLibProvider.setProvider(previousProvider);
+            }
+        }
     }
 
     public boolean loadExternalCastFromCachedData(int castLibNumber, byte[] data) {
@@ -568,7 +697,7 @@ public class Player implements UpdateProvider {
         String fileName = castLib.getFileName();
         LifecycleDiagnostics.logExternalCastLoaded(castLibNumber, fileName);
         ExternalCastLoadEvent event = new ExternalCastLoadEvent(castLibNumber, fileName);
-        for (ExternalCastLoadHandler handler : externalCastLoadHandlers) {
+        for (ExternalCastLoadHandler handler : new java.util.ArrayList<>(externalCastLoadHandlers)) {
             handler.onExternalCastLoaded(this, castLibNumber, fileName);
         }
         if (externalCastLoadListener != null) {
@@ -583,20 +712,39 @@ public class Player implements UpdateProvider {
         return cursorManager;
     }
 
+    private IntValueProvider frameProvider() {
+        return new IntValueProvider() {
+            @Override
+            public int getAsInt() {
+                return Player.this.getCurrentFrame();
+            }
+        };
+    }
+
+    private ValueProvider<EventDispatcher> eventDispatcherProvider() {
+        return new ValueProvider<EventDispatcher>() {
+            @Override
+            public EventDispatcher get() {
+                return frameContext.getEventDispatcher();
+            }
+        };
+    }
+
+    private ValueProvider<Datum> cursorProvider() {
+        return new ValueProvider<Datum>() {
+            @Override
+            public Datum get() {
+                return movieProperties.getMovieProp("cursor");
+            }
+        };
+    }
+
     public InputHandler getInputHandler() {
         return inputHandler;
     }
 
     public TimeoutManager getTimeoutManager() {
         return timeoutManager;
-    }
-
-    public long getMovieTimeMs() {
-        return System.currentTimeMillis();
-    }
-
-    public void setEagerExternalCastPreloadEnabled(boolean enabled) {
-        eagerExternalCastPreloadEnabled = enabled;
     }
 
     /**
@@ -608,8 +756,11 @@ public class Player implements UpdateProvider {
         if (variableName == null || variableName.isEmpty()) {
             return;
         }
-        initialBuiltinVariables.put(variableName,
-                defaultValue != null ? defaultValue.deepCopy() : Datum.VOID);
+        Datum value = defaultValue != null ? defaultValue.deepCopy() : Datum.VOID;
+        initialBuiltinVariables.put(variableName, value);
+        if (state != PlayerState.STOPPED) {
+            applyConfiguredBuiltinVariablesNow();
+        }
     }
 
     /**
@@ -621,7 +772,15 @@ public class Player implements UpdateProvider {
             return;
         }
         for (var entry : values.entrySet()) {
-            setInitialBuiltinVariable(entry.getKey(), entry.getValue());
+            String variableName = entry.getKey();
+            if (variableName == null || variableName.isEmpty()) {
+                continue;
+            }
+            Datum value = entry.getValue() != null ? entry.getValue().deepCopy() : Datum.VOID;
+            initialBuiltinVariables.put(variableName, value);
+        }
+        if (state != PlayerState.STOPPED) {
+            applyConfiguredBuiltinVariablesNow();
         }
     }
 
@@ -635,24 +794,43 @@ public class Player implements UpdateProvider {
         return preloadExternalCasts(castLib -> true);
     }
 
+    /**
+     * Queue the external casts that Director can safely expose during startup:
+     * before-frame casts only. Other external casts remain demand-loaded by
+     * authored Lingo through preloadNetThing status plus castLib.fileName.
+     */
+    public int preloadStartupCasts() {
+        return preloadExternalCasts(castLib -> castLib.getPreloadMode() == 2);
+    }
+
+    /**
+     * Preload only external cast libraries authored with a specific Director
+     * preload mode. This is the normal startup path; full-catalog preloading is
+     * too expensive for large multi-cast movies.
+     */
     public int preloadExternalCastsByMode(int mode) {
         return preloadExternalCasts(castLib -> castLib.getPreloadMode() == mode);
     }
 
-    private int preloadExternalCasts(java.util.function.Predicate<CastLib> predicate) {
+    private int preloadExternalCasts(java.util.function.Predicate<com.libreshockwave.player.cast.CastLib> filter) {
         NetBuiltins.NetProvider provider = overrideNetProvider != null ? overrideNetProvider : netManager;
         if (provider == null) return 0;
         int count = 0;
         for (var entry : castLibManager.getCastLibs().entrySet()) {
             var castLib = entry.getValue();
-            if (castLib.isExternal()
-                    && !castLib.isLoaded()
-                    && !castLib.isFetching()
-                    && predicate.test(castLib)) {
+            if (castLib.isExternal() && !castLib.isLoaded() && !castLib.isFetching()
+                    && filter.test(castLib)) {
                 String rawPath = castLib.getFileName();
                 if (rawPath != null && !rawPath.isEmpty()) {
                     // Normalize Mac colon-separated paths (e.g. "Sulake:...:mobiles.cct") to just filename
                     String fileName = FileUtil.getFileName(rawPath);
+                    String baseName = FileUtil.getFileNameWithoutExtension(fileName);
+                    byte[] cached = castLibManager.getCachedExternalData(baseName);
+                    if (cached != null) {
+                        castLib.cacheFetchedExternalData(cached);
+                        loadExternalCastFromCachedData(castLib.getNumber(), cached);
+                        continue;
+                    }
                     castLib.markFetching();
                     provider.preloadNetThing(fileName);
                     count++;
@@ -726,9 +904,9 @@ public class Player implements UpdateProvider {
             snapshot.stageHeight(),
             snapshot.backgroundColor(),
             snapshot.sprites(),
-            String.format("Frame %d | %s", frame, state.name()),
+            "Frame " + frame + " | " + state.name(),
             snapshot.stageImage(),
-            snapshot.bakeTick(),
+            snapshot.renderRevision(),
             snapshot.pipelineTrace()
         );
     }
@@ -1035,8 +1213,9 @@ public class Player implements UpdateProvider {
 
         setupProviders();
         try {
+            advanceMovieClockForTick();
             frameContext.executeFrame();
-            timeoutManager.processTimeouts(vm, System.currentTimeMillis());
+            timeoutManager.processTimeouts(vm, getMovieTimeMs());
             frameContext.advanceFrame();
         } finally {
             flushDeferredVmTasksAndClearProviders();
@@ -1072,12 +1251,16 @@ public class Player implements UpdateProvider {
                 do {
                     setupProviders();
                     try {
+                        advanceMovieClockForTick();
+                        // Deliver async Xtra work that arrived before this movie tick
+                        // before prepareFrame/enterFrame handlers consume room state.
+                        xtraManager.tickAll();
                         inputHandler.processInputEvents();
                         frameContext.executeFrame();
                         // Process Xtra callbacks after frame execution so room
                         // object creation sees any cast updates from this frame.
                         xtraManager.tickAll();
-                        timeoutManager.processTimeouts(vm, System.currentTimeMillis());
+                        timeoutManager.processTimeouts(vm, getMovieTimeMs());
                         frameContext.advanceFrame();
                     } finally {
                         flushDeferredVmTasksAndClearProviders();
@@ -1118,13 +1301,17 @@ public class Player implements UpdateProvider {
             vm.setTickDeadline(System.currentTimeMillis() + deadlineMs);
         }
         try {
+            advanceMovieClockForTick();
+            // Deliver async Xtra work that arrived before this movie tick before
+            // prepareFrame/enterFrame handlers consume room state.
+            xtraManager.tickAll();
             // Process queued mouse/keyboard input events before frame execution
             inputHandler.processInputEvents();
             frameContext.executeFrame();
             // Process Xtra callbacks after frame execution so room object
             // creation sees any cast updates from this frame.
             xtraManager.tickAll();
-            timeoutManager.processTimeouts(vm, System.currentTimeMillis());
+            timeoutManager.processTimeouts(vm, getMovieTimeMs());
             processUpdatingObjects();
             frameContext.advanceFrame();
         } finally {
@@ -1159,12 +1346,16 @@ public class Player implements UpdateProvider {
                 do {
                     setupProviders();
                     try {
+                        advanceMovieClockForTick();
+                        // Deliver async Xtra work that arrived before this movie tick
+                        // before prepareFrame/enterFrame handlers consume room state.
+                        xtraManager.tickAll();
                         inputHandler.processInputEvents();
                         frameContext.executeFrame();
                         // Process Xtra callbacks after frame execution so room
                         // object creation sees any cast updates from this frame.
                         xtraManager.tickAll();
-                        timeoutManager.processTimeouts(vm, System.currentTimeMillis());
+                        timeoutManager.processTimeouts(vm, getMovieTimeMs());
                         processUpdatingObjects();
                         frameContext.advanceFrame();
                     } finally {
@@ -1224,30 +1415,18 @@ public class Player implements UpdateProvider {
 
         setupProviders();
         try {
-            applyInitialBuiltinVariables();
-
-            // 0. Initiate fetch of all external casts when running in eager
-            // desktop/debug mode. WASM can disable this and preload only the
-            // authored before-frame-one casts to avoid retaining the whole
-            // hotel catalog in memory during bootstrap.
-            if (eagerExternalCastPreloadEnabled) {
-                preloadAllCasts();
-            }
+            // 0. Initiate fetch of Director's before-frame preload casts.
+            // On-demand casts remain demand-loaded by authored Lingo.
+            preloadStartupCasts();
 
             // 1. Preload casts with preloadMode=2 (BeforeFrameOne / MovieLoaded)
             // dirplayer-rs: Mode 2 = BeforeFrameOne, Mode 1 = AfterFrameOne
             castLibManager.preloadCasts(2);
+            applyInitialBuiltinVariableFieldOverrides();
 
             // 2. prepareMovie -> timeout targets first, then movie scripts
             timeoutManager.dispatchSystemEvent(vm, "prepareMovie");
             frameContext.getEventDispatcher().dispatchToMovieScripts(PlayerEvent.PREPARE_MOVIE, List.of());
-
-            // prepareMovie handlers are allowed to change preloadMode and trigger preloadNetThing()
-            // for external casts that frame-1 startup logic depends on. Make those casts visible
-            // before beginSprite/prepareFrame/enterFrame rather than deferring until after the
-            // entire first frame, otherwise first-frame bootstrap scripts can observe missing
-            // handlers and variables from freshly requested startup casts.
-            castLibManager.preloadCasts(1);
 
             // 3. Initialize sprites for frame 1
             frameContext.initializeFirstFrame();
@@ -1270,7 +1449,9 @@ public class Player implements UpdateProvider {
             timeoutManager.dispatchSystemEvent(vm, "exitFrame");
             frameContext.getEventDispatcher().dispatchGlobalEvent(PlayerEvent.EXIT_FRAME, List.of());
 
-            // 9. Re-run preloadMode=1 pass in case first-frame scripts requested additional casts.
+            // 9. Load preloadMode=1 casts after frame one. Mode 1 is authored
+            // for after-frame startup code; mode 0 casts remain demand-loaded.
+            preloadExternalCastsByMode(1);
             castLibManager.preloadCasts(1);
 
             // Frame loop will handle subsequent frames
@@ -1280,11 +1461,11 @@ public class Player implements UpdateProvider {
     }
 
     void ensureBuiltinVariableValue(String variableName, Datum defaultValue) {
-        Datum exists = vm.callBuiltin("variableExists", List.of(Datum.of(variableName)));
+        Datum exists = vm.callHandler("variableExists", List.of(Datum.of(variableName)));
         if (exists.isTruthy()) {
             return;
         }
-        vm.callBuiltin("setVariable", List.of(Datum.of(variableName), defaultValue));
+        vm.callHandler("setVariable", List.of(Datum.of(variableName), defaultValue));
     }
 
     private void applyInitialBuiltinVariables() {
@@ -1292,7 +1473,219 @@ public class Player implements UpdateProvider {
             return;
         }
         for (var entry : initialBuiltinVariables.entrySet()) {
-            ensureBuiltinVariableValue(entry.getKey(), entry.getValue());
+            applyInitialBuiltinVariable(entry.getKey(), entry.getValue());
+        }
+        for (var entry : buildNestedInitialBuiltinVariables().entrySet()) {
+            applyInitialBuiltinVariable(entry.getKey(), entry.getValue());
+        }
+    }
+
+    private void applyInitialBuiltinVariableFieldOverrides() {
+        if (initialBuiltinVariables.isEmpty()) {
+            return;
+        }
+        for (var castLib : castLibManager.getCastLibs().values()) {
+            if (!castLib.isLoaded()) {
+                continue;
+            }
+            CastMember systemProps = castLib.getMemberByName("System Props");
+            if (systemProps == null) {
+                continue;
+            }
+            String original = systemProps.getTextContent();
+            if (original == null || original.isEmpty()) {
+                continue;
+            }
+            String updated = mergeVariableFieldOverrides(original, initialBuiltinVariables);
+            if (!Objects.equals(original, updated)) {
+                systemProps.setDynamicText(updated);
+            }
+        }
+    }
+
+    private static String mergeVariableFieldOverrides(String text, Map<String, Datum> overrides) {
+        String[] lines = text.replace("\r\n", "\r").replace('\n', '\r').split("\r", -1);
+        Set<String> seen = new HashSet<>();
+        StringBuilder out = new StringBuilder(text.length() + overrides.size() * 24);
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i];
+            String key = variableFieldKey(line);
+            if (key != null && overrides.containsKey(key)) {
+                out.append(key).append('=').append(variableFieldValue(overrides.get(key)));
+                seen.add(key);
+            } else {
+                out.append(line);
+            }
+            if (i + 1 < lines.length) {
+                out.append('\r');
+            }
+        }
+        for (var entry : overrides.entrySet()) {
+            if (seen.contains(entry.getKey())) {
+                continue;
+            }
+            if (out.length() > 0 && out.charAt(out.length() - 1) != '\r') {
+                out.append('\r');
+            }
+            out.append(entry.getKey()).append('=').append(variableFieldValue(entry.getValue()));
+        }
+        return out.toString();
+    }
+
+    private static String variableFieldKey(String line) {
+        if (line == null) {
+            return null;
+        }
+        String trimmed = line.trim();
+        if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+            return null;
+        }
+        int equals = trimmed.indexOf('=');
+        if (equals <= 0) {
+            return null;
+        }
+        return trimmed.substring(0, equals).trim();
+    }
+
+    private static String variableFieldValue(Datum value) {
+        if (value instanceof Datum.Symbol symbol) {
+            return "#" + symbol.name();
+        }
+        if (value instanceof Datum.Str str) {
+            return str.value();
+        }
+        if (value == null || value.isVoid()) {
+            return "";
+        }
+        return value.toStr();
+    }
+
+    private void applyConfiguredBuiltinVariablesNow() {
+        if (initialBuiltinVariables.isEmpty()) {
+            return;
+        }
+        try {
+            setupProviders();
+            applyInitialBuiltinVariables();
+        } catch (Exception ignored) {
+            // Startup variables are also applied during prepareMovie; early calls can
+            // happen before the authored variable manager exists.
+            vm.resetErrorState();
+        } finally {
+            flushDeferredVmTasksAndClearProviders();
+        }
+    }
+
+    private boolean applyInitialBuiltinVariable(String variableName, Datum value) {
+        if (vm.findHandler("setVariable") == null) {
+            // The variable manager lives in authored/external scripts for many
+            // Shockwave movies. Avoid keeping an early negative handler lookup
+            // cached before those casts become visible.
+            vm.invalidateHandlerCache();
+            return false;
+        }
+        vm.callHandler("setVariable", List.of(Datum.of(variableName), value));
+        return true;
+    }
+
+    private static Map<String, String> parseShockwaveParamVariables(Map<String, String> params) {
+        Map<String, String> variables = new LinkedHashMap<>();
+        for (var entry : params.entrySet()) {
+            String paramName = entry.getKey();
+            if (!isSwParamName(paramName)) {
+                continue;
+            }
+            parseShockwaveParamVariablePairs(entry.getValue(), variables);
+        }
+        return variables;
+    }
+
+    private static boolean isSwParamName(String paramName) {
+        if (paramName == null || paramName.length() < 3) {
+            return false;
+        }
+        if (!paramName.regionMatches(true, 0, "sw", 0, 2)) {
+            return false;
+        }
+        for (int i = 2; i < paramName.length(); i++) {
+            char ch = paramName.charAt(i);
+            if (ch < '0' || ch > '9') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static void parseShockwaveParamVariablePairs(String value, Map<String, String> variables) {
+        if (value == null || value.isEmpty()) {
+            return;
+        }
+        int start = 0;
+        while (start <= value.length()) {
+            int end = value.indexOf(';', start);
+            if (end < 0) {
+                end = value.length();
+            }
+
+            String item = value.substring(start, end).trim();
+            int equals = item.indexOf('=');
+            if (equals > 0) {
+                String key = item.substring(0, equals).trim();
+                String itemValue = item.substring(equals + 1).trim();
+                if (!key.isEmpty()) {
+                    variables.put(key, itemValue);
+                }
+            }
+
+            if (end == value.length()) {
+                break;
+            }
+            start = end + 1;
+        }
+    }
+
+    private Map<String, Datum> buildNestedInitialBuiltinVariables() {
+        Map<String, Datum.PropList> roots = new LinkedHashMap<>();
+        addNestedInitialBuiltinVariables(roots, initialBuiltinVariables);
+        Map<String, Datum> nested = new LinkedHashMap<>();
+        for (var entry : roots.entrySet()) {
+            nested.put(entry.getKey(), entry.getValue());
+        }
+        return nested;
+    }
+
+    private static void addNestedInitialBuiltinVariables(Map<String, Datum.PropList> roots,
+                                                         Map<String, Datum> variables) {
+        for (var entry : variables.entrySet()) {
+            String key = entry.getKey();
+            if (key == null || key.indexOf('.') < 0) {
+                continue;
+            }
+            String[] parts = key.split("\\.");
+            if (parts.length < 2 || parts[0].isEmpty()) {
+                continue;
+            }
+            Datum.PropList root = roots.computeIfAbsent(parts[0], ignored -> new Datum.PropList());
+            Datum.PropList current = root;
+            for (int i = 1; i < parts.length - 1; i++) {
+                String part = parts[i];
+                if (part.isEmpty()) {
+                    current = null;
+                    break;
+                }
+                Datum child = current.get(part, true);
+                Datum.PropList childList;
+                if (child instanceof Datum.PropList existingChildList) {
+                    childList = existingChildList;
+                } else {
+                    childList = new Datum.PropList();
+                    current.put(part, true, childList);
+                }
+                current = childList;
+            }
+            if (current != null && !parts[parts.length - 1].isEmpty()) {
+                current.put(parts[parts.length - 1], true, entry.getValue().deepCopy());
+            }
         }
     }
 
@@ -1316,26 +1709,25 @@ public class Player implements UpdateProvider {
     }
 
     private void handleExternalCastFetch(String url, byte[] data) {
-        castLibManager.cacheExternalData(url, data);
         try {
             java.util.LinkedHashSet<Integer> castNums = new java.util.LinkedHashSet<>(
-                    castLibManager.getRequestedExternalCastSlots(url));
-
-            // A fetched external cast should hydrate authored matching cast slots even
-            // before Lingo explicitly swaps castLib.fileName. Bootstrap movies often
-            // keep their startup APIs in those casts and expect them to be visible
-            // before prepareMovie/startMovie continues.
-            castNums.addAll(castLibManager.getMatchingCastLibNumbersByUrl(url));
+                    castLibManager.getHydratableExternalCastSlots(url));
 
             if (castNums.isEmpty()) {
                 return;
             }
             for (Integer castNum : castNums) {
+                if (castLibManager.hasLoadedExternalCastData(castNum, data)) {
+                    continue;
+                }
                 loadExternalCastFromCachedData(castNum, data);
             }
         } catch (Throwable e) {
             System.err.println("[Player] External cast load failed for " + url + ": "
                     + e.getClass().getName() + ": " + e.getMessage());
+            if (DebugConfig.isDebugPlaybackEnabled() || LifecycleDiagnostics.isEnabled()) {
+                e.printStackTrace(System.err);
+            }
         }
     }
 
@@ -1433,6 +1825,11 @@ public class Player implements UpdateProvider {
         void reset() {}
 
         @Override
+        public boolean needsHandlerTrace() {
+            return LifecycleDiagnostics.isEnabled() || delegate != null;
+        }
+
+        @Override
         public void onHandlerEnter(HandlerInfo info) {
             LifecycleDiagnostics.logHandlerEnter(info);
             if (delegate != null) delegate.onHandlerEnter(info);
@@ -1468,10 +1865,21 @@ public class Player implements UpdateProvider {
             if (error instanceof LingoException leForState) {
                 lastScriptErrorStack = leForState.formatLingoCallStack();
             } else {
-                lastScriptErrorStack = "";
+                lastScriptErrorStack = vm.formatCallStack();
             }
             if (errorListener != null) {
-                LingoException le = error instanceof LingoException ? (LingoException) error : null;
+                LingoException le;
+                if (error instanceof LingoException lingoException) {
+                    le = lingoException;
+                } else {
+                    String detail = error != null ? error.getClass().getName() : "Unknown script error";
+                    String errorMessage = error != null ? error.getMessage() : null;
+                    if (errorMessage != null && !errorMessage.isEmpty()) {
+                        detail += ": " + errorMessage;
+                    }
+                    le = new LingoException(detail, error);
+                    le.setLingoCallStack(vm.getCallStack());
+                }
                 errorListener.accept(message, le);
             }
         }
@@ -1511,4 +1919,5 @@ public class Player implements UpdateProvider {
             }
         }
     }
+
 }

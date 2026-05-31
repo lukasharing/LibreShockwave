@@ -1,6 +1,9 @@
 package com.libreshockwave.player.cast;
 
 import com.libreshockwave.bitmap.Palette;
+import com.libreshockwave.cast.MemberType;
+import com.libreshockwave.chunks.CastMemberChunk;
+import com.libreshockwave.id.ChunkId;
 import com.libreshockwave.vm.datum.Datum;
 import org.junit.jupiter.api.Test;
 
@@ -9,6 +12,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
 class CastLibManagerPaletteTest {
@@ -47,6 +51,31 @@ class CastLibManagerPaletteTest {
         Palette resolvedByName = manager.resolvePaletteByName("interface palette_messengerDuplicate");
         assertNotNull(resolvedByName);
         assertSame(sourcePalette, resolvedByName);
+    }
+
+    @Test
+    void emptyLayoutPaletteDuplicateResolvesFromSourcePaletteWhenCreatedTooEarly() throws Exception {
+        CastLibManager manager = new CastLibManager(null, null);
+        CastLib castLib = new CastLib(3, null, null);
+        installCastLib(manager, castLib);
+
+        CastMember duplicatePaletteMember = castLib.createDynamicMember("palette");
+        duplicatePaletteMember.setProp("name", Datum.of("interface palette Duplicate"));
+
+        CastMember sourcePaletteMember = castLib.createDynamicMember("palette");
+        sourcePaletteMember.setProp("name", Datum.of("interface palette"));
+        Palette sourcePalette = new Palette(new int[]{0xC8D8DE, 0x4F6F7C, 0x1A1A1A}, "Interface");
+        sourcePaletteMember.setPaletteData(sourcePalette);
+
+        Palette resolvedByMember = manager.getMemberPalette(3, duplicatePaletteMember.getMemberNumber());
+        assertNotNull(resolvedByMember);
+        assertNotSame(sourcePalette, resolvedByMember);
+        assertEquals(0xC8D8DE, resolvedByMember.getColor(0));
+        assertEquals(0x4F6F7C, duplicatePaletteMember.getPaletteData().getColor(1));
+
+        Palette resolvedByName = manager.resolvePaletteByName("interface palette Duplicate");
+        assertNotNull(resolvedByName);
+        assertEquals(0x1A1A1A, resolvedByName.getColor(2));
     }
 
     @Test
@@ -107,6 +136,22 @@ class CastLibManagerPaletteTest {
         assertEquals(0xD4DDE1, resolvedByMember.getColor(0));
     }
 
+    @Test
+    void rawRegistrySlotsCanResolveUniqueDefinitionMemberWhenNameLookupCollides() throws Exception {
+        CastLibManager manager = new CastLibManager(null, null);
+        CastLib castLib = new CastLib(2, null, null);
+        installCastLib(manager, castLib);
+        castLib.load();
+
+        installMemberChunk(castLib, 162, MemberType.TEXT, "member_162");
+        installMemberChunk(castLib, 2650, MemberType.BITMAP, "layout.element");
+
+        Datum broadLookup = manager.getRegistryMemberByName(0, "layout.element");
+        assertEquals(Datum.CastMemberRef.of(2, 2650), broadLookup);
+        assertEquals((2 << 16) | 162,
+                manager.resolveRawRegistryMemberSlot("layout.element", 162));
+    }
+
     @SuppressWarnings("unchecked")
     private static void installCastLib(CastLibManager manager, CastLib castLib) throws Exception {
         Field initializedField = CastLibManager.class.getDeclaredField("initialized");
@@ -117,5 +162,29 @@ class CastLibManagerPaletteTest {
         castLibsField.setAccessible(true);
         Map<Integer, CastLib> castLibs = (Map<Integer, CastLib>) castLibsField.get(manager);
         castLibs.put(castLib.getNumber(), castLib);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void installMemberChunk(
+            CastLib castLib,
+            int memberNumber,
+            MemberType memberType,
+            String name) throws Exception {
+        Field memberChunksField = CastLib.class.getDeclaredField("memberChunks");
+        memberChunksField.setAccessible(true);
+        Map<Integer, CastMemberChunk> memberChunks =
+                (Map<Integer, CastMemberChunk>) memberChunksField.get(castLib);
+        memberChunks.put(memberNumber, new CastMemberChunk(
+                null,
+                new ChunkId(memberNumber),
+                memberType,
+                0,
+                0,
+                new byte[0],
+                new byte[0],
+                name,
+                0,
+                0,
+                0));
     }
 }

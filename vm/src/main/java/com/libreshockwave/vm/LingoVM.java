@@ -5,12 +5,14 @@ import com.libreshockwave.chunks.ScriptChunk;
 import com.libreshockwave.chunks.ScriptNamesChunk;
 import com.libreshockwave.lingo.Opcode;
 import com.libreshockwave.vm.builtin.BuiltinRegistry;
+import com.libreshockwave.vm.builtin.net.ExternalParamProvider;
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.datum.DatumFormatter;
 import com.libreshockwave.vm.datum.LingoException;
 import com.libreshockwave.vm.opcode.ExecutionContext;
 import com.libreshockwave.vm.opcode.OpcodeHandler;
 import com.libreshockwave.vm.opcode.OpcodeRegistry;
+import com.libreshockwave.vm.opcode.PropertyOpcodes;
 import com.libreshockwave.vm.trace.ConsoleTracePrinter;
 import com.libreshockwave.vm.trace.TracingHelper;
 
@@ -47,10 +49,11 @@ public class LingoVM {
     private int randomSeed = 0;
     private boolean flushingDeferredScriptInstanceCalls = false;
     private boolean flushingDeferredTasks = false;
-    private static final ThreadLocal<LingoVM> CURRENT_VM = new ThreadLocal<>();
+    private static LingoVM currentVm;
 
     private boolean traceEnabled = false;
     private int stepLimit = 0;  // 0 = unlimited
+    private long handlerTimeoutMs = 60_000;  // 0 = disabled
 
     // Tick-level deadline: when set, all handlers within the current tick must
     // complete before this wall-clock time. Prevents infinite loops that span
@@ -116,7 +119,7 @@ public class LingoVM {
 
     public LingoVM(DirectorFile file) {
         this.file = file;
-        this.globals = new HashMap<>();
+        this.globals = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
         this.prefs = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
         this.callStack = new ArrayDeque<>();
         this.builtins = new BuiltinRegistry();
@@ -219,6 +222,17 @@ public class LingoVM {
     }
 
     /**
+     * Set a per-handler wall-clock timeout in milliseconds. 0 = disabled.
+     */
+    public void setHandlerTimeoutMs(long ms) {
+        this.handlerTimeoutMs = Math.max(0, ms);
+    }
+
+    public long getHandlerTimeoutMs() {
+        return handlerTimeoutMs;
+    }
+
+    /**
      * Set the tick-level deadline duration in milliseconds. All handlers within
      * a single tick must complete within this time. 0 = disabled. Default: 30000.
      */
@@ -265,7 +279,11 @@ public class LingoVM {
     // Global variable access
 
     public Datum getGlobal(String name) {
-        return globals.getOrDefault(name, Datum.VOID);
+        Datum value = globals.get(name);
+        if (value != null) {
+            return value;
+        }
+        return PropertyOpcodes.getBuiltinConstant(name);
     }
 
     public void setGlobal(String name, Datum value) {
@@ -284,7 +302,8 @@ public class LingoVM {
         if (name == null) {
             return Datum.VOID;
         }
-        return prefs.getOrDefault(name, Datum.VOID);
+        Datum value = prefs.get(name);
+        return value != null ? value : Datum.VOID;
     }
 
     public Datum setPref(String name, Datum value) {
@@ -310,13 +329,13 @@ public class LingoVM {
             String scriptName,
             int bytecodeIndex,
             List<String> arguments
-    ) {
+        ) {
         public CallStackFrame(String handlerName, String scriptName, int bytecodeIndex) {
-            this(handlerName, scriptName, bytecodeIndex, List.of());
+            this(handlerName, scriptName, bytecodeIndex, new ArrayList<>());
         }
 
         public CallStackFrame {
-            arguments = arguments == null ? List.of() : List.copyOf(arguments);
+            arguments = arguments == null ? new ArrayList<>() : new ArrayList<>(arguments);
         }
     }
 
@@ -410,7 +429,7 @@ public class LingoVM {
     }
 
     public static LingoVM getCurrentVM() {
-        return CURRENT_VM.get();
+        return currentVm;
     }
 
     public boolean hasActiveCallStack() {
@@ -428,7 +447,7 @@ public class LingoVM {
         deferredScriptInstanceCalls.addLast(new DeferredScriptInstanceCall(
                 instance,
                 methodName,
-                List.copyOf(args)));
+                new ArrayList<>(args)));
     }
 
     /**
@@ -504,14 +523,133 @@ public class LingoVM {
      * @return The return value
      */
     public Datum callHandler(String handlerName, List<Datum> args) {
+        if (builtins.contains(handlerName) && shouldPreferBuiltinBeforeAuthored(handlerName)) {
+            return builtins.invoke(handlerName, this, args);
+        }
         HandlerRef ref = findHandler(handlerName);
         if (ref != null) {
-            return executeHandler(ref.script(), ref.handler(), args, null);
+            Datum result = executeHandler(ref.script(), ref.handler(), args, null);
+            Datum serviceFallback = fallbackServiceBuiltin(handlerName, args, result);
+            if (serviceFallback != null) {
+                return serviceFallback;
+            }
+            Datum fallback = fallbackMemberLookup(handlerName, args, result);
+            return fallback != null ? fallback : result;
         }
         if (builtins.contains(handlerName)) {
             return builtins.invoke(handlerName, this, args);
         }
+        Datum serviceFallback = fallbackServiceBuiltin(handlerName, args, Datum.VOID);
+        if (serviceFallback != null) {
+            return serviceFallback;
+        }
         return Datum.VOID;
+    }
+
+    private static boolean shouldPreferBuiltinBeforeAuthored(String handlerName) {
+        // Keep builtins as fallbacks. Authored movies may intentionally define
+        // handlers with the same names for custom formats, especially room data.
+        return false;
+    }
+
+    private Datum fallbackServiceBuiltin(String handlerName, List<Datum> args, Datum authoredResult) {
+        String normalizedName = normalizeLookupName(handlerName);
+        if ("getvariable".equals(normalizedName)) {
+            Datum launchVariable = fallbackLaunchVariable(args, authoredResult);
+            if (launchVariable != null) {
+                return launchVariable;
+            }
+        }
+
+        if (!"getmonotonicmillis".equals(normalizedName) || !builtins.contains(handlerName)) {
+            return null;
+        }
+        if (authoredResult == null || authoredResult.isVoid()
+                || (!authoredResult.isInt() && !authoredResult.isFloat())) {
+            return builtins.invoke(handlerName, this, args);
+        }
+        return null;
+    }
+
+    private Datum fallbackLaunchVariable(List<Datum> args, Datum authoredResult) {
+        if (args == null || args.isEmpty()) {
+            return null;
+        }
+        Datum keyArg = args.get(0);
+        if (keyArg == null || (!keyArg.isString() && !keyArg.isSymbol())) {
+            return null;
+        }
+        if (!isDefaultVariableResult(args, authoredResult)) {
+            return null;
+        }
+
+        ExternalParamProvider provider = ExternalParamProvider.getProvider();
+        if (provider == null) {
+            return null;
+        }
+        String value = provider.getLaunchVariable(keyArg.toStr());
+        return value != null ? Datum.of(value) : null;
+    }
+
+    private static boolean isDefaultVariableResult(List<Datum> args, Datum authoredResult) {
+        if (authoredResult == null || authoredResult.isVoid()) {
+            return true;
+        }
+        if (args.size() < 2) {
+            return false;
+        }
+        Datum defaultValue = args.get(1);
+        if (defaultValue == null) {
+            return false;
+        }
+        if (authoredResult.isVoid() && defaultValue.isVoid()) {
+            return true;
+        }
+        return authoredResult.toStr().equals(defaultValue.toStr());
+    }
+
+    private Datum fallbackMemberLookup(String handlerName, List<Datum> args, Datum authoredResult) {
+        if (!isGlobalMemberLookup(handlerName) || !isSingleNameArgument(args)
+                || !isUnresolvedMemberLookupResult(handlerName, authoredResult)
+                || !builtins.contains(handlerName)) {
+            return null;
+        }
+
+        Datum fallback = builtins.invoke(handlerName, this, args);
+        return isResolvedMemberLookupResult(handlerName, fallback) ? fallback : null;
+    }
+
+    private static boolean isGlobalMemberLookup(String handlerName) {
+        String name = normalizeLookupName(handlerName);
+        return "getmemnum".equals(name) || "memberexists".equals(name);
+    }
+
+    private static boolean isSingleNameArgument(List<Datum> args) {
+        if (args == null || args.size() != 1) {
+            return false;
+        }
+        Datum arg = args.get(0);
+        return arg != null && (arg.isString() || arg.isSymbol());
+    }
+
+    private static boolean isUnresolvedMemberLookupResult(String handlerName, Datum result) {
+        if (result == null || result.isVoid()) {
+            return true;
+        }
+        if (!result.isInt() && !result.isFloat()) {
+            return false;
+        }
+        return result.toInt() == 0;
+    }
+
+    private static boolean isResolvedMemberLookupResult(String handlerName, Datum result) {
+        if (result == null || result.isVoid()) {
+            return false;
+        }
+        if ("getmemnum".equals(normalizeLookupName(handlerName))) {
+            return result.toInt() != 0;
+        }
+        return result.isTruthy();
     }
 
     /**
@@ -578,7 +716,8 @@ public class LingoVM {
         }
 
         // Function trace hook
-        if (!tracedHandlers.isEmpty() && tracedHandlers.contains(hn)) {
+        boolean traceThisHandler = !tracedHandlers.isEmpty() && tracedHandlers.contains(hn);
+        if (traceThisHandler) {
             StringBuilder sb = new StringBuilder("[TRACE] ");
             sb.append(handlerName).append('(');
             for (int i = 0; i < args.size(); i++) {
@@ -586,6 +725,9 @@ public class LingoVM {
                 sb.append(formatTraceArgument(args.get(i)));
             }
             sb.append(')');
+            if (receiver != null && !receiver.isVoid()) {
+                sb.append(" receiver=").append(formatTraceArgument(receiver));
+            }
             String scriptName = script.getScriptName();
             if (scriptName != null && !scriptName.isEmpty()) {
                 sb.append(" in \"").append(scriptName).append('"');
@@ -616,8 +758,8 @@ public class LingoVM {
 
         Scope scope = new Scope(script, handler, effectiveArgs, scopeReceiver);
         callStack.push(scope);
-        LingoVM previousVm = CURRENT_VM.get();
-        CURRENT_VM.set(this);
+        LingoVM previousVm = currentVm;
+        currentVm = this;
 
         // Track error handler depth
         if (isErrorHandler) {
@@ -626,7 +768,9 @@ public class LingoVM {
 
         // Notify trace listener of handler entry
         TraceListener.HandlerInfo handlerInfo = null;
-        if (traceListener != null || traceEnabled) {
+        boolean needsHandlerTrace = traceEnabled
+                || (traceListener != null && traceListener.needsHandlerTrace());
+        if (needsHandlerTrace) {
             handlerInfo = tracingHelper.buildHandlerInfo(script, handler, args, receiver, globals);
 
             if (traceEnabled) {
@@ -638,17 +782,18 @@ public class LingoVM {
         }
 
         Datum result = Datum.VOID;
+        int steps = 0;
+        long startTime = System.currentTimeMillis();
         try {
             // Create a single ExecutionContext per handler invocation and reuse it.
             // Previously we created a new one per instruction (~292K allocations for dump),
             // generating ~876K garbage objects that overwhelmed the WASM GC.
             ScriptChunk.Handler.Instruction firstInstr = scope.getCurrentInstruction();
             if (firstInstr == null) {
-                return Datum.VOID;
+                result = Datum.VOID;
+                return result;
             }
             ExecutionContext ctx = createExecutionContext(scope, firstInstr);
-            int steps = 0;
-            long startTime = System.currentTimeMillis();
             long lastGcTime = startTime;
             while (scope.hasMoreInstructions() && !scope.isReturned()) {
                 steps++;
@@ -674,10 +819,12 @@ public class LingoVM {
                         // that can corrupt pointers. Let automatic GC handle compaction.
                         lastGcTime = now;
                     }
-                    // Hard timeout: no single handler should run for more than 60 seconds.
-                    // The dump handler takes ~12s; anything over 60s is likely an infinite loop.
-                    if (now - startTime > 60000) {
-                        throw new LingoException("Handler timeout (60s, " + steps
+                    // Hard timeout for native/JVM runs. Browser WASM can be much slower under
+                    // DevTools or throttled devices, so that runtime disables this and relies on
+                    // the deterministic instruction step limit instead.
+                    if (handlerTimeoutMs > 0 && now - startTime > handlerTimeoutMs) {
+                        throw new LingoException("Handler timeout (" + formatDuration(handlerTimeoutMs)
+                                + ", " + steps
                                 + " instructions) in handler '" + handlerName + "'");
                     }
                     // Tick-level deadline: catches infinite loops that span multiple
@@ -706,13 +853,22 @@ public class LingoVM {
             if (traceListener != null) {
                 traceListener.onError("Error in " + script.getHandlerName(handler), e);
             }
+            // In debug pause mode, the host has already received the trace through
+            // onError. Stop before authored alertHook/disconnect code can mask it.
+            if (!isErrorHandler && DebugConfig.isPauseOnScriptErrorEnabled()) {
+                setErrorState(true);
+                scope.setReturned(true);
+                result = Datum.VOID;
             // Try alertHook before rethrowing — if it returns true, suppress the error
-            if (!isErrorHandler && fireAlertHook("Script Error", e.getMessage())) {
+            } else if (!isErrorHandler && fireAlertHook("Script Error", e.getMessage())) {
                 result = Datum.VOID; // Error suppressed by alertHook
             } else {
                 throw e;
             }
         } finally {
+            if (traceThisHandler) {
+                System.out.println("[TRACE] " + handlerName + " => " + formatTraceArgument(result));
+            }
             // Always notify handler exit, even on exception path.
             // Critical for debugger callDepth tracking - without this,
             // exceptions cause callDepth to drift and break step-over.
@@ -730,9 +886,9 @@ public class LingoVM {
                 flushDeferredScriptInstanceCalls();
             }
             if (previousVm != null) {
-                CURRENT_VM.set(previousVm);
+                currentVm = previousVm;
             } else {
-                CURRENT_VM.remove();
+                currentVm = null;
             }
         }
         return result;
@@ -770,12 +926,86 @@ public class LingoVM {
             return "#" + symbol.name();
         }
         if (value instanceof Datum.Str str) {
+            if (looksSensitiveTraceString(str.value())) {
+                return "\"<redacted len=" + str.value().length() + ">\"";
+            }
             return "\"" + str.value() + "\"";
         }
         if (value instanceof Datum.FieldText fieldText) {
+            if (looksSensitiveTraceString(fieldText.value())) {
+                return "\"<redacted len=" + fieldText.value().length() + ">\"";
+            }
             return "\"" + fieldText.value() + "\"";
         }
+        if (value instanceof Datum.PropList propList) {
+            return formatTracePropList(propList);
+        }
         return value.toStr();
+    }
+
+    private static String formatDuration(long ms) {
+        return ms % 1000 == 0 ? (ms / 1000) + "s" : ms + "ms";
+    }
+
+    private static String formatTracePropList(Datum.PropList propList) {
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < propList.size(); i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+            boolean symbolKey = propList.entries().get(i).isSymbolKey();
+            sb.append(symbolKey ? "#" : "\"")
+                    .append(propList.getKey(i))
+                    .append(symbolKey ? "" : "\"")
+                    .append(": ")
+                    .append(formatTraceValueSummary(propList.getValue(i)));
+        }
+        sb.append(']');
+        return sb.toString();
+    }
+
+    private static String formatTraceValueSummary(Datum value) {
+        if (value == null || value.isVoid()) {
+            return "<VOID>";
+        }
+        if (value instanceof Datum.Str str) {
+            return "\"<string len=" + str.value().length() + ">\"";
+        }
+        if (value instanceof Datum.FieldText fieldText) {
+            return "\"<field len=" + fieldText.value().length() + ">\"";
+        }
+        if (value instanceof Datum.Symbol symbol) {
+            return "#" + symbol.name();
+        }
+        if (value instanceof Datum.Int || value instanceof Datum.Float) {
+            return value.toStr();
+        }
+        if (value instanceof Datum.List list) {
+            return "<list count=" + list.items().size() + ">";
+        }
+        if (value instanceof Datum.PropList nested) {
+            return "<proplist count=" + nested.size() + ">";
+        }
+        if (value instanceof Datum.ScriptInstance) {
+            return "<script instance>";
+        }
+        return "<" + value.typeName() + ">";
+    }
+
+    private static boolean looksSensitiveTraceString(String value) {
+        if (value == null || value.isEmpty()) {
+            return false;
+        }
+        if (value.indexOf('@') > 0 && value.indexOf('.') > value.indexOf('@')) {
+            return true;
+        }
+        if (value.length() >= 8
+                && value.chars().anyMatch(Character::isDigit)
+                && value.chars().anyMatch(Character::isLetter)
+                && value.chars().noneMatch(Character::isWhitespace)) {
+            return true;
+        }
+        return false;
     }
 
     private String getHandlerName(ScriptChunk script, ScriptChunk.Handler handler) {

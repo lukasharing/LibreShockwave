@@ -45,28 +45,26 @@ public final class NetBuiltins {
             props.put("error", Datum.of("OK"));
             return Datum.propList(props);
         }
-
-        default Datum getStreamStatusDatum(String url) {
-            return getStreamStatusDatum((Integer) null);
-        }
     }
 
-    // Thread-local provider for VM access
-    private static final ThreadLocal<NetProvider> currentProvider = new ThreadLocal<>();
+    // Provider for VM access. The player runs the VM on one execution thread in
+    // WASM, so avoid ThreadLocal here; TeaVM's ThreadLocal path is fragile on hot
+    // setup/teardown loops.
+    private static NetProvider currentProvider;
 
     /**
      * Set the network provider for the current thread.
      * Call this before executing scripts that use network functions.
      */
     public static void setProvider(NetProvider provider) {
-        currentProvider.set(provider);
+        currentProvider = provider;
     }
 
     /**
      * Clear the network provider for the current thread.
      */
     public static void clearProvider() {
-        currentProvider.remove();
+        currentProvider = null;
     }
 
     public static void register(Map<String, BiFunction<LingoVM, List<Datum>, Datum>> builtins) {
@@ -88,7 +86,7 @@ public final class NetBuiltins {
      * Starts an async network request and returns a task ID.
      */
     private static Datum preloadNetThing(LingoVM vm, List<Datum> args) {
-        NetProvider provider = currentProvider.get();
+        NetProvider provider = currentProvider;
         if (provider == null) {
             System.err.println("[NetBuiltins] No NetProvider registered");
             return Datum.of(-1);
@@ -108,7 +106,7 @@ public final class NetBuiltins {
      * Starts an async POST request and returns a task ID.
      */
     private static Datum postNetText(LingoVM vm, List<Datum> args) {
-        NetProvider provider = currentProvider.get();
+        NetProvider provider = currentProvider;
         if (provider == null) {
             System.err.println("[NetBuiltins] No NetProvider registered");
             return Datum.of(-1);
@@ -156,7 +154,7 @@ public final class NetBuiltins {
      * Returns 1 if the network request is complete, 0 otherwise.
      */
     private static Datum netDone(LingoVM vm, List<Datum> args) {
-        NetProvider provider = currentProvider.get();
+        NetProvider provider = currentProvider;
         if (provider == null) {
             return Datum.TRUE;  // No provider = pretend done
         }
@@ -171,7 +169,7 @@ public final class NetBuiltins {
      * Returns the text result of a completed network request.
      */
     private static Datum netTextResult(LingoVM vm, List<Datum> args) {
-        NetProvider provider = currentProvider.get();
+        NetProvider provider = currentProvider;
         if (provider == null) {
             return Datum.EMPTY_STRING;
         }
@@ -187,7 +185,7 @@ public final class NetBuiltins {
      * Lingo scripts compare: netError(id) = "OK"
      */
     private static Datum netError(LingoVM vm, List<Datum> args) {
-        NetProvider provider = currentProvider.get();
+        NetProvider provider = currentProvider;
         if (provider == null) {
             return Datum.of("OK");
         }
@@ -203,7 +201,7 @@ public final class NetBuiltins {
      * Director returns a PropList, not a string. Scripts access tStreamStatus[#bytesSoFar].
      */
     private static Datum getStreamStatus(LingoVM vm, List<Datum> args) {
-        NetProvider provider = currentProvider.get();
+        NetProvider provider = currentProvider;
         if (provider == null) {
             var props = new java.util.LinkedHashMap<String, Datum>();
             props.put("URL", Datum.EMPTY_STRING);
@@ -212,10 +210,6 @@ public final class NetBuiltins {
             props.put("bytesTotal", Datum.ZERO);
             props.put("error", Datum.of("OK"));
             return Datum.propList(props);
-        }
-
-        if (!args.isEmpty() && (args.get(0).isString() || args.get(0).isSymbol())) {
-            return provider.getStreamStatusDatum(args.get(0).toStr());
         }
 
         Integer taskId = args.isEmpty() ? null : args.get(0).toInt();

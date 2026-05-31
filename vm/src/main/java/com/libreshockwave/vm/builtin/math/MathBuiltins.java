@@ -62,15 +62,16 @@ public final class MathBuiltins {
 
     /**
      * integer(value)
-     * Converts a value to the nearest whole integer.
-     * - For floats: rounds to nearest whole integer
-     * - For numeric strings: converts and rounds the parsed numeric value
-     * - For empty strings: returns 0
+     * Converts a value to the nearest integer.
+     * - For floats: rounds to the nearest integer
+     * - For numeric strings: parses and rounds to the nearest integer
+     * - For empty strings: returns 0 (Director-compatible coercion used by protocol parsers)
      * - For non-numeric strings: returns VOID
      */
     private static Datum integer(LingoVM vm, List<Datum> args) {
         if (args.isEmpty()) return Datum.ZERO;
-        Datum arg = Datum.valueOrVoid(args.get(0));
+        Datum arg = valueOrVoid(args.get(0));
+        if (arg.isVoid()) return Datum.ZERO;
 
         if (arg instanceof Datum.Str str) {
             String trimmed = str.value().trim();
@@ -183,7 +184,8 @@ public final class MathBuiltins {
      */
     private static Datum toFloat(LingoVM vm, List<Datum> args) {
         if (args.isEmpty()) return Datum.of(0.0);
-        Datum arg = args.get(0);
+        Datum arg = valueOrVoid(args.get(0));
+        if (arg.isVoid()) return Datum.of(0.0);
 
         // For strings, only convert if it's actually numeric
         if (arg instanceof Datum.Str str) {
@@ -197,5 +199,9 @@ public final class MathBuiltins {
 
         // For other types, use standard conversion
         return Datum.of(arg.toDouble());
+    }
+
+    private static Datum valueOrVoid(Datum value) {
+        return value != null ? value : Datum.VOID;
     }
 }

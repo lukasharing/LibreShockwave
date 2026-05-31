@@ -17,7 +17,7 @@ public record FrameSnapshot(
     List<RenderSprite> sprites,
     String debugInfo,
     Bitmap stageImage,
-    int bakeTick,
+    int renderRevision,
     RenderPipelineTrace pipelineTrace
 ) {
     /**

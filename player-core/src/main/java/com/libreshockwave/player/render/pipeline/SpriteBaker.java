@@ -10,11 +10,12 @@ import com.libreshockwave.player.cast.CastLib;
 import com.libreshockwave.player.cast.CastLibManager;
 import com.libreshockwave.id.InkMode;
 import com.libreshockwave.player.cast.CastMember;
-import com.libreshockwave.player.cast.FontRegistry;
 import com.libreshockwave.chunks.ScoreChunk;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Centralized sprite-to-bitmap baking pipeline.
@@ -27,7 +28,15 @@ public class SpriteBaker {
     private final CastLibManager castLibManager;
     private final Player player;
     private final List<SpriteBakeStep> bakeSteps = new ArrayList<>();
-    private int tickCounter;
+    private final Map<ShapeCacheKey, Bitmap> shapeCache = new HashMap<>();
+    private int animationTick;
+    private int renderRevision;
+    private boolean animatedContentBaked;
+
+    private record ShapeCacheKey(int castFileIdentity, int castMemberId,
+                                 int dynamicMemberIdentity, int width, int height,
+                                 int foreColor, int backColor, int ink, int blend,
+                                 int shapeDataHash) {}
 
     public SpriteBaker(BitmapCache bitmapCache, CastLibManager castLibManager, Player player) {
         this.bitmapCache = bitmapCache;
@@ -36,18 +45,22 @@ public class SpriteBaker {
         registerDefaultSteps();
     }
 
-    public int getTickCounter() {
-        return tickCounter;
+    public int getRenderRevision() {
+        return renderRevision;
     }
 
     /**
      * Bake all sprites in the list, returning a new list with baked bitmaps attached.
      */
     public List<RenderSprite> bakeSprites(List<RenderSprite> sprites) {
-        tickCounter++;
+        animationTick++;
+        animatedContentBaked = false;
         List<RenderSprite> result = new ArrayList<>(sprites.size());
         for (RenderSprite sprite : sprites) {
             result.add(bake(sprite));
+        }
+        if (animatedContentBaked) {
+            renderRevision++;
         }
         return result;
     }
@@ -71,12 +84,9 @@ public class SpriteBaker {
         boolean scriptMod = isScriptModifiedSprite(sprite);
         if (baked != null && sprite.getType() != RenderSprite.SpriteType.SHAPE && hasColor && colorizeOk) {
             if (scriptMod) {
-                // Script-modified bitmaps (window system buffers, copyPixels results):
-                // Apply simple bgColor replacement — Director replaces white pixels with
-                // backColor for COPY ink sprites. This is safe for colored bitmaps because
-                // only exact white (0xFFFFFF) pixels are replaced, preserving existing content.
                 int bgColor = sprite.getBackColor() & 0xFFFFFF;
-                if (sprite.hasBackColor() && bgColor != 0xFFFFFF) {
+                if (sprite.hasBackColor() && bgColor != 0xFFFFFF
+                        && shouldApplyBackColorToScriptBitmap(sprite)) {
                     baked = InkProcessor.remapExactColor(baked, 0xFFFFFF, bgColor);
                 }
             }
@@ -103,7 +113,19 @@ public class SpriteBaker {
     private boolean isScriptModifiedSprite(RenderSprite sprite) {
         if (sprite.getDynamicMember() == null) return false;
         Bitmap bmp = sprite.getDynamicMember().getBitmap();
-        return bmp != null && bmp.isScriptModified();
+        if (bmp != null && bmp.isScriptModified()) {
+            return true;
+        }
+        Bitmap textImage = sprite.getDynamicMember().getScriptModifiedTextImage();
+        return textImage != null && textImage.isScriptModified();
+    }
+
+    private boolean shouldApplyBackColorToScriptBitmap(RenderSprite sprite) {
+        if (sprite == null || sprite.getDynamicMember() == null) {
+            return false;
+        }
+        Bitmap raw = sprite.getDynamicMember().getBitmap();
+        return raw != null && raw.getBitDepth() <= 1;
     }
 
     private boolean shouldNeutralizeOpaqueWhiteForScriptCanvas(RenderSprite sprite, Bitmap bmp) {
@@ -308,11 +330,24 @@ public class SpriteBaker {
             return null;
         }
 
+        Palette palette = member.getRuntimePaletteOverride();
+        if (palette != null) {
+            return new PaletteOverrideInfo(palette, member.getPaletteVersion());
+        }
+
+        String systemName = member.getPaletteRefSystemName();
+        if (systemName != null && !systemName.isEmpty()) {
+            palette = Palette.getBuiltInBySymbolName(systemName);
+            if (palette != null) {
+                return new PaletteOverrideInfo(palette, member.getPaletteVersion());
+            }
+        }
+
         // Resolve the palette member to a Palette object
         int palCastLib = member.getPaletteRefCastLib();
         int palMemberNum = member.getPaletteRefMemberNum();
 
-        Palette palette = castLibManager.resolvePaletteByMember(palCastLib, palMemberNum);
+        palette = castLibManager.resolvePaletteByMember(palCastLib, palMemberNum);
         return palette != null ? new PaletteOverrideInfo(palette, member.getPaletteVersion()) : null;
     }
 
@@ -339,7 +374,11 @@ public class SpriteBaker {
 
         Bitmap textImage = null;
 
-        if (member != null && member.hasDynamicText()) {
+        if (member != null) {
+            textImage = member.getScriptModifiedTextImage();
+        }
+
+        if (textImage == null && member != null && member.hasDynamicText()) {
             // Lingo set member.text — use the member's own text properties (color,
             // alignment, font style, etc.) so rendering matches caret positioning.
             int width = sprite.getWidth() > 0 ? sprite.getWidth() : 200;
@@ -363,10 +402,10 @@ public class SpriteBaker {
             return null;
         }
 
-        // For BACKGROUND_TRANSPARENT text: both XTRA and regular text members are already
-        // rendered with transparent background (bgColor=0x00000000). No further ink processing
-        // needed — the bitmap already has correct alpha (opaque text, transparent background).
-        if (isTransparentTextInk(sprite)) {
+        // Background-transparent text is a sprite compositing concern, not a
+        // mutation of member.image. Render the sprite surface with transparent
+        // backing so palette-index backColors cannot leak as opaque boxes.
+        if (sprite.getInkMode() == InkMode.BACKGROUND_TRANSPARENT) {
             return textImage;
         }
 
@@ -380,8 +419,11 @@ public class SpriteBaker {
     }
 
     private int dynamicTextBgColor(RenderSprite sprite, CastMember member) {
-        if (isTransparentTextInk(sprite)) {
+        if (sprite.getInkMode() == InkMode.BACKGROUND_TRANSPARENT) {
             return 0x00000000;
+        }
+        if (member.hasExplicitTextBgColor()) {
+            return member.getTextBgColor();
         }
         return resolvePaletteColor(sprite.getBackColor());
     }
@@ -408,23 +450,12 @@ public class SpriteBaker {
         var textInfo = com.libreshockwave.cast.TextInfo.parse(castMember.specificData());
 
         // Get font info from STXT formatting runs (first run determines primary font)
-        String fontName = defaultStxtFontName(file);
+        String fontName = "Arial";
         int fontSize = 12;
         int fontStyle = 0;
-        boolean legacyEmbeddedTextFont = false;
         int runColorR = -1, runColorG = -1, runColorB = -1;
         if (!textChunk.runs().isEmpty()) {
             var run = textChunk.runs().get(0);
-            String mappedFont = file.getFontNameForId(run.fontId());
-            if (mappedFont != null && !mappedFont.isEmpty()) {
-                fontName = mappedFont;
-            } else if (usesLegacyEmbeddedTextFont(file, run.fontId(), run.fontStyle())) {
-                String embeddedFontName = FontRegistry.getPreferredDirectorPixelFont();
-                if (embeddedFontName != null && !embeddedFontName.isEmpty()) {
-                    fontName = embeddedFontName;
-                    legacyEmbeddedTextFont = true;
-                }
-            }
             fontSize = run.fontSize();
             fontStyle = run.fontStyle();
             runColorR = run.colorR();
@@ -433,7 +464,7 @@ public class SpriteBaker {
         }
 
         String styleStr = "";
-        if ((fontStyle & 1) != 0 || legacyEmbeddedTextFont) styleStr += "bold";
+        if ((fontStyle & 1) != 0) styleStr += "bold";
         if ((fontStyle & 2) != 0) styleStr += (styleStr.isEmpty() ? "" : ",") + "italic";
         if ((fontStyle & 4) != 0) styleStr += (styleStr.isEmpty() ? "" : ",") + "underline";
 
@@ -451,77 +482,23 @@ public class SpriteBaker {
         var renderer = CastMember.getTextRendererStatic();
         if (renderer == null) return null;
 
-        int textColor = sprite.hasForeColor()
-                ? resolvePaletteColor(sprite.getForeColor())
-                : resolveRunColor(runColorR, runColorG, runColorB);
-        // Use transparent background for BACKGROUND_TRANSPARENT ink
-        int bgColor = isTransparentTextInk(sprite)
+        // Text color: prefer STXT run color, fall back to palette-resolved sprite foreColor
+        int textColor;
+        if (runColorR >= 0) {
+            textColor = 0xFF000000 | (runColorR << 16) | (runColorG << 8) | runColorB;
+        } else {
+            textColor = resolvePaletteColor(sprite.getForeColor());
+        }
+        int bgColor = sprite.getInkMode() == InkMode.BACKGROUND_TRANSPARENT
                 ? 0x00000000
                 : 0xFF000000 | ((textInfo.bgRed() << 16) | (textInfo.bgGreen() << 8) | textInfo.bgBlue());
 
-        int horizontalInset = Math.min(textInfo.gutterSize(), Math.max(0, width - 1));
-        int renderWidth = Math.max(1, width - horizontalInset * 2);
-        int fixedLineSpace = textInfo.textHeight() > fontSize ? fontSize : 0;
-        int topSpacing = textInfo.textHeight() > fontSize ? textInfo.textHeight() - fontSize : 0;
-        Bitmap rendered;
-        if (legacyEmbeddedTextFont && renderer instanceof com.libreshockwave.player.render.output.SimpleTextRenderer simpleRenderer) {
-            rendered = simpleRenderer.renderLegacyStxtText(
-                    textChunk.text(), renderWidth, height,
-                    fontName, fontSize, styleStr,
-                    alignment, textColor, bgColor,
-                    textInfo.isWordWrap(), false,
-                    fixedLineSpace, topSpacing);
-        } else {
-            rendered = renderer.renderText(
-                    textChunk.text(), renderWidth, height,
-                    fontName, fontSize, styleStr,
-                    alignment, textColor, bgColor,
-                    textInfo.isWordWrap(), false,
-                    fixedLineSpace, topSpacing);
-        }
-        return insetTextBitmap(rendered, width, height, horizontalInset, bgColor);
-    }
-
-    private static boolean usesLegacyEmbeddedTextFont(DirectorFile file, int fontId, int fontStyle) {
-        return fontId == 0
-                && (fontStyle & 0x80) != 0
-                && file != null
-                && file.getConfig() != null
-                && file.getConfig().directorVersion() > 0
-                && file.getConfig().directorVersion() <= 1600;
-    }
-
-    private static String defaultStxtFontName(DirectorFile file) {
-        if (file != null && file.getConfig() != null
-                && file.getConfig().directorVersion() > 0
-                && file.getConfig().directorVersion() <= 1600) {
-            return "Geneva";
-        }
-        return "Arial";
-    }
-
-    private Bitmap insetTextBitmap(Bitmap source, int width, int height, int insetX, int bgColor) {
-        if (source == null || insetX <= 0 || source.getWidth() == width) {
-            return source;
-        }
-        int[] pixels = new int[width * height];
-        for (int i = 0; i < pixels.length; i++) {
-            pixels[i] = bgColor;
-        }
-        int[] src = source.getPixels();
-        int copyW = Math.min(source.getWidth(), Math.max(0, width - insetX));
-        int copyH = Math.min(source.getHeight(), height);
-        for (int y = 0; y < copyH; y++) {
-            for (int x = 0; x < copyW; x++) {
-                pixels[y * width + x + insetX] = src[y * source.getWidth() + x];
-            }
-        }
-        Bitmap bitmap = new Bitmap(width, height, source.getBitDepth(), pixels);
-        bitmap.markScriptModified();
-        if (source.isNativeAlpha()) {
-            bitmap.setNativeAlpha(true);
-        }
-        return bitmap;
+        return renderer.renderText(
+                textChunk.text(), width, height,
+                fontName, fontSize, styleStr,
+                alignment, textColor, bgColor,
+                textInfo.isWordWrap(), false,
+                0, 0);
     }
 
     /**
@@ -543,65 +520,44 @@ public class SpriteBaker {
         int width = styledText.width() > 0 ? styledText.width() : (sprite.getWidth() > 0 ? sprite.getWidth() : 200);
         int height = styledText.height() > 0 ? styledText.height() : (sprite.getHeight() > 0 ? sprite.getHeight() : 20);
 
-        int textColor = sprite.getInkMode() == com.libreshockwave.id.InkMode.MATTE
-                ? styledText.textColorARGB()
-                : resolvePaletteColor(sprite.getForeColor());
-        // Use transparent background for BACKGROUND_TRANSPARENT ink so the text
-        // can be composited directly without ink processing removing the text pixels.
-        int bgColor = isTransparentTextInk(sprite)
-                ? 0x00000000 : resolvePaletteColor(sprite.getBackColor());
+        // ARGB format — text color from XMED data if available, fall back to palette-resolved foreColor
+        int textColor;
+        if (styledText.colorR() >= 0) {
+            textColor = styledText.textColorARGB();
+        } else {
+            textColor = resolvePaletteColor(sprite.getForeColor());
+        }
+        int bgColor = sprite.getInkMode() == InkMode.BACKGROUND_TRANSPARENT
+                ? 0x00000000
+                : resolvePaletteColor(sprite.getBackColor());
 
         var renderer = CastMember.getTextRendererStatic();
         if (renderer == null) return null;
 
         String styleStr = styledText.fontStyleString();
 
-        Bitmap rendered = renderer.renderXmedText(styledText, width, height, textColor, bgColor);
-        if (sprite.getInkMode() == com.libreshockwave.id.InkMode.BACKGROUND_TRANSPARENT) {
-            rendered = shiftBitmapDown(rendered, 2, bgColor);
-        }
-        return rendered;
-    }
-
-    static Bitmap shiftBitmapDown(Bitmap source, int dy, int bgColor) {
-        if (source == null || dy <= 0) {
-            return source;
-        }
-        int width = source.getWidth();
-        int height = source.getHeight();
-        int[] pixels = new int[width * height];
-        for (int i = 0; i < pixels.length; i++) {
-            pixels[i] = bgColor;
-        }
-        int[] src = source.getPixels();
-        for (int y = 0; y < height - dy; y++) {
-            System.arraycopy(src, y * width, pixels, (y + dy) * width, width);
-        }
-        Bitmap shifted = new Bitmap(width, height, source.getBitDepth(), pixels);
-        shifted.markScriptModified();
-        if (source.isNativeAlpha()) {
-            shifted.setNativeAlpha(true);
-        }
-        return shifted;
+        return renderer.renderXmedText(styledText, width, height, textColor, bgColor);
     }
 
     /**
-     * RenderSprite colors are resolved to packed RGB before baking.
+     * Resolve a score color value (palette index 0-255) to packed ARGB for text rendering.
+     * Values > 255 are already RGB (from script-set colors).
+     * Values 0-255 are palette indices looked up through the default palette.
      */
     private int resolvePaletteColor(int color) {
-        return 0xFF000000 | (color & 0xFFFFFF);
-    }
-
-    private int resolveRunColor(int r, int g, int b) {
-        if (r >= 0 && g >= 0 && b >= 0) {
-            return 0xFF000000 | ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
+        if (color > 255) {
+            // Already packed RGB (script-set)
+            return 0xFF000000 | (color & 0xFFFFFF);
         }
-        return 0xFF000000;
-    }
-
-    private boolean isTransparentTextInk(RenderSprite sprite) {
-        return sprite.getInkMode() == com.libreshockwave.id.InkMode.BACKGROUND_TRANSPARENT
-                || sprite.getInkMode() == com.libreshockwave.id.InkMode.MATTE;
+        // Palette index lookup
+        Palette palette = player != null && player.getFile() != null
+                ? player.getFile().resolvePalette(-1) : null;
+        if (palette != null) {
+            return 0xFF000000 | (palette.getColor(color) & 0xFFFFFF);
+        }
+        // Fallback: Director grayscale ramp (0=white, 255=black)
+        int gray = 255 - color;
+        return 0xFF000000 | (gray << 16) | (gray << 8) | gray;
     }
 
     /**
@@ -633,14 +589,17 @@ public class SpriteBaker {
         int rectLeft = filmInfo.rectLeft();
         int rectTop = filmInfo.rectTop();
 
-        // Cycle through film loop frames based on tick counter (animated marquee)
+        // Cycle through film loop frames based on render ticks (animated marquee)
         int frameCount = frameData.header().frameCount();
-        int targetFrame = (frameCount > 0) ? (tickCounter % frameCount) : 0;
+        int targetFrame = (frameCount > 0) ? (animationTick % frameCount) : 0;
 
         // Create output bitmap filled with transparent
         int[] outPixels = new int[loopW * loopH];
 
         // Collect sub-sprites for the target frame
+        if (frameCount > 1) {
+            animatedContentBaked = true;
+        }
         var subSprites = new ArrayList<ScoreChunk.FrameChannelEntry>();
         for (var entry : frameData.frameChannelData()) {
             if (entry.frameIndex().value() == targetFrame && !entry.data().isEmpty()) {
@@ -753,6 +712,12 @@ public class SpriteBaker {
      * metadata; synthetic no-member shapes still behave as solid color fills.
      */
     private Bitmap bakeShape(RenderSprite sprite) {
+        ShapeCacheKey cacheKey = shapeCacheKey(sprite);
+        Bitmap cached = shapeCache.get(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
+
         int w = sprite.getWidth() > 0 ? sprite.getWidth() : 50;
         int h = sprite.getHeight() > 0 ? sprite.getHeight() : 50;
         Bitmap shape = new Bitmap(w, h, 32);
@@ -772,7 +737,33 @@ public class SpriteBaker {
                     sprite.getBackColor(), false, null);
         }
 
+        if (shapeCache.size() > 256) {
+            shapeCache.clear();
+        }
+        shapeCache.put(cacheKey, shape);
         return shape;
+    }
+
+    private ShapeCacheKey shapeCacheKey(RenderSprite sprite) {
+        int castFileIdentity = 0;
+        int castMemberId = 0;
+        int shapeDataHash = 0;
+        if (sprite.getCastMember() != null) {
+            castFileIdentity = sprite.getCastMember().file() != null
+                    ? System.identityHashCode(sprite.getCastMember().file()) : 0;
+            castMemberId = sprite.getCastMember().id().value();
+            shapeDataHash = java.util.Arrays.hashCode(sprite.getCastMember().specificData());
+        } else if (sprite.getDynamicMember() != null
+                && sprite.getDynamicMember().getChunk() != null) {
+            shapeDataHash = java.util.Arrays.hashCode(sprite.getDynamicMember().getChunk().specificData());
+        }
+        int dynamicMemberIdentity = sprite.getDynamicMember() != null
+                ? System.identityHashCode(sprite.getDynamicMember()) : 0;
+        int w = sprite.getWidth() > 0 ? sprite.getWidth() : 50;
+        int h = sprite.getHeight() > 0 ? sprite.getHeight() : 50;
+        return new ShapeCacheKey(castFileIdentity, castMemberId, dynamicMemberIdentity,
+                w, h, sprite.getForeColor(), sprite.getBackColor(),
+                sprite.getInk(), sprite.getBlend(), shapeDataHash);
     }
 
     private ShapeInfo resolveShapeInfo(RenderSprite sprite) {

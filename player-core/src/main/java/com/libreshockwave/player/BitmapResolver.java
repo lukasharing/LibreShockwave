@@ -117,7 +117,7 @@ public class BitmapResolver {
         }
 
         // Director bitmaps can explicitly reference a palette member in another castLib.
-        // External room/library casts rely on this for authored palette sharing, so honor
+        // External casts rely on this for authored palette sharing, so honor
         // the castLib hint before falling back to opportunistic cross-file scans.
         if (paletteCastLib > 0 && castLibManager != null) {
             pal = castLibManager.resolvePaletteByMember(paletteCastLib, paletteId + 1);
@@ -196,6 +196,11 @@ public class BitmapResolver {
             moviePalette = resolveMoviePalette(currentFrame);
         }
         return moviePalette;
+    }
+
+    public void invalidateMoviePalette() {
+        moviePalette = null;
+        moviePaletteFrame = -1;
     }
 
     private Palette resolveMoviePalette(int frame) {

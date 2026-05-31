@@ -143,7 +143,7 @@ public final class TypeBuiltins {
         if (identifier instanceof Datum.Str str) {
             // Find script by name
             if (provider != null) {
-                Datum memberRef = provider.getMemberByName(scopedCastLib, str.value());
+                Datum memberRef = provider.getScriptMemberByName(scopedCastLib, str.value());
                 if (memberRef instanceof Datum.CastMemberRef cmr) {
                     return new Datum.ScriptRef(cmr.castLib(), cmr.member());
                 }
@@ -151,7 +151,7 @@ public final class TypeBuiltins {
         } else if (identifier instanceof Datum.Symbol sym) {
             // Find script by symbol name
             if (provider != null) {
-                Datum memberRef = provider.getMemberByName(scopedCastLib, sym.name());
+                Datum memberRef = provider.getScriptMemberByName(scopedCastLib, sym.name());
                 if (memberRef instanceof Datum.CastMemberRef cmr) {
                     return new Datum.ScriptRef(cmr.castLib(), cmr.member());
                 }
@@ -253,6 +253,7 @@ public final class TypeBuiltins {
             case Datum.Float f -> "float";
             case Datum.Str s -> "string";
             case Datum.FieldText ft -> "string";
+            case Datum.BinaryData b -> "binary";
             case Datum.Symbol s -> "symbol";
             case Datum.List l -> "list";
             case Datum.PropList p -> "propList";

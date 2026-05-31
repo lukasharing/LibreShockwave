@@ -88,12 +88,28 @@ public class BitmapFont {
 
     /** Get advance width for a character (in pixels). */
     public int getCharWidth(int charCode) {
+        charCode = resolveDirectorTextCode(charCode);
         if (charCode >= 0 && charCode < charWidths.length) return charWidths[charCode];
         Integer ow = overflowWidths.get(charCode);
         return ow != null ? ow : cellWidth;
     }
 
+    /**
+     * Returns whether this rasterized font has bitmap data for the character.
+     * ASCII grid entries are always considered representable; extended
+     * characters must exist in the overflow glyph map produced by the font
+     * rasterizer.
+     */
+    public boolean canDraw(int charCode) {
+        charCode = resolveDirectorTextCode(charCode);
+        if (charCode >= 0 && charCode < NUM_CHARS) {
+            return true;
+        }
+        return overflowGlyphs.containsKey(charCode);
+    }
+
     public int getCharOffsetX(int charCode) {
+        charCode = resolveDirectorTextCode(charCode);
         if (charCode >= 0 && charCode < charOffsetsX.length) return charOffsetsX[charCode];
         Integer offset = overflowOffsetsX.get(charCode);
         return offset != null ? offset : 0;
@@ -126,7 +142,7 @@ public class BitmapFont {
      * @param color    text color (0xAARRGGBB)
      */
     public void drawChar(char ch, int[] dst, int dstW, int dstH, int dstX, int dstY, int color) {
-        int charCode = (int) ch;
+        int charCode = resolveDirectorTextCode((int) ch);
         int drawX = dstX + getCharOffsetX(charCode);
 
         int r = (color >> 16) & 0xFF;
@@ -172,6 +188,53 @@ public class BitmapFont {
                 }
             }
         }
+    }
+
+    private int resolveDirectorTextCode(int charCode) {
+        int mapped = windows1252ControlCode(charCode);
+        if (mapped == charCode) {
+            return charCode;
+        }
+        if (overflowGlyphs.containsKey(mapped) || overflowWidths.containsKey(mapped)) {
+            return mapped;
+        }
+        return charCode;
+    }
+
+    private static int windows1252ControlCode(int charCode) {
+        if (charCode < 0x80 || charCode > 0x9F) {
+            return charCode;
+        }
+        return switch (charCode) {
+            case 0x80 -> 0x20AC;
+            case 0x82 -> 0x201A;
+            case 0x83 -> 0x0192;
+            case 0x84 -> 0x201E;
+            case 0x85 -> 0x2026;
+            case 0x86 -> 0x2020;
+            case 0x87 -> 0x2021;
+            case 0x88 -> 0x02C6;
+            case 0x89 -> 0x2030;
+            case 0x8A -> 0x0160;
+            case 0x8B -> 0x2039;
+            case 0x8C -> 0x0152;
+            case 0x8E -> 0x017D;
+            case 0x91 -> 0x2018;
+            case 0x92 -> 0x2019;
+            case 0x93 -> 0x201C;
+            case 0x94 -> 0x201D;
+            case 0x95 -> 0x2022;
+            case 0x96 -> 0x2013;
+            case 0x97 -> 0x2014;
+            case 0x98 -> 0x02DC;
+            case 0x99 -> 0x2122;
+            case 0x9A -> 0x0161;
+            case 0x9B -> 0x203A;
+            case 0x9C -> 0x0153;
+            case 0x9E -> 0x017E;
+            case 0x9F -> 0x0178;
+            default -> charCode;
+        };
     }
 
     private void blendPixel(int[] dst, int dstW, int px, int py, int srcPixel, int r, int g, int b) {

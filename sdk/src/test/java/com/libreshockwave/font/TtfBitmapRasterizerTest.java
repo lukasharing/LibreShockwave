@@ -2,6 +2,8 @@ package com.libreshockwave.font;
 
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class TtfBitmapRasterizerTest {
@@ -32,5 +34,24 @@ class TtfBitmapRasterizerTest {
         assertTrue(minX > 0, "glyph should preserve its left-side bearing");
         assertTrue(font.getCharWidth('H') > inkWidth,
                 "advance width should preserve the font metrics, not collapse to the ink bounds");
+    }
+
+    @Test
+    void bitmapFontMapsDirectorControlBytesThroughWindows1252Glyphs() {
+        BitmapFont font = TtfBitmapRasterizer.rasterize(
+                com.libreshockwave.fonts.volter.volter_bold.getData(), 9, "Volter");
+
+        assertTrue(font.canDraw(0x0192), "fixture font should contain Windows-1252 glyph U+0192");
+        assertTrue(font.canDraw(0x83), "raw Director byte 0x83 should resolve to U+0192");
+        assertEquals(font.getCharWidth(0x0192), font.getCharWidth(0x83));
+        assertArrayEquals(renderGlyphPixels(font, (char) 0x0192), renderGlyphPixels(font, (char) 0x83));
+    }
+
+    private static int[] renderGlyphPixels(BitmapFont font, char ch) {
+        int canvasW = 32;
+        int canvasH = 32;
+        int[] pixels = new int[canvasW * canvasH];
+        font.drawChar(ch, pixels, canvasW, canvasH, 1, 1, 0xFF000000);
+        return pixels;
     }
 }

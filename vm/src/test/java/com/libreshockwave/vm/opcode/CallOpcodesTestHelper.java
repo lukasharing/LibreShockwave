@@ -133,10 +133,8 @@ public final class CallOpcodesTestHelper {
             case "getat" -> {
                 if (args.isEmpty()) yield Datum.VOID;
                 Datum keyOrIndex = args.get(0);
-                if (keyOrIndex instanceof Datum.Str s) {
-                    yield propList.getOrDefault(s.value(), false, Datum.VOID);
-                } else if (keyOrIndex instanceof Datum.Symbol sym) {
-                    yield propList.getOrDefault(sym.name(), true, Datum.VOID);
+                if (keyOrIndex instanceof Datum.Str || keyOrIndex instanceof Datum.Symbol) {
+                    yield propList.getOrDefault(keyOrIndex, Datum.VOID);
                 } else {
                     int index = keyOrIndex.toInt() - 1;
                     if (index >= 0 && index < propList.size()) {

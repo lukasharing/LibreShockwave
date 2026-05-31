@@ -62,6 +62,16 @@ public final class CallOpcodes {
             Datum argListDatum = ctx.pop();
             boolean noRet = argListDatum instanceof Datum.ArgListNoRet;
             List<Datum> args = getArgs(argListDatum);
+            String targetHandlerName = ctx.getScript().getHandlerName(targetHandler);
+            if (shouldPreferBuiltinBeforeAuthored(targetHandlerName)) {
+                Datum builtinResult = ctx.invokeBuiltinIfPresent(targetHandlerName, args);
+                if (builtinResult != null) {
+                    if (!noRet) {
+                        ctx.push(builtinResult);
+                    }
+                    return true;
+                }
+            }
             // If the Lingo source explicitly passes 'me' as the first arg
             // (e.g., searchTask(me, arg)), the args already include the receiver.
             // Pass null as receiver to prevent executeHandler from double-prepending it.
@@ -105,8 +115,12 @@ public final class CallOpcodes {
         List<Datum> args = getArgs(argListDatum);
 
         Datum result;
-        HandlerRef ref = ctx.findHandler(handlerName);
-        if (ref != null) {
+        Datum preferredBuiltin = shouldPreferBuiltinBeforeAuthored(handlerName)
+                ? ctx.invokeBuiltinIfPresent(handlerName, args)
+                : null;
+        if (preferredBuiltin != null) {
+            result = preferredBuiltin;
+        } else if (ctx.findHandler(handlerName) instanceof HandlerRef ref) {
             result = safeExecuteHandler(ctx, ref.script(), ref.handler(), args, null);
         } else {
             Datum builtinResult = ctx.invokeBuiltinIfPresent(handlerName, args);
@@ -128,6 +142,13 @@ public final class CallOpcodes {
             ctx.push(result);
         }
         return true;
+    }
+
+    private static boolean shouldPreferBuiltinBeforeAuthored(String handlerName) {
+        // Movies often provide their own convertToPropList for protocol-specific
+        // formats. The Java builtin only covers generic key=value strings and
+        // must remain a fallback when no authored handler exists.
+        return false;
     }
 
     private static boolean objCall(ExecutionContext ctx) {

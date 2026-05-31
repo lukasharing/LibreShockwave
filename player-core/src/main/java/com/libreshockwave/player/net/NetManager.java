@@ -260,7 +260,7 @@ public class NetManager implements NetBuiltins.NetProvider {
         String baseName = FileUtil.getFileNameWithoutExtension(cacheKey);
 
         // Director cast URLs are commonly mixed between:
-        // - extensionless ("hh_room_nlobby")
+        // - extensionless names
         // - .cct
         // - .cst
         // Try all normalized variants so castLib.fileName reloads can always

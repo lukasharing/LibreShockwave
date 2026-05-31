@@ -33,18 +33,28 @@ public interface ExternalParamProvider {
      */
     Map<String, String> getAllParams();
 
-    // Thread-local provider for VM access
-    ThreadLocal<ExternalParamProvider> CURRENT = new ThreadLocal<>();
+    /**
+     * Resolve a launch variable parsed from Shockwave swN parameter payloads.
+     * This is host/embed configuration, not Director member lookup state.
+     */
+    default String getLaunchVariable(String name) {
+        return null;
+    }
+
+    final class Holder {
+        private Holder() {}
+        static ExternalParamProvider current;
+    }
 
     static void setProvider(ExternalParamProvider provider) {
-        CURRENT.set(provider);
+        Holder.current = provider;
     }
 
     static void clearProvider() {
-        CURRENT.remove();
+        Holder.current = null;
     }
 
     static ExternalParamProvider getProvider() {
-        return CURRENT.get();
+        return Holder.current;
     }
 }

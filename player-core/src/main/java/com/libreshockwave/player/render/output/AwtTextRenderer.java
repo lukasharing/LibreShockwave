@@ -118,12 +118,7 @@ public class AwtTextRenderer implements TextRenderer {
         for (String line : lines) {
             if (y > height) break;
 
-            int x = 0;
-            switch (alignment) {
-                case "center" -> x = (width - fm.stringWidth(line)) / 2;
-                case "right" -> x = width - fm.stringWidth(line);
-                default -> x = 0; // left
-            }
+            int x = renderAlignmentOffset(alignment, width, fm.stringWidth(line));
 
             g2d.drawString(line, x, y);
             y += lineAdvance;
@@ -136,6 +131,7 @@ public class AwtTextRenderer implements TextRenderer {
                 null, 0, bufImg.getWidth());
         Bitmap bitmap = new Bitmap(bufImg.getWidth(), bufImg.getHeight(), 32, pixels);
         bitmap.markScriptModified();
+        bitmap.markTextRenderedImage(bgColor);
         return bitmap;
     }
 
@@ -240,11 +236,30 @@ public class AwtTextRenderer implements TextRenderer {
 
     private static int alignmentOffset(String alignment, int fieldWidth, int lineWidth) {
         if (alignment == null || fieldWidth <= 0) return 0;
-        return switch (alignment) {
+        String baseAlignment = baseAlignment(alignment);
+        if (isEditableAlignment(alignment) && lineWidth > fieldWidth
+                && ("center".equals(baseAlignment) || "right".equals(baseAlignment))) {
+            return fieldWidth - lineWidth;
+        }
+        return switch (baseAlignment) {
             case "center" -> (fieldWidth - lineWidth) / 2;
             case "right" -> fieldWidth - lineWidth;
             default -> 0;
         };
+    }
+
+    private static int renderAlignmentOffset(String alignment, int fieldWidth, int lineWidth) {
+        return alignmentOffset(alignment, fieldWidth, lineWidth);
+    }
+
+    private static boolean isEditableAlignment(String alignment) {
+        return alignment != null && alignment.startsWith("editable-");
+    }
+
+    private static String baseAlignment(String alignment) {
+        return isEditableAlignment(alignment)
+                ? alignment.substring("editable-".length())
+                : alignment;
     }
 
     // --- PFR TTF Font Resolution ---

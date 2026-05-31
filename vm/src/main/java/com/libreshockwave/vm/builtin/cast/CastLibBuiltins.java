@@ -1,5 +1,6 @@
 package com.libreshockwave.vm.builtin.cast;
 
+import com.libreshockwave.id.SlotId;
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.LingoVM;
 
@@ -24,11 +25,8 @@ public final class CastLibBuiltins {
         builtins.put("castlib", CastLibBuiltins::castLib);
         builtins.put("member", CastLibBuiltins::member);
         builtins.put("field", CastLibBuiltins::field);
-        // NOTE: Do NOT register getmemnum/memberExists as builtins.
-        // The fuse_client defines these as Lingo movie script handlers that
-        // delegate to the Resource Manager Class, which tracks members via
-        // pAllMemNumList (a runtime registry). The Java builtins would bypass
-        // this registry and return different results, causing null crashes.
+        builtins.put("getmemnum", CastLibBuiltins::getMemNum);
+        builtins.put("memberexists", CastLibBuiltins::memberExistsBuiltin);
     }
 
     /**
@@ -87,13 +85,15 @@ public final class CastLibBuiltins {
 
         // Get member by number or name
         if (memberArg.isInt() || memberArg.isFloat()) {
-            int memberNumber = memberArg.toInt();
-            if (memberNumber == 0) {
+            int rawMemberNumber = memberArg.toInt();
+            if (rawMemberNumber == 0) {
                 return Datum.VOID;
             }
+            boolean mirrored = rawMemberNumber < 0;
+            int memberNumber = Math.abs(rawMemberNumber);
             int normalizedMemberNumber = Math.abs(memberNumber);
             if (castLibNumber > 0) {
-                return provider.getMember(castLibNumber, normalizedMemberNumber);
+                return withMirror(provider.getMember(castLibNumber, normalizedMemberNumber), mirrored);
             }
 
             // Check if this is a slot number (castLib << 16 | memberNum) from member.number
@@ -102,7 +102,7 @@ public final class CastLibBuiltins {
             if (encodedCast > 0 && encodedMember > 0) {
                 // Decode slot number: direct lookup in the encoded cast lib
                 if (provider.memberExists(encodedCast, encodedMember)) {
-                    return provider.getMember(encodedCast, encodedMember);
+                    return withMirror(provider.getMember(encodedCast, encodedMember), mirrored);
                 }
             }
 
@@ -110,11 +110,11 @@ public final class CastLibBuiltins {
             int totalCasts = provider.getCastLibCount();
             for (int i = 1; i <= totalCasts; i++) {
                 if (provider.memberExists(i, normalizedMemberNumber)) {
-                    return provider.getMember(i, normalizedMemberNumber);
+                    return withMirror(provider.getMember(i, normalizedMemberNumber), mirrored);
                 }
             }
             // Not found in any cast — return ref in cast 1 (Director fallback)
-            return provider.getMember(1, normalizedMemberNumber);
+            return withMirror(provider.getMember(1, normalizedMemberNumber), mirrored);
         } else if (memberArg.isString() || memberArg.isSymbol()) {
             Datum found = provider.getMemberByName(castLibNumber, memberArg.toStr());
             if (!found.isVoid()) {
@@ -124,6 +124,13 @@ public final class CastLibBuiltins {
         }
 
         return Datum.VOID;
+    }
+
+    private static Datum withMirror(Datum memberRef, boolean mirrored) {
+        if (mirrored && memberRef instanceof Datum.CastMemberRef cmr) {
+            return Datum.CastMemberRef.of(cmr.castLibNum(), cmr.memberNum(), true);
+        }
+        return memberRef;
     }
 
     /**
@@ -169,11 +176,9 @@ public final class CastLibBuiltins {
             return Datum.of(0);
         }
 
-        String memberName = args.get(0).toStr();
-        Datum ref = provider.getMemberByName(0, memberName);
-
-        if (ref instanceof Datum.CastMemberRef cmr) {
-            return Datum.of((cmr.castLibNum() << 16) | cmr.memberNum());
+        int slot = resolveGlobalMemberSlot(provider, args.get(0).toStr());
+        if (slot != 0) {
+            return Datum.of(slot);
         }
 
         return Datum.of(0);
@@ -193,14 +198,37 @@ public final class CastLibBuiltins {
             return Datum.of(0);
         }
 
-        String memberName = args.get(0).toStr();
-        Datum ref = provider.getMemberByName(0, memberName);
-
-        if (ref instanceof Datum.CastMemberRef) {
+        int slot = resolveGlobalMemberSlot(provider, args.get(0).toStr());
+        if (slot != 0) {
             return Datum.of(1);
         }
 
         return Datum.of(0);
+    }
+
+    private static int resolveGlobalMemberSlot(CastLibProvider provider, String memberName) {
+        if (provider == null || memberName == null || memberName.isEmpty()) {
+            return 0;
+        }
+
+        int slot = slotFromRef(provider.getRegistryMemberByName(0, memberName));
+        if (slot != 0) {
+            return slot;
+        }
+
+        Datum ref = provider.getMemberByName(0, memberName);
+        if (ref instanceof Datum.CastMemberRef cmr
+                && provider.memberExists(cmr.castLibNum(), cmr.memberNum())) {
+            return SlotId.of(cmr.castLibNum(), cmr.memberNum()).value();
+        }
+        return 0;
+    }
+
+    private static int slotFromRef(Datum ref) {
+        if (ref instanceof Datum.CastMemberRef cmr && cmr.castLibNum() >= 1 && cmr.memberNum() >= 1) {
+            return SlotId.of(cmr.castLibNum(), cmr.memberNum()).value();
+        }
+        return 0;
     }
 
     private static int resolveCastLibArg(CastLibProvider provider, Datum castArg) {

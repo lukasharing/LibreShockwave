@@ -27,4 +27,24 @@ class BitmapDecoderTest {
         assertEquals(0xFFF9D6A0, bitmap.getPixel(0, 0));
         assertEquals(0xFF846338, bitmap.getPixel(1, 0));
     }
+
+    @Test
+    void canApplyPalettedUseAlphaMatteIndex() {
+        Bitmap bitmap = BitmapDecoder.decode(
+                new byte[] { 0, (byte) 255 },
+                2,
+                1,
+                8,
+                Palette.SYSTEM_MAC_PALETTE,
+                true,
+                1200,
+                2
+        );
+
+        int changed = bitmap.makePaletteIndexTransparent(0);
+
+        assertEquals(1, changed);
+        assertEquals(0x00FFFFFF, bitmap.getPixel(0, 0));
+        assertEquals(0xFF000000, bitmap.getPixel(1, 0));
+    }
 }

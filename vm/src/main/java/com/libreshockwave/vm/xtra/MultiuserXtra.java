@@ -1,5 +1,6 @@
 package com.libreshockwave.vm.xtra;
 
+import com.libreshockwave.vm.DebugConfig;
 import com.libreshockwave.vm.datum.Datum;
 
 import java.util.ArrayList;
@@ -108,6 +109,12 @@ public class MultiuserXtra implements Xtra {
             // Poll new messages from the bridge
             List<MultiuserNetBridge.NetMessage> messages = netBridge.pollMessages(instanceId);
             state.messageQueue.addAll(messages);
+            if (!messages.isEmpty()) {
+                debug("poll instance=" + instanceId
+                        + " received=" + messages.size()
+                        + " queued=" + state.messageQueue.size()
+                        + " handler=" + state.callbackHandler);
+            }
 
             // Drain a whole network burst in this movie tick. Room state packets
             // describe one simulation step; spreading them over frames serializes
@@ -120,6 +127,7 @@ public class MultiuserXtra implements Xtra {
                  processed++) {
                 state.currentMessage = state.messageQueue.remove(0);
                 try {
+                    traceCallback(instanceId, state, "auto");
                     scriptCallback.invoke(state.callbackTarget, state.callbackHandler, List.of());
                 } catch (Exception e) {
                     System.err.println("[MultiuserXtra] Auto-callback error: " + e.getMessage());
@@ -181,6 +189,10 @@ public class MultiuserXtra implements Xtra {
             String senderID = args.get(0).toStr();
             String subject = args.get(1).toStr();
             Datum content = args.get(2);
+            debug("send instance=" + instanceId
+                    + " sender=" + senderID
+                    + " subject=" + subject
+                    + " content=" + preview(content));
             netBridge.requestSend(instanceId, senderID, subject, content);
         }
         return Datum.ZERO;
@@ -206,6 +218,13 @@ public class MultiuserXtra implements Xtra {
         // Poll messages from the bridge
         List<MultiuserNetBridge.NetMessage> messages = netBridge.pollMessages(instanceId);
         state.messageQueue.addAll(messages);
+        if (!messages.isEmpty() || !state.messageQueue.isEmpty()) {
+            debug("check instance=" + instanceId
+                    + " requested=" + count
+                    + " received=" + messages.size()
+                    + " queued=" + state.messageQueue.size()
+                    + " handler=" + state.callbackHandler);
+        }
 
         int processed = 0;
         for (int i = 0; i < count && !state.messageQueue.isEmpty(); i++) {
@@ -215,6 +234,7 @@ public class MultiuserXtra implements Xtra {
             // Fire the registered callback
             if (state.callbackHandler != null && state.callbackTarget != null) {
                 try {
+                    traceCallback(instanceId, state, "check");
                     scriptCallback.invoke(state.callbackTarget, state.callbackHandler, List.of());
                 } catch (Exception e) {
                     System.err.println("[MultiuserXtra] Callback error: " + e.getMessage());
@@ -230,6 +250,11 @@ public class MultiuserXtra implements Xtra {
         // Include any not-yet-polled messages from the bridge
         List<MultiuserNetBridge.NetMessage> messages = netBridge.pollMessages(instanceId);
         state.messageQueue.addAll(messages);
+        if (!messages.isEmpty()) {
+            debug("waiting instance=" + instanceId
+                    + " received=" + messages.size()
+                    + " queued=" + state.messageQueue.size());
+        }
         return Datum.of(state.messageQueue.size());
     }
 
@@ -246,6 +271,52 @@ public class MultiuserXtra implements Xtra {
             case -6 -> "Invalid server address";
             default -> "Unknown error (" + code + ")";
         });
+    }
+
+    private void traceCallback(int instanceId, InstanceState state, String mode) {
+        MultiuserNetBridge.NetMessage message = state.currentMessage;
+        if (message == null) {
+            return;
+        }
+        debug("callback mode=" + mode
+                + " instance=" + instanceId
+                + " handler=" + state.callbackHandler
+                + " error=" + message.errorCode()
+                + " sender=" + message.senderID()
+                + " subject=" + message.subject()
+                + " content=" + preview(message.content()));
+    }
+
+    private static void debug(String message) {
+        if (DebugConfig.isDebugPlaybackEnabled()) {
+            System.out.println("[MultiuserXtra] " + message);
+        }
+    }
+
+    private static String preview(Datum datum) {
+        if (datum == null || datum.isVoid()) {
+            return "VOID";
+        }
+        String raw = datum.toStr();
+        StringBuilder out = new StringBuilder();
+        int limit = Math.min(raw.length(), 80);
+        for (int i = 0; i < limit; i++) {
+            char ch = raw.charAt(i);
+            if (ch < 32 || ch == 127) {
+                out.append("\\x");
+                String hex = Integer.toHexString(ch).toUpperCase();
+                if (hex.length() == 1) {
+                    out.append('0');
+                }
+                out.append(hex);
+            } else {
+                out.append(ch);
+            }
+        }
+        if (raw.length() > limit) {
+            out.append("...");
+        }
+        return '"' + out.toString() + '"';
     }
 
     // --- Instance state ---

@@ -1,8 +1,9 @@
 package com.libreshockwave.vm.builtin.flow;
 
+import com.libreshockwave.vm.DebugConfig;
 import com.libreshockwave.vm.builtin.movie.MoviePropertyProvider;
-import com.libreshockwave.vm.builtin.sprite.SpriteEventBrokerSupport;
 import com.libreshockwave.vm.datum.Datum;
+import com.libreshockwave.vm.datum.DatumFormatter;
 import com.libreshockwave.vm.LingoVM;
 import com.libreshockwave.vm.Scope;
 import com.libreshockwave.vm.util.AncestorChainWalker;
@@ -26,16 +27,16 @@ public final class ControlFlowBuiltins {
         builtins.put("return", ControlFlowBuiltins::returnValue);
         builtins.put("halt", ControlFlowBuiltins::halt);
         builtins.put("abort", ControlFlowBuiltins::abort);
+        builtins.put("try", ControlFlowBuiltins::tryBlock);
+        builtins.put("catch", ControlFlowBuiltins::catchBlock);
         builtins.put("nothing", ControlFlowBuiltins::nothing);
         builtins.put("param", ControlFlowBuiltins::param);
         builtins.put("go", ControlFlowBuiltins::go);
         builtins.put("call", ControlFlowBuiltins::call);
         // Note: receiveUpdate/removeUpdate are intentionally NOT builtins.
-        // Habbo defines them as movie script handlers in Object API:
-        //   receiveUpdate(tid) -> getObjectManager().receiveUpdate(tid)
-        //   removeUpdate(tid)  -> getObjectManager().removeUpdate(tid)
-        // Registering builtins here bypasses that Lingo layer and passes raw IDs
-        // into VM internals, which prevents Object Manager update routing.
+        // Many movies define these as authored movie-script handlers that route
+        // through their own object/update managers. Registering builtins here
+        // would shadow that Lingo layer and pass raw IDs into VM internals.
     }
 
     /**
@@ -71,6 +72,24 @@ public final class ControlFlowBuiltins {
             scope.setReturned(true);
         }
         return Datum.VOID;
+    }
+
+    /**
+     * Director's try()/catch() pair is commonly used as a lightweight error
+     * sentinel around optional platform features. try() starts a protected
+     * region by clearing the pending script error state; catch() reports
+     * whether an error occurred and clears it so subsequent authored code can
+     * continue in the same handler.
+     */
+    private static Datum tryBlock(LingoVM vm, List<Datum> args) {
+        vm.resetErrorState();
+        return Datum.VOID;
+    }
+
+    private static Datum catchBlock(LingoVM vm, List<Datum> args) {
+        boolean caught = vm.isInErrorState();
+        vm.resetErrorState();
+        return caught ? Datum.TRUE : Datum.FALSE;
     }
 
     /**
@@ -160,6 +179,8 @@ public final class ControlFlowBuiltins {
         Datum targetList = args.get(1);
         List<Datum> extraArgs = args.size() > 2 ? args.subList(2, args.size()) : List.of();
 
+        traceCall(vm, handlerName, targetList, extraArgs);
+
         Datum lastResult = Datum.VOID;
         if (targetList instanceof Datum.ScriptInstance instance) {
             // call(#handler, singleObject, args...) — call on one instance
@@ -209,15 +230,12 @@ public final class ControlFlowBuiltins {
                 if (scripts != null && !scripts.isEmpty()) {
                     Datum lastResult = Datum.VOID;
                     for (Datum si : scripts) {
-                        if (si instanceof Datum.ScriptInstance instance) {
+                        if (si instanceof Datum.ScriptInstance instance
+                                && AncestorChainWalker.hasHandler(instance, handlerName)) {
                             lastResult = callHandlerOnInstance(vm, instance, handlerName, extraArgs);
                         }
                     }
                     return lastResult;
-                }
-                Datum brokerResult = SpriteEventBrokerSupport.dispatchSpriteMethod(channel, handlerName, extraArgs);
-                if (!brokerResult.isVoid()) {
-                    return brokerResult;
                 }
             }
         }
@@ -232,12 +250,62 @@ public final class ControlFlowBuiltins {
     public static Datum callHandlerOnInstance(LingoVM vm, Datum.ScriptInstance instance,
                                                String handlerName, List<Datum> extraArgs) {
         try {
+            traceHandlerDispatch(vm, handlerName, instance, extraArgs);
             Datum result = AncestorChainWalker.invokeHandlerWithResult(vm, instance, handlerName, extraArgs);
             return result != null ? result : Datum.VOID;
         } catch (Exception e) {
             System.err.println("[callHandlerOnInstance] Exception in '" + handlerName + "': " + e.getMessage());
             return Datum.VOID;
         }
+    }
+
+    private static void traceCall(LingoVM vm, String handlerName, Datum targetList, List<Datum> extraArgs) {
+        if (!shouldTraceDispatch(vm, handlerName)) {
+            return;
+        }
+        System.out.println("[TRACE] call(#" + handlerName
+                + ", target=" + DatumFormatter.formatBrief(targetList)
+                + ", args=" + formatArgs(extraArgs) + ")");
+    }
+
+    private static void traceHandlerDispatch(LingoVM vm, String handlerName, Datum.ScriptInstance receiver,
+                                             List<Datum> extraArgs) {
+        if (!shouldTraceDispatch(vm, handlerName)) {
+            return;
+        }
+        System.out.println("[TRACE] callHandlerOnInstance handler=#" + handlerName
+                + " receiver=<script#" + receiver.scriptId() + ">"
+                + " args=" + formatArgs(extraArgs));
+    }
+
+    private static boolean shouldTraceDispatch(LingoVM vm, String handlerName) {
+        if (!DebugConfig.isDebugPlaybackEnabled() || vm == null) {
+            return false;
+        }
+        var tracedHandlers = vm.getTracedHandlers();
+        if (tracedHandlers.isEmpty()) {
+            return false;
+        }
+        return tracedHandlers.contains("call")
+                || tracedHandlers.contains(LingoVM.normalizeLookupName(handlerName));
+    }
+
+    private static String formatArgs(List<Datum> args) {
+        if (args == null || args.isEmpty()) {
+            return "[]";
+        }
+        StringBuilder sb = new StringBuilder("[");
+        int limit = Math.min(args.size(), 6);
+        for (int i = 0; i < limit; i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+            sb.append(DatumFormatter.formatBrief(args.get(i)));
+        }
+        if (args.size() > limit) {
+            sb.append(", ... ").append(args.size() - limit).append(" more");
+        }
+        return sb.append(']').toString();
     }
 
 }

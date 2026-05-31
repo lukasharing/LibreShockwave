@@ -159,6 +159,21 @@ class ImageMethodDispatcherTest {
     }
 
     @Test
+    void copyPixelsWithVoidSourceRectCopiesTheWholeSourceImage() {
+        Bitmap source = new Bitmap(2, 2, 32);
+        source.fill(0xFFFFFFFF);
+        source.setPixel(1, 1, 0xFF123456);
+        Bitmap dest = new Bitmap(2, 2, 32);
+        dest.fill(0xFF000000);
+
+        ImageMethodDispatcher.dispatch(new Datum.ImageRef(dest), "copyPixels",
+                List.of(new Datum.ImageRef(source), new Datum.Rect(0, 0, 2, 2), Datum.VOID));
+
+        assertEquals(0xFFFFFFFF, dest.getPixel(0, 0));
+        assertEquals(0xFF123456, dest.getPixel(1, 1));
+    }
+
+    @Test
     void copyPixelsLeavesDestinationOutsideSourceBoundsUntouched() {
         Bitmap source = new Bitmap(300, 4, 32);
         source.fill(0xFF224466);

@@ -3,18 +3,22 @@ package com.libreshockwave.player.render.pipeline;
 import com.libreshockwave.DirectorFile;
 import com.libreshockwave.chunks.ScoreChunk;
 import com.libreshockwave.format.ChunkType;
+import com.libreshockwave.id.ChannelId;
+import com.libreshockwave.id.ChunkId;
+import com.libreshockwave.id.FrameIndex;
 import com.libreshockwave.id.InkMode;
 import com.libreshockwave.player.render.SpriteRegistry;
+import com.libreshockwave.player.sprite.SpriteState;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.ByteOrder;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class StageRendererScoreSpriteInkTest {
 
@@ -61,90 +65,25 @@ class StageRendererScoreSpriteInkTest {
     }
 
     @Test
-    void scoreSpriteResolvesPaletteColorNumbers() throws Exception {
-        StageRenderer renderer = new StageRenderer(newEmptyDirectorFile());
-        ScoreChunk.ChannelData data = new ScoreChunk.ChannelData(
-            1,
-            InkMode.COPY.code(),
-            0,
-            0,
-            255,
-            0,
-            0,
-            0,
-            0,
-            0,
-            10,
-            10,
-            10,
-            10,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
-        );
+    void frameEntrySyncCreatesAndUpdatesScoreSpriteState() throws Exception {
+        DirectorFile file = newEmptyDirectorFile();
+        installScore(file, List.of(
+                frameEntry(0, 8, channelDataAt(10, 20)),
+                frameEntry(1, 8, channelDataAt(30, 40))
+        ));
+        StageRenderer renderer = new StageRenderer(file);
 
-        RenderSprite sprite = invokeCreateRenderSprite(renderer, 5, data);
+        renderer.syncScoreStateForFrame(1);
 
-        assertNotNull(sprite);
-        assertEquals(0x000000, sprite.getForeColor());
-    }
+        SpriteState state = renderer.getSpriteRegistry().get(8);
+        assertNotNull(state);
+        assertEquals(10, state.getLocH());
+        assertEquals(20, state.getLocV());
 
-    @Test
-    void scoreSpriteKeepsExplicitRgbColors() throws Exception {
-        StageRenderer renderer = new StageRenderer(newEmptyDirectorFile());
-        ScoreChunk.ChannelData data = new ScoreChunk.ChannelData(
-            1,
-            InkMode.COPY.code(),
-            0,
-            0,
-            0x12,
-            0,
-            0,
-            0,
-            0,
-            0,
-            10,
-            10,
-            10,
-            10,
-            1,
-            0,
-            0,
-            0x34,
-            0,
-            0x56,
-            0
-        );
+        renderer.syncScoreStateForFrame(2);
 
-        RenderSprite sprite = invokeCreateRenderSprite(renderer, 6, data);
-
-        assertNotNull(sprite);
-        assertEquals(0x123456, sprite.getForeColor());
-    }
-
-    @Test
-    void scoreBehaviorChannelsMarkRenderedSpriteAsBehaviorBacked() throws Exception {
-        StageRenderer renderer = new StageRenderer(newEmptyDirectorFile());
-        ScoreChunk.ChannelData data = channelData(InkMode.MATTE.code(), 0, 0, 0);
-
-        RenderSprite before = invokeCreateRenderSprite(renderer, 12, data);
-        assertNotNull(before);
-        assertFalse(before.hasBehaviors());
-
-        renderer.getSpriteRegistry().markScoreBehaviorChannel(12);
-        RenderSprite after = invokeCreateRenderSprite(renderer, 12, data);
-
-        assertNotNull(after);
-        assertTrue(after.hasBehaviors());
-    }
-
-    @Test
-    void oldScoreRgbExpansionMatchesNativeFiveBitChannels() {
-        assertEquals(0x84CEEF, StageRenderer.expandScoreRgb555(0x84CCE8));
+        assertEquals(30, state.getLocH());
+        assertEquals(40, state.getLocV());
     }
 
     private static RenderSprite invokeCreateRenderSprite(StageRenderer renderer, int channel,
@@ -160,6 +99,62 @@ class StageRendererScoreSpriteInkTest {
             ByteOrder.class, boolean.class, int.class, ChunkType.class);
         ctor.setAccessible(true);
         return ctor.newInstance(ByteOrder.BIG_ENDIAN, false, 0, ChunkType.RIFX);
+    }
+
+    private static void installScore(DirectorFile file, List<ScoreChunk.FrameChannelEntry> entries) throws Exception {
+        ScoreChunk.ScoreFrameData frameData = new ScoreChunk.ScoreFrameData(
+                new ScoreChunk.FrameDataHeader(2, 28, 10, 0),
+                new byte[0],
+                entries,
+                List.of(),
+                List.of()
+        );
+        ScoreChunk score = new ScoreChunk(
+                file,
+                new ChunkId(1),
+                new ScoreChunk.Header(0, 0, 0, 0, 0, 0),
+                List.of(),
+                frameData,
+                List.of()
+        );
+        Field field = DirectorFile.class.getDeclaredField("scoreChunk");
+        field.setAccessible(true);
+        field.set(file, score);
+    }
+
+    private static ScoreChunk.FrameChannelEntry frameEntry(int frameIndex, int channel,
+                                                           ScoreChunk.ChannelData data) {
+        return new ScoreChunk.FrameChannelEntry(
+                new FrameIndex(frameIndex),
+                new ChannelId(channel),
+                data
+        );
+    }
+
+    private static ScoreChunk.ChannelData channelDataAt(int locH, int locV) {
+        return new ScoreChunk.ChannelData(
+                1,
+                InkMode.COPY.code(),
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                0,
+                0,
+                locV,
+                locH,
+                10,
+                10,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+        );
     }
 
     private static ScoreChunk.ChannelData channelData(int ink, int trails, int stretch, int blendByte) {
@@ -187,4 +182,5 @@ class StageRendererScoreSpriteInkTest {
             0
         );
     }
+
 }

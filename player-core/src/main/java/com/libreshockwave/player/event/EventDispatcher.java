@@ -147,21 +147,6 @@ public class EventDispatcher {
     }
 
     /**
-     * Dispatch an event to one score-authored behavior instance.
-     */
-    public void dispatchBehaviorEvent(BehaviorInstance instance, PlayerEvent event, List<Datum> args) {
-        dispatchBehaviorEvent(instance, event.getHandlerName(), args);
-    }
-
-    /**
-     * Dispatch an event to one score-authored behavior instance.
-     */
-    public void dispatchBehaviorEvent(BehaviorInstance instance, String handlerName, List<Datum> args) {
-        vm.resetErrorState();
-        invokeHandler(instance, handlerName, args);
-    }
-
-    /**
      * Dispatch an event to a specific sprite's behaviors.
      * Dispatches to both Score-based behaviors (BehaviorManager) and
      * dynamically attached behaviors (sprite.scriptInstanceList).
@@ -192,7 +177,9 @@ public class EventDispatcher {
                             try {
                                 vm.resetErrorState();
                                 if (scriptInstanceRespondsToEvent(si, handlerName)) {
-                                    invokeScriptInstanceEvent(si, handlerName, args);
+                                    traceScriptInstanceInvoke("scriptInstance", handlerName, channel, si);
+                                    Datum result = invokeScriptInstanceEvent(si, handlerName, args);
+                                    traceScriptInstanceResult("scriptInstance", handlerName, channel, si, result);
                                 }
                             } catch (Exception e) {
                                 System.err.println("[EventDispatcher] Error in scriptInstanceList handler "
@@ -248,12 +235,6 @@ public class EventDispatcher {
                 || spriteHasHandler(channel, PlayerEvent.MOUSE_WITHIN.getHandlerName());
     }
 
-    private boolean isBrokerProcedureEvent(String handlerName) {
-        return isMouseHandler(handlerName)
-                || PlayerEvent.KEY_DOWN.getHandlerName().equals(handlerName)
-                || PlayerEvent.KEY_UP.getHandlerName().equals(handlerName);
-    }
-
     /**
      * Dispatch an event to movie scripts only using a PlayerEvent constant.
      */
@@ -302,6 +283,7 @@ public class EventDispatcher {
             ScriptChunk.Handler handler = script.findHandler(handlerName, names);
             if (handler != null) {
                 try {
+                    traceHandlerInvoke("movie", handlerName, script, 0, null);
                     vm.executeHandler(script, handler, args, null);
                 } catch (Exception e) {
                     System.err.println("[EventDispatcher] Error in " + handlerName + ": " + e.getMessage());
@@ -339,6 +321,7 @@ public class EventDispatcher {
         try {
             // Pass the instance as the receiver ('me')
             Datum receiver = instance.toDatum();
+            traceHandlerInvoke("behavior", handlerName, script, instance.getSpriteNum(), instance);
             vm.executeHandler(script, handler, args, receiver);
         } catch (Exception e) {
             System.err.println("[EventDispatcher] Error in handler " + handlerName +
@@ -362,82 +345,15 @@ public class EventDispatcher {
     }
 
     private Datum invokeScriptInstanceEvent(Datum.ScriptInstance instance, String handlerName, List<Datum> args) {
-        if ((PlayerEvent.KEY_DOWN.getHandlerName().equals(handlerName)
-                || PlayerEvent.KEY_UP.getHandlerName().equals(handlerName))
-                && scriptInstanceHasProc(instance, handlerName)) {
-            return dispatchScriptInstanceProc(instance, handlerName);
-        }
         if (AncestorChainWalker.hasHandler(instance, handlerName)) {
             return ControlFlowBuiltins.callHandlerOnInstance(vm, instance, handlerName, args);
         }
-        return dispatchScriptInstanceProc(instance, handlerName);
-    }
-
-    private Datum dispatchScriptInstanceProc(Datum.ScriptInstance instance, String handlerName) {
-        if (!isBrokerProcedureEvent(handlerName)) {
-            return Datum.VOID;
-        }
-        Datum procEntry = getScriptInstanceProcEntry(instance, handlerName);
-        if (!(procEntry instanceof Datum.List procList) || procList.items().size() < 2) {
-            return Datum.VOID;
-        }
-
-        try {
-            Datum targetId = procList.items().get(1);
-            if (!isTruthy(targetId)
-                    && (PlayerEvent.KEY_DOWN.getHandlerName().equals(handlerName)
-                    || PlayerEvent.KEY_UP.getHandlerName().equals(handlerName))) {
-                Datum mouseUpEntry = getScriptInstanceProcEntry(instance, PlayerEvent.MOUSE_UP.getHandlerName());
-                if (mouseUpEntry instanceof Datum.List mouseUpProc && mouseUpProc.items().size() >= 2) {
-                    targetId = mouseUpProc.items().get(1);
-                    procList = new Datum.List(List.of(Datum.symbol(handlerName), targetId));
-                }
-            }
-            if (!isTruthy(targetId)) {
-                return Datum.ZERO;
-            }
-            Datum targetObject = resolveObjectTarget(targetId);
-            if (targetObject.isVoid()) {
-                return Datum.ZERO;
-            }
-
-            Datum brokerId = AncestorChainWalker.getProperty(instance, "id");
-            List<Datum> callbackArgs = new ArrayList<>();
-            callbackArgs.add(procList.items().get(0));
-            callbackArgs.add(targetObject);
-            callbackArgs.add(new Datum.Symbol(handlerName));
-            callbackArgs.add(brokerId.isVoid() ? Datum.VOID : brokerId);
-            return vm.callHandler("call", callbackArgs);
-        } catch (Exception e) {
-            System.err.println("[EventDispatcher] Error executing broker proc "
-                    + handlerName + " on " + instance + ": " + e.getMessage());
-            if (debugEnabled) {
-                e.printStackTrace();
-            }
-            return Datum.VOID;
-        }
-    }
-
-    private boolean scriptInstanceHasProc(Datum.ScriptInstance instance, String handlerName) {
-        if (!isBrokerProcedureEvent(handlerName)) {
-            return false;
-        }
-        Datum procEntry = getScriptInstanceProcEntry(instance, handlerName);
-        if (!(procEntry instanceof Datum.List procList) || procList.items().size() < 2) {
-            return false;
-        }
-        return isTruthy(procList.items().get(1));
+        return Datum.VOID;
     }
 
     private boolean scriptInstanceRespondsToEvent(Datum.ScriptInstance instance, String handlerName) {
         if (instance == null) {
             return false;
-        }
-        if (scriptInstanceHasProc(instance, handlerName)) {
-            return true;
-        }
-        if (isEventBrokerLike(instance)) {
-            return PlayerEvent.MOUSE_UP.getHandlerName().equals(handlerName) && scriptInstanceHasLink(instance);
         }
         return AncestorChainWalker.hasHandler(instance, handlerName);
     }
@@ -478,38 +394,111 @@ public class EventDispatcher {
         return Datum.VOID;
     }
 
+    private void traceHandlerInvoke(String scope, String handlerName, ScriptChunk script,
+                                    int channel, BehaviorInstance instance) {
+        if (!debugEnabled || !isInputTraceHandler(handlerName)) {
+            return;
+        }
+        String scriptName = script != null ? script.getScriptName() : "";
+        String scriptId = script != null ? String.valueOf(script.id()) : "";
+        String instanceInfo = instance != null ? " instance=" + instance.getId() : "";
+        System.out.println("[EventHandler] scope=" + scope
+                + " event=" + handlerName
+                + " ch=" + channel
+                + " script=\"" + scriptName + "\""
+                + " scriptId=" + scriptId
+                + instanceInfo);
+    }
+
+    private void traceScriptInstanceInvoke(String scope, String handlerName,
+                                           int channel, Datum.ScriptInstance instance) {
+        if (!debugEnabled || !isInputTraceHandler(handlerName)) {
+            return;
+        }
+        System.out.println("[EventHandler] scope=" + scope
+                + " event=" + handlerName
+                + " ch=" + channel
+                + " instance=" + (instance != null ? instance.scriptId() : 0)
+                + eventBrokerTraceInfo(handlerName, instance));
+    }
+
+    private void traceScriptInstanceResult(String scope, String handlerName,
+                                           int channel, Datum.ScriptInstance instance, Datum result) {
+        if (!debugEnabled || !isInputTraceHandler(handlerName)) {
+            return;
+        }
+        System.out.println("[EventHandler] scope=" + scope
+                + "-done event=" + handlerName
+                + " ch=" + channel
+                + " instance=" + (instance != null ? instance.scriptId() : 0)
+                + " result=" + datumKey(result));
+    }
+
+    private boolean isInputTraceHandler(String handlerName) {
+        return isMouseHandler(handlerName)
+                || PlayerEvent.KEY_DOWN.getHandlerName().equals(handlerName)
+                || PlayerEvent.KEY_UP.getHandlerName().equals(handlerName);
+    }
+
     private boolean isEventBrokerLike(Datum.ScriptInstance instance) {
+        if (instance == null) {
+            return false;
+        }
         return AncestorChainWalker.hasHandler(instance, "redirectEvent")
                 && AncestorChainWalker.hasHandler(instance, "registerProcedure")
                 && AncestorChainWalker.hasHandler(instance, "createProcListTemplate");
     }
 
-    private boolean scriptInstanceHasLink(Datum.ScriptInstance instance) {
-        Datum link = AncestorChainWalker.getProperty(instance, "pLink");
-        return link instanceof Datum.Str str && !str.value().isEmpty();
-    }
-
-    private boolean isTruthy(Datum datum) {
-        return switch (datum) {
-            case Datum.Void ignored -> false;
-            case Datum.Int i -> i.value() != 0;
-            case Datum.Float f -> f.value() != 0.0;
-            case Datum.Str s -> !s.value().isEmpty();
-            default -> true;
-        };
-    }
-
-    private Datum resolveObjectTarget(Datum targetId) {
-        try {
-            Datum result = vm.callHandler("getObject", List.of(targetId));
-            if (!result.isVoid() && !(result instanceof Datum.Int i && i.value() == 0)) {
-                return result;
-            }
-        } catch (Exception ignored) {
-            // Ignore lookup failures and fall through to VOID.
+    private String eventBrokerTraceInfo(String handlerName, Datum.ScriptInstance instance) {
+        if (!isEventBrokerLike(instance)) {
+            return "";
         }
-        vm.resetErrorState();
-        return Datum.VOID;
+
+        StringBuilder info = new StringBuilder();
+        Datum brokerId = AncestorChainWalker.getProperty(instance, "id");
+        Datum procListDatum = AncestorChainWalker.getProperty(instance, "pProcList");
+        Datum procEntry = getScriptInstanceProcEntry(instance, handlerName);
+
+        info.append(" brokerId=").append(datumDebug(brokerId));
+        if (procListDatum instanceof Datum.PropList) {
+            info.append(" proc=").append(datumDebug(procEntry));
+        } else {
+            info.append(" procList=VOID proc=VOID");
+        }
+
+        if (procEntry instanceof Datum.List procList && procList.items().size() >= 2) {
+            info.append(" method=").append(datumDebug(procList.items().get(0)));
+            info.append(" target=").append(datumDebug(procList.items().get(1)));
+        }
+        return info.toString();
+    }
+
+    private String datumKey(Datum datum) {
+        if (datum == null || datum.isVoid()) {
+            return "VOID";
+        }
+        return datum.toKeyName();
+    }
+
+    private String datumDebug(Datum datum) {
+        if (datum == null || datum.isVoid()) {
+            return "VOID";
+        }
+        if (datum instanceof Datum.List list) {
+            StringBuilder sb = new StringBuilder("[");
+            for (int i = 0; i < list.items().size(); i++) {
+                if (i > 0) {
+                    sb.append(',');
+                }
+                sb.append(datumDebug(list.items().get(i)));
+            }
+            sb.append(']');
+            return sb.toString();
+        }
+        if (datum instanceof Datum.Str str) {
+            return "\"" + str.value() + "\"";
+        }
+        return datum.toKeyName();
     }
 
     /**

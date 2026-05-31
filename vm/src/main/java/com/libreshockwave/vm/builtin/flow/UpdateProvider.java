@@ -20,18 +20,20 @@ public interface UpdateProvider {
      */
     void removeUpdate(Datum target);
 
-    // Thread-local provider for VM access
-    ThreadLocal<UpdateProvider> CURRENT = new ThreadLocal<>();
+    final class Holder {
+        private Holder() {}
+        static UpdateProvider current;
+    }
 
     static void setProvider(UpdateProvider provider) {
-        CURRENT.set(provider);
+        Holder.current = provider;
     }
 
     static void clearProvider() {
-        CURRENT.remove();
+        Holder.current = null;
     }
 
     static UpdateProvider getProvider() {
-        return CURRENT.get();
+        return Holder.current;
     }
 }

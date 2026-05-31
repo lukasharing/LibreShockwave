@@ -27,10 +27,15 @@ public class FileUtil {
             }
         }
 
-        // Strip path (handles /, \, and : as Mac-style Director path separators)
-        // Also URL-decode %20 to spaces for paths like "20000201_mobiles%20Folder"
+        // Strip path (handles /, \, and : as Mac-style Director path separators).
+        // This runs in hot cast-loading paths, so keep it allocation-light and
+        // avoid regex backtracking on long authored URLs.
         String decoded = path.replace("%20", " ");
-        return decoded.replaceAll("^.*[\\\\/:]", "");
+        int lastUnixSeparator = decoded.lastIndexOf('/');
+        int lastWindowsSeparator = decoded.lastIndexOf('\\');
+        int lastMacSeparator = decoded.lastIndexOf(':');
+        int separator = Math.max(lastUnixSeparator, Math.max(lastWindowsSeparator, lastMacSeparator));
+        return separator >= 0 ? decoded.substring(separator + 1) : decoded;
     }
 
     /**

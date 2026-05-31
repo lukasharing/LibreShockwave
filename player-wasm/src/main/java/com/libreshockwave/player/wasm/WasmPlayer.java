@@ -3,8 +3,9 @@ package com.libreshockwave.player.wasm;
 import com.libreshockwave.DirectorFile;
 import com.libreshockwave.player.Player;
 import com.libreshockwave.player.PlayerState;
-import com.libreshockwave.player.cast.CastLib;
-import com.libreshockwave.util.FileUtil;
+import com.libreshockwave.vm.LingoVM;
+import com.libreshockwave.vm.opcode.dispatch.StringMethodDispatcher;
+import com.libreshockwave.vm.util.StringChunkUtils;
 
 /**
  * Thin wrapper around Player for WASM execution.
@@ -37,16 +38,15 @@ public class WasmPlayer {
 
         netProvider = new QueuedNetProvider(basePath);
         player = new Player(file, netProvider, castDataRequestCallback);
-        player.setEagerExternalCastPreloadEnabled(false);
         player.getMovieProperties().setGotoNetPageHandler(WasmEntry::enqueueGotoNetPage);
         player.getMovieProperties().setGotoNetMovieHandler(WasmEntry::enqueueGotoNetMovie);
         player.setErrorListener(WasmEntry::reportScriptError);
+        LingoVM.setGCCallback(this::releaseTransientRuntimeCaches);
 
         // When a fetch completes, cache cast files in CastLibManager so they're
         // available immediately when Lingo sets castLib.fileName.
         netProvider.setFetchCompleteCallback((fetchUrl, fetchData) ->
                 player.onNetFetchComplete(fetchUrl, fetchData));
-        netProvider.setSatisfiedFetchPredicate(this::isAlreadyLoadedCastRequest);
 
         musBridge = new WasmMultiuserBridge();
         player.registerMultiuserXtra(musBridge);
@@ -56,31 +56,6 @@ public class WasmPlayer {
         castRevision = 0;
 
         return true;
-    }
-
-    private boolean isAlreadyLoadedCastRequest(String url) {
-        if (player == null || url == null || url.isEmpty()) {
-            return false;
-        }
-        String fileName = FileUtil.getFileName(url);
-        String baseName = FileUtil.getFileNameWithoutExtension(fileName);
-        if (baseName == null || baseName.isEmpty()) {
-            return false;
-        }
-        for (CastLib castLib : player.getCastLibManager().getCastLibs().values()) {
-            if (!castLib.isLoaded()) {
-                continue;
-            }
-            if (baseName.equalsIgnoreCase(castLib.getName())) {
-                return true;
-            }
-            String castFileName = FileUtil.getFileName(castLib.getFileName());
-            String castBaseName = FileUtil.getFileNameWithoutExtension(castFileName);
-            if (castBaseName != null && baseName.equalsIgnoreCase(castBaseName)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static String toMovieDirectory(String basePath) {
@@ -130,9 +105,23 @@ public class WasmPlayer {
     }
 
     /**
-     * Queue fetch requests for all external casts before play().
-     * Since preloadAllCasts marks casts as fetching, the call inside
-     * prepareMovie() becomes a no-op — avoiding duplicate work.
+     * Process asynchronous Xtra callbacks without advancing the score.
+     * Used by host socket events that arrive between rendered frames.
+     */
+    public void processXtraCallbacks() {
+        if (player == null) return;
+        try {
+            player.processXtraCallbacks();
+        } catch (Throwable e) {
+            WasmEntry.log("xtra callback pump error: " + e.getClass().getName() + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * Queue fetch requests for casts that Director marks as required before
+     * frame one. After-frame casts are intentionally left to the normal player
+     * lifecycle so startup does not parse large external casts before the movie
+     * has produced its first visible frame.
      */
     public int preloadCasts() {
         if (player == null) return 0;
@@ -178,6 +167,18 @@ public class WasmPlayer {
         }
     }
 
+    public void setFastMovieClockEnabled(boolean enabled) {
+        if (player != null) {
+            player.setFastMovieClockEnabled(enabled);
+        }
+    }
+
+    public void setFastMovieClockEnabled(boolean enabled, int multiplier) {
+        if (player != null) {
+            player.setFastMovieClockEnabled(enabled, multiplier);
+        }
+    }
+
     public int getStageWidth() {
         return player != null ? player.getStageRenderer().getStageWidth() : 640;
     }
@@ -192,6 +193,12 @@ public class WasmPlayer {
 
     public QueuedNetProvider getNetProvider() {
         return netProvider;
+    }
+
+    public void seedNetCache(String url, byte[] data) {
+        if (netProvider != null) {
+            netProvider.seedCache(url, data);
+        }
     }
 
     public WasmMultiuserBridge getMusBridge() {
@@ -215,6 +222,7 @@ public class WasmPlayer {
 
     public void bumpCastRevision() {
         castRevision++;
+        WasmEntry.markRenderCacheDirty();
         if (softwareRenderer != null) {
             softwareRenderer.invalidate();
         }
@@ -227,6 +235,16 @@ public class WasmPlayer {
     public void shutdown() {
         if (player != null) {
             player.shutdown();
+        }
+        LingoVM.setGCCallback(null);
+    }
+
+    private void releaseTransientRuntimeCaches() {
+        StringMethodDispatcher.clearCaches();
+        StringChunkUtils.clearCaches();
+        WasmJpegDecoder.releaseTransientData();
+        if (player != null) {
+            player.getCastLibManager().releaseLoadedExternalData();
         }
     }
 }

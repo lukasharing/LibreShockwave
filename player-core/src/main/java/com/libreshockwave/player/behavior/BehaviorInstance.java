@@ -58,7 +58,8 @@ public class BehaviorInstance {
     // Property access
 
     public Datum getProperty(String name) {
-        return properties.getOrDefault(name, Datum.VOID);
+        Datum value = properties.get(name);
+        return value != null ? value : Datum.VOID;
     }
 
     public void setProperty(String name, Datum value) {

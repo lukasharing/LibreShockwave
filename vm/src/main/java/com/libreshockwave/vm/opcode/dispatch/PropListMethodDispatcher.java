@@ -66,24 +66,11 @@ public final class PropListMethodDispatcher {
             }
             case "getat" -> {
                 if (args.isEmpty()) yield Datum.VOID;
-                Datum keyOrIndex = args.get(0);
-                if (keyOrIndex instanceof Datum.Str || keyOrIndex instanceof Datum.Symbol) {
-                    yield getTypedKeyOrDefault(propList, keyOrIndex, Datum.VOID);
-                }
-                if (keyOrIndex instanceof Datum.Int || keyOrIndex instanceof Datum.Float) {
-                    int index = keyOrIndex.toInt() - 1;
-                    if (index >= 0 && index < propList.size()) {
-                        yield propList.getValue(index);
-                    }
-                    Datum keyedValue = propList.get(keyOrIndex);
-                    yield keyedValue != null ? keyedValue : Datum.VOID;
-                }
-                Datum keyedValue = propList.get(keyOrIndex);
-                yield keyedValue != null ? keyedValue : Datum.VOID;
+                yield propList.getAtOrDefault(args.get(0), Datum.VOID);
             }
             case "getvalue" -> {
                 if (args.isEmpty()) yield Datum.VOID;
-                Datum value = getPropListValueByKeyOrIndex(propList, args.get(0));
+                Datum value = propList.getValueByKeyOrIndexOrDefault(args.get(0), Datum.VOID);
                 if (value == null || value.isVoid()) {
                     yield Datum.VOID;
                 }
@@ -157,18 +144,6 @@ public final class PropListMethodDispatcher {
         };
     }
 
-    private static Datum getTypedKeyOrDefault(Datum.PropList propList, Datum keyDatum, Datum defaultValue) {
-        Datum value;
-        if (keyDatum instanceof Datum.Symbol symbol) {
-            value = propList.get(symbol.name(), true);
-        } else if (keyDatum instanceof Datum.Str string) {
-            value = propList.get(string.value(), false);
-        } else {
-            value = propList.get(keyDatum);
-        }
-        return value != null ? value : defaultValue;
-    }
-
     private static void removeTypedKey(Datum.PropList propList, Datum keyDatum) {
         if (keyDatum instanceof Datum.Symbol symbol) {
             propList.remove(symbol.name(), true);
@@ -177,20 +152,6 @@ public final class PropListMethodDispatcher {
         } else {
             propList.remove(keyDatum);
         }
-    }
-
-    private static Datum getPropListValueByKeyOrIndex(Datum.PropList propList, Datum keyOrIndex) {
-        if (keyOrIndex instanceof Datum.Str || keyOrIndex instanceof Datum.Symbol) {
-            return getTypedKeyOrDefault(propList, keyOrIndex, Datum.VOID);
-        }
-        int index = keyOrIndex.toInt() - 1;
-        if (index >= 0 && index < propList.size()) {
-            return propList.getValue(index);
-        }
-        if (!(keyOrIndex instanceof Datum.Int)) {
-            return propList.getOrDefault(keyOrIndex, Datum.VOID);
-        }
-        return Datum.VOID;
     }
 
     private static Datum evaluateStoredValue(Datum value) {

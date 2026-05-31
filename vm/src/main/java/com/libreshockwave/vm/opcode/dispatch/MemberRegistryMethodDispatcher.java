@@ -7,6 +7,7 @@ import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.util.AncestorChainWalker;
 
 import java.util.IdentityHashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -15,10 +16,13 @@ import java.util.function.Function;
 public final class MemberRegistryMethodDispatcher {
 
     static final DispatchResult NOT_HANDLED = new DispatchResult(false, Datum.VOID);
-    private static final String ALIAS_LINE_SPLIT = "\\r\\n|\\r|\\n";
     private static final String MEMBER_ALIAS_INDEX = "memberalias.index";
-    private static final Map<Datum.ScriptInstance, Map<Integer, String>> persistentAliasTextByRegistry =
-            java.util.Collections.synchronizedMap(new IdentityHashMap<>());
+    private static final Map<Datum.ScriptInstance, Map<AliasSource, RememberedAliasText>> persistentAliasTextByRegistry =
+            new IdentityHashMap<>();
+
+    private record AliasSource(int castLibNumber, String fieldKey) {}
+
+    private record RememberedAliasText(String text, Map<String, Integer> importedAliases) {}
 
     private MemberRegistryMethodDispatcher() {}
 
@@ -32,26 +36,13 @@ public final class MemberRegistryMethodDispatcher {
                 Datum.PropList registry = getRegistry(instance);
                 if (registry != null) {
                     resolveRegisteredMemberSlot(instance, registry, args, true);
-                    return switch (methodName.toLowerCase(Locale.ROOT)) {
-                        case "getmemnum" -> new DispatchResult(
-                                true,
-                                Datum.of(resolveRegisteredMemberSlot(instance, registry, args, true)));
-                        case "exists", "memberexists" -> new DispatchResult(
-                                true,
-                                Math.abs(resolveRegisteredMemberSlot(instance, registry, args, true)) > 0
-                                        ? Datum.TRUE : Datum.FALSE);
-                        case "getmember" -> new DispatchResult(
-                                true,
-                                resolveRegisteredMember(instance, registry, args));
-                        default -> NOT_HANDLED;
-                    };
                 }
+                return NOT_HANDLED;
             }
             default -> {
                 return NOT_HANDLED;
             }
         }
-        return NOT_HANDLED;
     }
 
     static DispatchResult dispatch(Datum.ScriptInstance instance, String methodName, List<Datum> args) {
@@ -89,17 +80,29 @@ public final class MemberRegistryMethodDispatcher {
             return new DispatchResult(true, Datum.ZERO);
         }
 
-        Object fieldIdentifier = args.get(0) instanceof Datum.Int i ? i.value() : args.get(0).toStr();
+        Datum fieldArg = args.get(0);
+        Object fieldIdentifier = fieldArg instanceof Datum.Int i ? i.value() : fieldArg.toStr();
         int castLibNumber = args.get(1).toInt();
         Datum fieldDatum = provider.getFieldDatum(fieldIdentifier, castLibNumber);
         if (fieldDatum == null || fieldDatum.isVoid()) {
             return new DispatchResult(true, Datum.ZERO);
         }
 
-        rememberAliasText(instance, castLibNumber, fieldDatum.toStr());
+        AliasSource source = new AliasSource(castLibNumber, aliasFieldKey(fieldArg));
+        removeAliasesFromSource(instance, registry, source);
+        Map<String, Integer> importedAliases = new java.util.LinkedHashMap<>();
         int imported = applyAliasMappings(registry, fieldDatum.toStr(),
-                targetName -> resolveTargetMemberNumber(registry, targetName, castLibNumber));
+                targetName -> resolveAliasTargetMemberNumber(registry, targetName, castLibNumber),
+                importedAliases);
+        rememberAliasText(instance, source, fieldDatum.toStr(), importedAliases);
         return new DispatchResult(true, Datum.of(imported));
+    }
+
+    private static String aliasFieldKey(Datum fieldArg) {
+        if (fieldArg instanceof Datum.Int i) {
+            return "member:" + i.value();
+        }
+        return "name:" + fieldArg.toStr().toLowerCase(Locale.ROOT);
     }
 
     private static Datum.PropList getRegistry(Datum.ScriptInstance instance) {
@@ -136,13 +139,16 @@ public final class MemberRegistryMethodDispatcher {
         Datum registered = registry.get(memberName);
         if (registered != null && !registered.isVoid()) {
             int registeredSlot = registered.toInt();
-            if (isRegisteredRegistrySlotLive(registeredSlot)) {
-                return registeredSlot;
+            int normalizedSlot = normalizeRegisteredRegistrySlot(memberName, registeredSlot);
+            if (normalizedSlot != 0) {
+                if (normalizedSlot != registeredSlot) {
+                    registry.putTyped(memberName, false, Datum.of(normalizedSlot));
+                }
+                return normalizedSlot;
             }
             registry.remove(memberName);
         }
 
-        refreshAvailableAliasTexts(instance);
         int rememberedAliasSlot = resolveRememberedAliasSlot(instance, registry, memberName);
         if (rememberedAliasSlot != 0) {
             registry.putTyped(memberName, false, Datum.of(rememberedAliasSlot));
@@ -220,35 +226,65 @@ public final class MemberRegistryMethodDispatcher {
     }
 
     private static boolean isRegisteredRegistrySlotLive(int slotValue) {
+        return normalizeRegisteredRegistrySlot(null, slotValue) != 0;
+    }
+
+    private static int normalizeRegisteredRegistrySlot(String memberName, int slotValue) {
         if (slotValue == 0) {
-            return false;
+            return 0;
         }
 
         CastLibProvider provider = CastLibProvider.getProvider();
         if (provider == null) {
-            return true;
+            return slotValue;
         }
 
         int absValue = Math.abs(slotValue);
+        int sign = slotValue < 0 ? -1 : 1;
         SlotId slotId = new SlotId(absValue);
         if (slotId.castLib() >= 1 && slotId.member() >= 1) {
-            // Combined SlotId with explicit cast library — fast path
-            return provider.isRegistryVisibleMember(slotId.castLib(), slotId.member());
+            if (provider.isRegistryVisibleMember(slotId.castLib(), slotId.member())) {
+                return sign * absValue;
+            }
+            return 0;
         }
 
-        // Raw member number without a cast-library component.
-        // Director's preIndexMembers stores plain member.number values which
-        // only encode the cast library when there are multiple casts.
-        // Scan all cast libraries for the raw member number.
-        if (absValue >= 1) {
-            int castLibCount = provider.getCastLibCount();
-            for (int cl = 1; cl <= castLibCount; cl++) {
-                if (provider.isRegistryVisibleMember(cl, absValue)) {
-                    return true;
-                }
-            }
+        int namedSlot = resolveRawRegistrySlotByName(provider, memberName, absValue);
+        if (namedSlot != 0) {
+            return sign * namedSlot;
         }
-        return false;
+
+        int resolvedRawSlot = provider.resolveRawRegistryMemberSlot(memberName, absValue);
+        if (resolvedRawSlot != 0) {
+            return sign * resolvedRawSlot;
+        }
+
+        return slotValue;
+    }
+
+    private static int resolveRawRegistrySlotByName(CastLibProvider provider, String memberName, int memberNumber) {
+        if (provider == null || memberName == null || memberName.isEmpty() || memberNumber <= 0) {
+            return 0;
+        }
+        Datum ref = provider.getRegistryMemberByName(0, memberName);
+        boolean registryResolved = ref instanceof Datum.CastMemberRef;
+        if (!(ref instanceof Datum.CastMemberRef cmr)) {
+            ref = provider.getMemberByName(0, memberName);
+        }
+        if (!(ref instanceof Datum.CastMemberRef cmr)
+                || cmr.castLibNum() < 1
+                || cmr.memberNum() != memberNumber) {
+            return 0;
+        }
+        if (!provider.memberExists(cmr.castLibNum(), cmr.memberNum())) {
+            return 0;
+        }
+        if (!registryResolved
+                && !provider.isRegistryVisibleMember(cmr.castLibNum(), cmr.memberNum())
+                && !isBootstrapDefinitionMember(provider, cmr.castLibNum(), cmr.memberNum())) {
+            return 0;
+        }
+        return SlotId.of(cmr.castLibNum(), cmr.memberNum()).value();
     }
 
     private static int resolveRememberedAliasSlot(
@@ -259,19 +295,17 @@ public final class MemberRegistryMethodDispatcher {
             return 0;
         }
 
-        synchronized (persistentAliasTextByRegistry) {
-            Map<Integer, String> aliasTexts = persistentAliasTextByRegistry.get(instance);
-            if (aliasTexts == null || aliasTexts.isEmpty()) {
-                return 0;
-            }
-            for (var entry : aliasTexts.entrySet()) {
-                int castLibNumber = entry.getKey();
-                String aliasText = entry.getValue();
-                int resolved = resolveAliasSlot(aliasText, memberName,
-                        targetName -> resolveTargetMemberNumber(registry, targetName, castLibNumber));
-                if (resolved != 0) {
-                    return resolved;
-                }
+        Map<AliasSource, RememberedAliasText> aliasTexts = persistentAliasTextByRegistry.get(instance);
+        if (aliasTexts == null || aliasTexts.isEmpty()) {
+            return 0;
+        }
+        for (var entry : aliasTexts.entrySet()) {
+            AliasSource source = entry.getKey();
+            RememberedAliasText remembered = entry.getValue();
+            int resolved = resolveAliasSlot(remembered.text(), memberName,
+                    targetName -> resolveAliasTargetMemberNumber(registry, targetName, source.castLibNumber()));
+            if (resolved != 0) {
+                return resolved;
             }
         }
         return 0;
@@ -282,20 +316,16 @@ public final class MemberRegistryMethodDispatcher {
             return 0;
         }
         int imported = 0;
-        synchronized (persistentAliasTextByRegistry) {
-            for (var entry : persistentAliasTextByRegistry.entrySet()) {
-                imported += reapplyAliasesForRegistryOwner(entry.getKey(), entry.getValue(), castLibNumber);
-            }
+        for (var entry : persistentAliasTextByRegistry.entrySet()) {
+            imported += reapplyAliasesForRegistryOwner(entry.getKey(), entry.getValue(), castLibNumber);
         }
         return imported;
     }
 
     public static int reapplyAllPersistentAliases() {
         int imported = 0;
-        synchronized (persistentAliasTextByRegistry) {
-            for (var entry : persistentAliasTextByRegistry.entrySet()) {
-                imported += reapplyAliasesForRegistryOwner(entry.getKey(), entry.getValue(), 0);
-            }
+        for (var entry : persistentAliasTextByRegistry.entrySet()) {
+            imported += reapplyAliasesForRegistryOwner(entry.getKey(), entry.getValue(), 0);
         }
         return imported;
     }
@@ -305,12 +335,18 @@ public final class MemberRegistryMethodDispatcher {
     }
 
     static int applyAliasMappings(Datum.PropList registry, String aliasText, Function<String, Integer> resolver) {
+        return applyAliasMappings(registry, aliasText, resolver, null);
+    }
+
+    private static int applyAliasMappings(Datum.PropList registry, String aliasText,
+                                          Function<String, Integer> resolver,
+                                          Map<String, Integer> importedAliases) {
         if (registry == null || aliasText == null || aliasText.isEmpty() || resolver == null) {
             return 0;
         }
 
         int imported = 0;
-        for (String rawLine : aliasText.split(ALIAS_LINE_SPLIT)) {
+        for (String rawLine : splitLines(aliasText)) {
             AliasLine aliasLine = parseAliasLine(rawLine);
             if (aliasLine == null || aliasLine.targetName().isEmpty()) {
                 continue;
@@ -319,10 +355,14 @@ public final class MemberRegistryMethodDispatcher {
             if (resolvedNumber <= 0) {
                 continue;
             }
+            int aliasSlot = aliasLine.mirrored() ? -resolvedNumber : resolvedNumber;
             registry.putTyped(
                     aliasLine.aliasName(),
                     false,
-                    Datum.of(aliasLine.mirrored() ? -resolvedNumber : resolvedNumber));
+                    Datum.of(aliasSlot));
+            if (importedAliases != null) {
+                importedAliases.put(aliasLine.aliasName(), aliasSlot);
+            }
             imported++;
         }
         return imported;
@@ -333,7 +373,7 @@ public final class MemberRegistryMethodDispatcher {
             return 0;
         }
 
-        for (String rawLine : aliasText.split(ALIAS_LINE_SPLIT)) {
+        for (String rawLine : splitLines(aliasText)) {
             AliasLine aliasLine = parseAliasLine(rawLine);
             if (aliasLine == null || !aliasLine.aliasName().equalsIgnoreCase(requestedAlias)) {
                 continue;
@@ -350,65 +390,66 @@ public final class MemberRegistryMethodDispatcher {
         return 0;
     }
 
-    private static void rememberAliasText(Datum.ScriptInstance instance, int castLibNumber, String aliasText) {
-        if (instance == null || castLibNumber <= 0 || aliasText == null || aliasText.isEmpty()) {
+    private static void rememberAliasText(Datum.ScriptInstance instance, AliasSource source,
+                                          String aliasText, Map<String, Integer> importedAliases) {
+        if (instance == null || source == null || source.castLibNumber() <= 0
+                || aliasText == null || aliasText.isEmpty()) {
             return;
         }
-        synchronized (persistentAliasTextByRegistry) {
-            Map<Integer, String> aliasTexts = persistentAliasTextByRegistry
-                    .computeIfAbsent(instance, ignored -> new java.util.LinkedHashMap<>());
-            aliasTexts.put(castLibNumber, aliasText);
+        Map<AliasSource, RememberedAliasText> aliasTexts = persistentAliasTextByRegistry.get(instance);
+        if (aliasTexts == null) {
+            aliasTexts = new java.util.LinkedHashMap<>();
+            persistentAliasTextByRegistry.put(instance, aliasTexts);
+        }
+        aliasTexts.put(source, new RememberedAliasText(aliasText,
+                importedAliases != null ? new java.util.LinkedHashMap<>(importedAliases) : Map.of()));
+    }
+
+    private static void removeAliasesFromSource(Datum.ScriptInstance instance,
+                                                Datum.PropList registry,
+                                                AliasSource source) {
+        if (instance == null || registry == null || source == null) {
+            return;
+        }
+        Map<AliasSource, RememberedAliasText> aliasesBySource = persistentAliasTextByRegistry.get(instance);
+        if (aliasesBySource == null) {
+            return;
+        }
+        RememberedAliasText remembered = aliasesBySource.get(source);
+        if (remembered == null || remembered.importedAliases().isEmpty()) {
+            return;
+        }
+        for (var alias : remembered.importedAliases().entrySet()) {
+            Datum current = registry.get(alias.getKey(), false);
+            if (current != null && !current.isVoid() && current.toInt() == alias.getValue()) {
+                registry.remove(alias.getKey(), false);
+            }
         }
     }
 
-    private static void refreshAvailableAliasTexts(Datum.ScriptInstance instance) {
-        if (instance == null) {
-            return;
-        }
-
-        CastLibProvider provider = CastLibProvider.getProvider();
-        if (provider == null) {
-            return;
-        }
-
-        int castLibCount = provider.getCastLibCount();
-        for (int castLibNumber = 1; castLibNumber <= castLibCount; castLibNumber++) {
-            Datum aliasMember = provider.getMemberByName(castLibNumber, MEMBER_ALIAS_INDEX);
-            if (!(aliasMember instanceof Datum.CastMemberRef)) {
-                forgetAliasText(instance, castLibNumber);
+    private static List<String> splitLines(String text) {
+        ArrayList<String> lines = new ArrayList<>();
+        int start = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            if (ch != '\r' && ch != '\n') {
                 continue;
             }
-
-            Datum aliasField = provider.getFieldDatum(MEMBER_ALIAS_INDEX, castLibNumber);
-            if (aliasField == null || aliasField.isVoid()) {
-                forgetAliasText(instance, castLibNumber);
-                continue;
+            lines.add(text.substring(start, i));
+            if (ch == '\r' && i + 1 < text.length() && text.charAt(i + 1) == '\n') {
+                i++;
             }
-
-            String aliasText = aliasField.toStr();
-            if (aliasText == null || aliasText.isEmpty()) {
-                forgetAliasText(instance, castLibNumber);
-                continue;
-            }
-
-            rememberAliasText(instance, castLibNumber, aliasText);
+            start = i + 1;
         }
-    }
-
-    private static void forgetAliasText(Datum.ScriptInstance instance, int castLibNumber) {
-        synchronized (persistentAliasTextByRegistry) {
-            Map<Integer, String> aliasTexts = persistentAliasTextByRegistry.get(instance);
-            if (aliasTexts != null) {
-                aliasTexts.remove(castLibNumber);
-            }
-        }
+        lines.add(text.substring(start));
+        return lines;
     }
 
     private static int reapplyAliasesForRegistryOwner(
             Datum.ScriptInstance registryOwner,
-            Map<Integer, String> aliasesByCastLib,
+            Map<AliasSource, RememberedAliasText> aliasesBySource,
             int onlyCastLibNumber) {
-        if (registryOwner == null || aliasesByCastLib == null || aliasesByCastLib.isEmpty()) {
+        if (registryOwner == null || aliasesBySource == null || aliasesBySource.isEmpty()) {
             return 0;
         }
 
@@ -418,19 +459,23 @@ public final class MemberRegistryMethodDispatcher {
         }
 
         int imported = 0;
-        for (var aliasEntry : aliasesByCastLib.entrySet()) {
-            int castLibNumber = aliasEntry.getKey();
-            if (onlyCastLibNumber > 0 && castLibNumber != onlyCastLibNumber) {
+        for (var aliasEntry : aliasesBySource.entrySet()) {
+            AliasSource source = aliasEntry.getKey();
+            if (onlyCastLibNumber > 0 && source.castLibNumber() != onlyCastLibNumber) {
                 continue;
             }
-            String aliasText = aliasEntry.getValue();
+            removeAliasesFromSource(registryOwner, registry, source);
+            String aliasText = aliasEntry.getValue().text();
             if (aliasText == null || aliasText.isEmpty()) {
                 continue;
             }
+            Map<String, Integer> importedAliases = new java.util.LinkedHashMap<>();
             imported += applyAliasMappings(
                     registry,
                     aliasText,
-                    targetName -> resolveTargetMemberNumber(registry, targetName, castLibNumber));
+                    targetName -> resolveAliasTargetMemberNumber(registry, targetName, source.castLibNumber()),
+                    importedAliases);
+            aliasesBySource.put(source, new RememberedAliasText(aliasText, importedAliases));
         }
         return imported;
     }
@@ -463,12 +508,32 @@ public final class MemberRegistryMethodDispatcher {
         return resolveTargetMemberNumber(registry, targetName, 0);
     }
 
+    private static int resolveAliasTargetMemberNumber(Datum.PropList registry, String targetName, int sourceCastLibNumber) {
+        Datum existing = registry.get(targetName, false);
+        if (existing != null && !existing.isVoid()) {
+            int existingSlot = existing.toInt();
+            int normalizedSlot = Math.abs(normalizeRegisteredRegistrySlot(targetName, existingSlot));
+            if (normalizedSlot != 0) {
+                if (normalizedSlot != Math.abs(existingSlot)) {
+                    registry.putTyped(targetName, false, Datum.of(normalizedSlot));
+                }
+                return normalizedSlot;
+            }
+            registry.remove(targetName, false);
+        }
+        return resolveTargetMemberNumber(registry, targetName, sourceCastLibNumber);
+    }
+
     private static int resolveTargetMemberNumber(Datum.PropList registry, String targetName, int sourceCastLibNumber) {
         Datum existing = registry.get(targetName);
         if (existing != null && !existing.isVoid()) {
-            int slotValue = Math.abs(existing.toInt());
-            if (isRegisteredRegistrySlotLive(slotValue)) {
-                return slotValue;
+            int existingSlot = existing.toInt();
+            int normalizedSlot = Math.abs(normalizeRegisteredRegistrySlot(targetName, existingSlot));
+            if (normalizedSlot != 0) {
+                if (normalizedSlot != Math.abs(existingSlot)) {
+                    registry.putTyped(targetName, false, Datum.of(normalizedSlot));
+                }
+                return normalizedSlot;
             }
             registry.remove(targetName);
         }

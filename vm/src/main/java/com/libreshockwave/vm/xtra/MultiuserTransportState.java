@@ -66,7 +66,7 @@ public final class MultiuserTransportState {
         List<MultiuserNetBridge.NetMessage> out = new ArrayList<>();
         for (MultiuserTransportCodec.SmusMessage msg : result.messages()) {
             out.add(new MultiuserNetBridge.NetMessage(
-                    msg.errorCode(), msg.senderID(), msg.subject(), new Datum.Str(msg.content())));
+                    msg.errorCode(), msg.senderID(), msg.subject(), contentDatum(msg)));
         }
 
         String remainder = result.consumedChars() < combined.length()
@@ -90,5 +90,12 @@ public final class MultiuserTransportState {
                 senderID != null ? senderID : "",
                 subject != null ? subject : "",
                 new Datum.Str(content != null ? content : ""));
+    }
+
+    private static Datum contentDatum(MultiuserTransportCodec.SmusMessage msg) {
+        return switch (msg.contentType()) {
+            case 0, MultiuserTransportCodec.SMUS_STRING -> new Datum.Str(msg.content());
+            default -> new Datum.BinaryData(msg.content());
+        };
     }
 }

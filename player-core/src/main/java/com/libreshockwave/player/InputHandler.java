@@ -85,7 +85,7 @@ public class InputHandler {
                 if (sprite != null) {
                     int memberNum = sprite.getEffectiveCastMember();
                     if (memberNum > 0) {
-                        CastMember member = castLibManager.resolveMember(
+                        CastMember member = castLibManager.getDynamicMember(
                                 sprite.getEffectiveCastLib(), memberNum);
                         if (isEditableTextLikeSprite(sprite, member)) {
                             int spriteX = sprite.getLocH() - member.getRegPointX();
@@ -194,11 +194,11 @@ public class InputHandler {
         resolveRolloverAtCurrentMouse();
 
         // Dispatch mouseEnter/mouseLeave/mouseWithin based on current rollover sprite
-        dispatchRolloverEvents();
+        boolean hadRolloverEvents = dispatchRolloverEvents();
 
         // Bump sprite revision so WASM SoftwareRenderer re-renders after input
         // (input handlers may change member.text or other visual properties)
-        if (hadEvents) {
+        if (hadEvents || hadRolloverEvents) {
             stageRenderer.getSpriteRegistry().bumpRevision();
         }
 
@@ -211,16 +211,19 @@ public class InputHandler {
     /**
      * Dispatch mouseEnter, mouseLeave, and mouseWithin events based on rollover tracking.
      */
-    private void dispatchRolloverEvents() {
+    private boolean dispatchRolloverEvents() {
         EventDispatcher dispatcher = eventDispatcherSupplier.get();
         int currentRollover = inputState.getRolloverSprite();
+        boolean dispatched = false;
 
         if (currentRollover != previousRolloverSprite) {
             if (previousRolloverSprite > 0) {
                 dispatcher.dispatchSpriteEvent(previousRolloverSprite, PlayerEvent.MOUSE_LEAVE, List.of());
+                dispatched = true;
             }
             if (currentRollover > 0) {
                 dispatcher.dispatchSpriteEvent(currentRollover, PlayerEvent.MOUSE_ENTER, List.of());
+                dispatched = true;
             }
             previousRolloverSprite = currentRollover;
         }
@@ -228,7 +231,9 @@ public class InputHandler {
         // mouseWithin fires every frame while mouse is over a sprite
         if (currentRollover > 0) {
             dispatcher.dispatchSpriteEvent(currentRollover, PlayerEvent.MOUSE_WITHIN, List.of());
+            dispatched = true;
         }
+        return dispatched;
     }
 
     /**
@@ -244,7 +249,7 @@ public class InputHandler {
                 // Director D6+: if the previously clicked sprite is different from
                 // the current one, send mouseUpOutSide to the old sprite (ScummVM behavior).
                 if (pressedEventSprite > 0 && pressedEventSprite != hitSprite) {
-                    dispatcher.dispatchSpriteEvent(pressedEventSprite, "mouseUpOutSide", List.of());
+                    dispatchSpriteEventWithTrace(dispatcher, pressedEventSprite, "mouseUpOutSide");
                 }
                 // Track the visual sprite for Director's "the clickOn" while
                 // keeping the handler target separate for event-broker overlays.
@@ -256,9 +261,9 @@ public class InputHandler {
                 autoFocusEditableField(clickOnSprite, event.stageX(), event.stageY());
                 dispatcher.resetEventStopped();
                 if (hitSprite > 0) {
-                    dispatcher.dispatchSpriteEvent(hitSprite, PlayerEvent.MOUSE_DOWN, List.of());
+                    dispatchSpriteEventWithTrace(dispatcher, hitSprite, PlayerEvent.MOUSE_DOWN);
                 }
-                dispatcher.dispatchFrameAndMovieEvent(PlayerEvent.MOUSE_DOWN, List.of());
+                dispatchFrameAndMovieEventWithTrace(dispatcher, PlayerEvent.MOUSE_DOWN);
             }
             case MOUSE_UP -> {
                 int pressedSprite = pressedEventSprite;
@@ -270,7 +275,7 @@ public class InputHandler {
                 if (releaseSprite > 0
                         && releaseSprite != pressedSprite
                         && dispatcher.spriteHasHandler(releaseSprite, PlayerEvent.MOUSE_UP.getHandlerName())) {
-                    dispatcher.dispatchSpriteEvent(releaseSprite, PlayerEvent.MOUSE_UP, List.of());
+                    dispatchSpriteEventWithTrace(dispatcher, releaseSprite, PlayerEvent.MOUSE_UP);
                     releaseSpriteHandled = true;
                 }
                 // Director UI drag helpers use an invisible high-z event agent
@@ -280,17 +285,17 @@ public class InputHandler {
                 if (stoppedByReleaseSprite) {
                     // Nothing else in the pressed-sprite chain should see this mouseUp.
                 } else if (pressedSprite > 0 && releaseSprite == pressedSprite) {
-                    dispatcher.dispatchSpriteEvent(pressedSprite, PlayerEvent.MOUSE_UP, List.of());
+                    dispatchSpriteEventWithTrace(dispatcher, pressedSprite, PlayerEvent.MOUSE_UP);
                 } else if (pressedSprite > 0
                         && dispatcher.spriteHasHandler(pressedSprite, "mouseUpOutSide")) {
-                    dispatcher.dispatchSpriteEvent(pressedSprite, "mouseUpOutSide", List.of());
+                    dispatchSpriteEventWithTrace(dispatcher, pressedSprite, "mouseUpOutSide");
                 } else if (pressedSprite > 0
                         && dispatcher.spriteHasHandler(pressedSprite, PlayerEvent.MOUSE_UP.getHandlerName())) {
-                    dispatcher.dispatchSpriteEvent(pressedSprite, PlayerEvent.MOUSE_UP, List.of());
+                    dispatchSpriteEventWithTrace(dispatcher, pressedSprite, PlayerEvent.MOUSE_UP);
                 } else if (releaseSprite > 0 && !releaseSpriteHandled) {
-                    dispatcher.dispatchSpriteEvent(releaseSprite, PlayerEvent.MOUSE_UP, List.of());
+                    dispatchSpriteEventWithTrace(dispatcher, releaseSprite, PlayerEvent.MOUSE_UP);
                 }
-                dispatcher.dispatchFrameAndMovieEvent(PlayerEvent.MOUSE_UP, List.of());
+                dispatchFrameAndMovieEventWithTrace(dispatcher, PlayerEvent.MOUSE_UP);
                 pressedEventSprite = 0;
             }
             case RIGHT_MOUSE_DOWN -> {
@@ -338,7 +343,7 @@ public class InputHandler {
                 int castLibNum = sprite.getEffectiveCastLib();
                 int memberNum = sprite.getEffectiveCastMember();
                 if (memberNum > 0) {
-                    CastMember member = castLibManager.resolveMember(castLibNum, memberNum);
+                    CastMember member = castLibManager.getDynamicMember(castLibNum, memberNum);
                     if (isEditableTextLikeSprite(sprite, member)) {
                         inputState.setKeyboardFocusSprite(hitChannel);
                         int spriteX = sprite.getLocH() - member.getRegPointX();
@@ -362,11 +367,7 @@ public class InputHandler {
     }
 
     private int hitTest(int stageX, int stageY) {
-        return HitTester.hitTest(
-                stageRenderer,
-                currentFrameSupplier.getAsInt(),
-                stageX,
-                stageY);
+        return hitTestExact(stageX, stageY);
     }
 
     /*private List<Integer> hitTestAll(int stageX, int stageY) {
@@ -484,6 +485,42 @@ public class InputHandler {
                 + describeHitStacks(stageX, stageY, dispatcher));
     }
 
+    private void dispatchSpriteEventWithTrace(EventDispatcher dispatcher, int channel, PlayerEvent event) {
+        dispatchSpriteEventWithTrace(dispatcher, channel, event.getHandlerName());
+    }
+
+    private void dispatchSpriteEventWithTrace(EventDispatcher dispatcher, int channel, String eventName) {
+        boolean hasHandler = dispatcher != null && channel > 0 && dispatcher.spriteHasHandler(channel, eventName);
+        traceInputDispatch("sprite", eventName, channel, hasHandler, dispatcher);
+        if (dispatcher != null) {
+            dispatcher.dispatchSpriteEvent(channel, eventName, List.of());
+        }
+        traceInputDispatch("sprite-done", eventName, channel, hasHandler, dispatcher);
+    }
+
+    private void dispatchFrameAndMovieEventWithTrace(EventDispatcher dispatcher, PlayerEvent event) {
+        traceInputDispatch("frame", event.getHandlerName(), 0, true, dispatcher);
+        if (dispatcher != null) {
+            dispatcher.dispatchFrameAndMovieEvent(event, List.of());
+        }
+        traceInputDispatch("frame-done", event.getHandlerName(), 0, true, dispatcher);
+    }
+
+    private void traceInputDispatch(String phase, String eventName, int channel,
+                                    boolean hasHandler, EventDispatcher dispatcher) {
+        if (!DebugConfig.isDebugPlaybackEnabled()) {
+            return;
+        }
+        boolean stopped = dispatcher != null && dispatcher.isEventStopped();
+        System.out.println("[InputDispatch] " + phase
+                + " event=" + eventName
+                + " ch=" + channel
+                + " hasHandler=" + hasHandler
+                + " stopped=" + stopped
+                + " clickOn=" + inputState.getClickOnSprite()
+                + " rollover=" + inputState.getRolloverSprite());
+    }
+
     private String describeHitStacks(int stageX, int stageY, EventDispatcher dispatcher) {
         if (dispatcher == null) {
             return "";
@@ -526,7 +563,7 @@ public class InputHandler {
             if (s == null) continue;
             int memberNum = s.getEffectiveCastMember();
             if (memberNum <= 0) continue;
-            CastMember m = castLibManager.resolveMember(s.getEffectiveCastLib(), memberNum);
+            CastMember m = castLibManager.getDynamicMember(s.getEffectiveCastLib(), memberNum);
             if (isEditableTextLikeSprite(s, m)) {
                 editableChannels.add(ch);
             }
@@ -543,7 +580,7 @@ public class InputHandler {
         }
         int nextChannel = editableChannels.get(next);
         inputState.setKeyboardFocusSprite(nextChannel);
-        CastMember nextMember = castLibManager.resolveMember(
+        CastMember nextMember = castLibManager.getDynamicMember(
                 stageRenderer.getSpriteRegistry().get(nextChannel).getEffectiveCastLib(),
                 stageRenderer.getSpriteRegistry().get(nextChannel).getEffectiveCastMember());
         if (nextMember != null) {
@@ -566,7 +603,7 @@ public class InputHandler {
         int memberNum = sprite.getEffectiveCastMember();
         if (memberNum <= 0) return;
 
-        CastMember member = castLibManager.resolveMember(castLibNum, memberNum);
+        CastMember member = castLibManager.getDynamicMember(castLibNum, memberNum);
         if (member == null) return;
 
         if (!isEditableTextLikeSprite(sprite, member)) return;
@@ -638,7 +675,7 @@ public class InputHandler {
         int memberNum = sprite.getEffectiveCastMember();
         if (memberNum <= 0) return null;
 
-        CastMember member = castLibManager.resolveMember(castLibNum, memberNum);
+        CastMember member = castLibManager.getDynamicMember(castLibNum, memberNum);
         if (!isEditableTextLikeSprite(sprite, member)) return null;
 
         return new Object[]{sprite, member};
@@ -776,7 +813,7 @@ public class InputHandler {
     }
 
     private static boolean isEditableTextLikeSprite(SpriteState sprite, CastMember member) {
-        if (member == null || !member.isEditable()) {
+        if (member == null || !(member.isEditable() || (sprite != null && sprite.isEditable()))) {
             return false;
         }
         MemberType type = member.getMemberType();
@@ -829,7 +866,7 @@ public class InputHandler {
         int memberNum = sprite.getEffectiveCastMember();
         if (memberNum <= 0) return;
 
-        CastMember member = castLibManager.resolveMember(castLibNum, memberNum);
+        CastMember member = castLibManager.getDynamicMember(castLibNum, memberNum);
         if (!isEditableTextLikeSprite(sprite, member)) return;
 
         String text = member.getTextContent();
@@ -863,7 +900,7 @@ public class InputHandler {
         int memberNum = sprite.getEffectiveCastMember();
         if (memberNum <= 0) return null;
 
-        CastMember member = castLibManager.resolveMember(castLibNum, memberNum);
+        CastMember member = castLibManager.getDynamicMember(castLibNum, memberNum);
         if (member == null) return null;
 
         String text = member.getTextContent();
@@ -893,7 +930,7 @@ public class InputHandler {
         int memberNum = sprite.getEffectiveCastMember();
         if (memberNum <= 0) return null;
 
-        CastMember member = castLibManager.resolveMember(castLibNum, memberNum);
+        CastMember member = castLibManager.getDynamicMember(castLibNum, memberNum);
         if (!isEditableTextLikeSprite(sprite, member)) return null;
 
         String text = member.getTextContent();
@@ -936,7 +973,7 @@ public class InputHandler {
         int memberNum = sprite.getEffectiveCastMember();
         if (memberNum <= 0) return;
 
-        CastMember member = castLibManager.resolveMember(castLibNum, memberNum);
+        CastMember member = castLibManager.getDynamicMember(castLibNum, memberNum);
         if (member == null) return;
 
         String text = member.getTextContent();

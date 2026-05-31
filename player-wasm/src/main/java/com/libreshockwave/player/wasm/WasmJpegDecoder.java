@@ -56,6 +56,10 @@ final class WasmJpegDecoder {
         currentData = null;
     }
 
+    static void releaseTransientData() {
+        currentData = null;
+    }
+
     static void resetForTest() {
         reset();
     }

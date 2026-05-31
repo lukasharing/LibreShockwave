@@ -5,6 +5,7 @@ import com.libreshockwave.vm.DebugConfig;
 import com.libreshockwave.vm.LingoVM;
 import com.libreshockwave.vm.builtin.flow.ControlFlowBuiltins;
 import com.libreshockwave.vm.datum.Datum;
+import com.libreshockwave.vm.datum.DatumFormatter;
 import com.libreshockwave.vm.datum.LingoException;
 import com.libreshockwave.vm.builtin.cast.CastLibProvider;
 import com.libreshockwave.vm.opcode.ExecutionContext;
@@ -28,13 +29,21 @@ public final class ScriptInstanceMethodDispatcher {
         String method = LingoVM.normalizeLookupName(methodName);
         LingoVM currentVm = LingoVM.getCurrentVM();
         if (shouldDeferNumericCloseThread(currentVm, method, args)) {
+            List<Datum> deferredArgs = args;
             currentVm.deferTask(() -> ControlFlowBuiltins.callHandlerOnInstance(
                     currentVm,
                     instance,
                     methodName,
-                    args));
+                    deferredArgs));
             return Datum.TRUE;
         }
+
+        MemberRegistryMethodDispatcher.DispatchResult registryResult =
+                MemberRegistryMethodDispatcher.dispatch(instance, methodName, args);
+        if (registryResult.handled()) {
+            return registryResult.value();
+        }
+
         switch (method) {
             case "setat" -> {
                 // Director scripts use setAt(instance, #prop, value) as a generic
@@ -44,6 +53,7 @@ public final class ScriptInstanceMethodDispatcher {
                 if (args.size() >= 2) {
                     String propName = getPropertyName(args.get(0));
                     Datum value = args.get(1);
+                    traceInstancePropertyWrite("setAt", instance, propName, value);
                     AncestorChainWalker.setProperty(instance, propName, value);
                 }
                 return Datum.VOID;
@@ -54,6 +64,7 @@ public final class ScriptInstanceMethodDispatcher {
                 if (args.size() >= 2) {
                     String propName = getPropertyName(args.get(0));
                     Datum value = args.get(1);
+                    traceInstancePropertyWrite("setaProp", instance, propName, value);
                     AncestorChainWalker.setProperty(instance, propName, value);
                 }
                 return Datum.VOID;
@@ -65,22 +76,28 @@ public final class ScriptInstanceMethodDispatcher {
                     // Simple case: set property directly (walks ancestor chain)
                     String propName = getPropertyName(args.get(0));
                     Datum value = args.get(1);
+                    traceInstancePropertyWrite("setProp", instance, propName, value);
                     AncestorChainWalker.setProperty(instance, propName, value);
                 } else if (args.size() == 3) {
-                    // Nested case: me.setProp(#pItemList, key, value)
+                    // Nested case: me.setProp(#propertyName, key, value)
                     // Get or create the property, then set a sub-property on it
                     String localPropName = getPropertyName(args.get(0));
                     Datum subKey = args.get(1);
                     Datum value = args.get(2);
 
-                    Datum localProp = instance.properties().get(localPropName);
+                    Datum.ScriptInstance owner = AncestorChainWalker.findOwner(instance, localPropName);
+                    if (owner == null) {
+                        owner = instance;
+                    }
+                    Datum localProp = getDirectCaseInsensitiveProperty(owner, localPropName);
 
                     // If the property doesn't exist or is VOID, create an empty PropList
                     if (localProp == null || localProp.isVoid()) {
                         localProp = new Datum.PropList();
-                        instance.properties().put(localPropName, localProp);
+                        putDirectCaseInsensitiveProperty(owner, localPropName, localProp);
                     }
 
+                    traceInstanceNestedPropertyWrite(instance, owner, localPropName, subKey, value);
                     setNestedProperty(localProp, subKey, value);
                 }
                 return Datum.VOID;
@@ -111,7 +128,15 @@ public final class ScriptInstanceMethodDispatcher {
 
                 // If there's a second argument, do nested lookup
                 if (args.size() > 1) {
-                    return getNestedProperty(localProp, args.get(1));
+                    Datum nested = getNestedProperty(localProp, args.get(1));
+                    if (nested.isVoid() && localProp instanceof Datum.PropList) {
+                        Datum fallback = getNestedPropertyFromLaterAncestor(instance, localPropName,
+                                args.get(1), localProp);
+                        if (!fallback.isVoid()) {
+                            return fallback;
+                        }
+                    }
+                    return nested;
                 }
                 return localProp;
             }
@@ -152,16 +177,8 @@ public final class ScriptInstanceMethodDispatcher {
                 // Returns TRUE (1) if found, FALSE (0) if not
                 if (args.isEmpty()) return Datum.ZERO;
                 String handlerName = args.get(0).toKeyName();
-                CastLibProvider provider = CastLibProvider.getProvider();
-                if (provider != null) {
-                    Datum.ScriptRef scriptRef = getScriptRefFromInstance(instance);
-                    if (scriptRef != null) {
-                        CastLibProvider.HandlerLocation loc = provider.findHandlerInScript(
-                                scriptRef.castLibNum(), scriptRef.memberNum(), handlerName);
-                        return loc != null && loc.handler() != null ? Datum.TRUE : Datum.FALSE;
-                    }
-                }
-                return Datum.ZERO;
+                boolean found = AncestorChainWalker.hasHandler(instance, handlerName);
+                return found ? Datum.TRUE : Datum.FALSE;
             }
         }
 
@@ -174,6 +191,7 @@ public final class ScriptInstanceMethodDispatcher {
         // This is for non-built-in methods like create(), dump(), etc.
         CastLibProvider provider = CastLibProvider.getProvider();
         if (provider != null) {
+            traceInstanceMethodDispatch(currentVm, instance, methodName, args);
             Datum.ScriptInstance current = instance;
             for (int i = 0; i < AncestorChainWalker.MAX_ANCESTOR_DEPTH; i++) {
                 Datum.ScriptRef scriptRef = getScriptRefFromInstance(current);
@@ -203,16 +221,7 @@ public final class ScriptInstanceMethodDispatcher {
             // Director doesn't fall back to global handlers for OBJ_CALL on instances
         }
 
-        // FOURTH: Registry-style lookups are a compatibility fallback for script
-        // instances that expose pAllMemNumList but do not implement their own
-        // getmemnum/exists/getmember handlers in Lingo.
-        MemberRegistryMethodDispatcher.DispatchResult bridgeResult =
-                MemberRegistryMethodDispatcher.dispatch(instance, methodName, args);
-        if (bridgeResult.handled()) {
-            return bridgeResult.value();
-        }
-
-        // FIFTH: Check if the method is getting a property (walk ancestor chain)
+        // THIRD: Check if the method is getting a property (walk ancestor chain)
         String prop = method;
         Datum propValue = AncestorChainWalker.getProperty(instance, prop);
         if (propValue != null && !propValue.isVoid()) {
@@ -254,27 +263,72 @@ public final class ScriptInstanceMethodDispatcher {
         };
     }
 
+    private static Datum getNestedPropertyFromLaterAncestor(Datum.ScriptInstance instance, String propName,
+                                                            Datum subKey, Datum firstProperty) {
+        boolean skippedFirst = false;
+        Datum.ScriptInstance current = instance;
+        for (int i = 0; i < AncestorChainWalker.MAX_ANCESTOR_DEPTH; i++) {
+            Datum prop = getDirectCaseInsensitiveProperty(current, propName);
+            if (prop != null) {
+                if (!skippedFirst && prop == firstProperty) {
+                    skippedFirst = true;
+                } else {
+                    Datum nested = getNestedProperty(prop, subKey);
+                    if (!nested.isVoid()) {
+                        return nested;
+                    }
+                }
+            }
+
+            Datum ancestor = current.properties().get(Datum.PROP_ANCESTOR);
+            if (ancestor instanceof Datum.ScriptInstance ancestorInstance) {
+                current = ancestorInstance;
+            } else {
+                break;
+            }
+        }
+        return Datum.VOID;
+    }
+
+    private static Datum getDirectCaseInsensitiveProperty(Datum.ScriptInstance instance, String propName) {
+        Datum exact = instance.properties().get(propName);
+        if (exact != null) {
+            return exact;
+        }
+        for (var entry : instance.properties().entrySet()) {
+            if (entry.getKey().equalsIgnoreCase(propName)) {
+                return entry.getValue();
+            }
+        }
+        return null;
+    }
+
+    private static void putDirectCaseInsensitiveProperty(Datum.ScriptInstance instance,
+                                                         String propName,
+                                                         Datum value) {
+        String actualKey = propName;
+        if (!instance.properties().containsKey(propName)) {
+            for (String key : instance.properties().keySet()) {
+                if (key.equalsIgnoreCase(propName)) {
+                    actualKey = key;
+                    break;
+                }
+            }
+        }
+        instance.properties().put(actualKey, value);
+    }
+
     private static Datum getNestedProperty(Datum container, Datum subKey) {
         if (container instanceof Datum.List list) {
             // List: use index (1-based)
             int index = subKey.toInt() - 1;
             if (index >= 0 && index < list.items().size()) {
-                return Datum.valueOrVoid(list.items().get(index));
+                return list.items().get(index);
             }
             return Datum.VOID;
         }
         if (container instanceof Datum.PropList pl) {
-            // Integer subKey: positional access (1-based), like List
-            if (subKey instanceof Datum.Int || subKey instanceof Datum.Float) {
-                int index = subKey.toInt() - 1;
-                if (index >= 0 && index < pl.size()) {
-                    return pl.getValue(index);
-                }
-                return Datum.VOID;
-            }
-            // PropList: look up by key (case-insensitive)
-            Datum found = pl.get(getPropertyName(subKey));
-            return found != null ? found : Datum.VOID;
+            return pl.getAtOrDefault(subKey, Datum.VOID);
         }
         // Cannot get sub-property from non-list/proplist
         return Datum.VOID;
@@ -288,22 +342,81 @@ public final class ScriptInstanceMethodDispatcher {
                 while (list.items().size() <= index) {
                     list.items().add(Datum.VOID);
                 }
-                list.items().set(index, Datum.valueOrVoid(value));
+                list.items().set(index, value);
             }
             return;
         }
         if (container instanceof Datum.PropList pl) {
-            // Integer subKey: positional set (1-based)
             if (subKey instanceof Datum.Int || subKey instanceof Datum.Float) {
                 int index = subKey.toInt() - 1;
                 if (index >= 0 && index < pl.size()) {
                     pl.setValue(index, value);
+                } else {
+                    pl.putTyped(subKey, value);
                 }
                 return;
             }
-            // PropList: set by key
-            pl.put(getPropertyName(subKey), subKey instanceof Datum.Symbol, value);
+            pl.put(subKey, value);
         }
+    }
+
+    private static void traceInstancePropertyWrite(String op, Datum.ScriptInstance receiver,
+                                                   String propName, Datum value) {
+        if (!DebugConfig.isDebugPlaybackEnabled()) {
+            return;
+        }
+        Datum.ScriptInstance owner = AncestorChainWalker.findOwner(receiver, propName);
+        System.out.println("[TRACE] ScriptInstance." + op
+                + " receiver=" + describeInstance(receiver)
+                + " owner=" + describeInstance(owner != null ? owner : receiver)
+                + " prop=#" + propName
+                + " value=" + DatumFormatter.formatBrief(value));
+    }
+
+    private static void traceInstanceNestedPropertyWrite(Datum.ScriptInstance receiver,
+                                                         Datum.ScriptInstance owner,
+                                                         String propName,
+                                                         Datum subKey,
+                                                         Datum value) {
+        if (!DebugConfig.isDebugPlaybackEnabled()) {
+            return;
+        }
+        System.out.println("[TRACE] ScriptInstance.setProp[nested]"
+                + " receiver=" + describeInstance(receiver)
+                + " owner=" + describeInstance(owner)
+                + " prop=#" + propName
+                + " key=" + DatumFormatter.formatBrief(subKey)
+                + " value=" + DatumFormatter.formatBrief(value));
+    }
+
+    private static void traceInstanceMethodDispatch(LingoVM vm, Datum.ScriptInstance receiver,
+                                                    String methodName, List<Datum> args) {
+        if (!DebugConfig.isDebugPlaybackEnabled() || vm == null
+                || !vm.getTracedHandlers().contains(LingoVM.normalizeLookupName(methodName))) {
+            return;
+        }
+        System.out.println("[TRACE] ScriptInstance.dispatch handler=#" + methodName
+                + " receiver=" + describeInstance(receiver)
+                + " args=" + formatArgs(args));
+    }
+
+    private static String formatArgs(List<Datum> args) {
+        if (args == null || args.isEmpty()) {
+            return "[]";
+        }
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < args.size(); i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+            sb.append(DatumFormatter.formatBrief(args.get(i)));
+        }
+        sb.append(']');
+        return sb.toString();
+    }
+
+    private static String describeInstance(Datum.ScriptInstance instance) {
+        return instance == null ? "<none>" : "<script#" + instance.scriptId() + ">";
     }
 
     /**
@@ -326,7 +439,10 @@ public final class ScriptInstanceMethodDispatcher {
     private static Datum safeExecuteHandler(ExecutionContext ctx, ScriptChunk script,
                                              ScriptChunk.Handler handler, List<Datum> args, Datum receiver) {
         try {
-            return ctx.executeHandler(script, handler, args, receiver);
+            traceInfoStandNameCall(script, handler, args, receiver);
+            Datum result = ctx.executeHandler(script, handler, args, receiver);
+            traceGetInfoResult(script, handler, receiver, result);
+            return result;
         } catch (LingoException e) {
             if (DebugConfig.isDebugPlaybackEnabled()) {
                 System.err.println(e.getMessage());
@@ -335,5 +451,52 @@ public final class ScriptInstanceMethodDispatcher {
             ctx.setErrorState(true);
             return Datum.VOID;
         }
+    }
+
+    private static void traceGetInfoResult(ScriptChunk script, ScriptChunk.Handler handler,
+                                           Datum receiver, Datum result) {
+        if (!DebugConfig.isDebugPlaybackEnabled()
+                || !(result instanceof Datum.PropList props)
+                || !"getinfo".equals(LingoVM.normalizeLookupName(script.getHandlerName(handler)))) {
+            return;
+        }
+        Datum objectClass = props.getOrDefault("class", Datum.VOID);
+        Datum name = props.getOrDefault("name", Datum.VOID);
+        Datum custom = props.getOrDefault("custom", Datum.VOID);
+        Datum title = props.getOrDefault("title", Datum.VOID);
+        if (objectClass.isVoid() && name.isVoid() && custom.isVoid() && title.isVoid()) {
+            return;
+        }
+        System.out.println("[OBJECT_INFO] getInfo script=" + script.getDisplayName()
+                + " receiver=" + describeDatumReceiver(receiver)
+                + " class=" + DatumFormatter.formatBrief(objectClass)
+                + " name=" + DatumFormatter.formatBrief(name)
+                + " title=" + DatumFormatter.formatBrief(title)
+                + " custom=" + DatumFormatter.formatBrief(custom)
+                + " props=" + DatumFormatter.formatExpanded(props));
+    }
+
+    private static void traceInfoStandNameCall(ScriptChunk script, ScriptChunk.Handler handler,
+                                               List<Datum> args, Datum receiver) {
+        if (!DebugConfig.isDebugPlaybackEnabled()) {
+            return;
+        }
+        String handlerName = LingoVM.normalizeLookupName(script.getHandlerName(handler));
+        if (!"showobjectinfo".equals(handlerName)
+                && !"updateinfostandname".equals(handlerName)
+                && !"renderobjectdisplayname".equals(handlerName)) {
+            return;
+        }
+        System.out.println("[OBJECT_INFO] script=" + script.getDisplayName()
+                + " handler=#" + script.getHandlerName(handler)
+                + " receiver=" + describeDatumReceiver(receiver)
+                + " args=" + formatArgs(args));
+    }
+
+    private static String describeDatumReceiver(Datum receiver) {
+        if (receiver instanceof Datum.ScriptInstance instance) {
+            return describeInstance(instance);
+        }
+        return DatumFormatter.formatBrief(receiver);
     }
 }

@@ -92,6 +92,35 @@ public sealed interface Datum {
         public String toString() { return "\"" + value + "\""; }
     }
 
+    /**
+     * Non-string binary payload delivered by Xtras such as Multiuser.
+     * Lingo can still coerce it to a byte-preserving string for chunk access,
+     * but ilk()/stringp() must not report it as #string.
+     */
+    record BinaryData(String value) implements Datum {
+        public BinaryData {
+            value = value != null ? value : "";
+        }
+
+        @Override
+        public String toString() {
+            return "<binary:" + value.length() + " bytes>";
+        }
+    }
+
+    /** Chunk accessor for plain strings, e.g. the item/char/word/line of a string. */
+    record StringChunkAccessor(String value, String chunkType) implements Datum {
+        public StringChunkAccessor {
+            value = value != null ? value : "";
+            chunkType = chunkType != null ? chunkType : "char";
+        }
+
+        @Override
+        public String toString() {
+            return "<string-chunk:" + chunkType + ">";
+        }
+    }
+
     /** Chunk accessor for styled text member ranges such as member.char[1..5]. */
     record TextMemberChunkAccessor(int castLibNum, int memberNum, String chunkType) implements Datum {
         @Override
@@ -118,7 +147,7 @@ public sealed interface Datum {
     /** Linear list [a, b, c] */
     record List(java.util.List<Datum> items) implements Datum {
         public List {
-            items = normalizeDatumItems(items);
+            items = items instanceof OwnedList ? items : new ArrayList<>(items);
         }
         @Override
         public String toString() {
@@ -139,65 +168,10 @@ public sealed interface Datum {
         public OwnedList(int initialCapacity) {
             super(initialCapacity);
         }
-
-        @Override
-        public boolean add(Datum datum) {
-            return super.add(valueOrVoid(datum));
-        }
-
-        @Override
-        public void add(int index, Datum element) {
-            super.add(index, valueOrVoid(element));
-        }
-
-        @Override
-        public Datum set(int index, Datum element) {
-            return super.set(index, valueOrVoid(element));
-        }
-
-        @Override
-        public boolean addAll(java.util.Collection<? extends Datum> c) {
-            if (c == null || c.isEmpty()) {
-                return false;
-            }
-            boolean changed = false;
-            for (Datum datum : c) {
-                changed |= add(datum);
-            }
-            return changed;
-        }
-
-        @Override
-        public boolean addAll(int index, java.util.Collection<? extends Datum> c) {
-            if (c == null || c.isEmpty()) {
-                return false;
-            }
-            int cursor = index;
-            for (Datum datum : c) {
-                add(cursor++, datum);
-            }
-            return true;
-        }
     }
 
     static Datum valueOrVoid(Datum value) {
         return value != null ? value : Datum.VOID;
-    }
-
-    static java.util.List<Datum> normalizeDatumItems(java.util.List<Datum> values) {
-        if (values instanceof OwnedList owned) {
-            for (int i = 0; i < owned.size(); i++) {
-                if (owned.get(i) == null) {
-                    owned.set(i, Datum.VOID);
-                }
-            }
-            return owned;
-        }
-        OwnedList normalized = new OwnedList(values != null ? values.size() : 0);
-        if (values != null) {
-            normalized.addAll(values);
-        }
-        return normalized;
     }
 
     /** Key-value entry in a PropList. */
@@ -295,6 +269,64 @@ public sealed interface Datum {
                         && e.keyDatum().lingoEquals(keyDatum)) {
                     return e.value();
                 }
+            }
+            return null;
+        }
+
+        /**
+         * Director bracket-style property-list access.
+         * Numeric keys are positional first; string/symbol keys prefer the exact
+         * token type, then fall back to Director-compatible property lookup.
+         */
+        public Datum getAtOrDefault(Datum keyOrIndex, Datum defaultVal) {
+            if (keyOrIndex instanceof Int || keyOrIndex instanceof Float) {
+                int index = keyOrIndex.toInt() - 1;
+                if (index >= 0 && index < size()) {
+                    return getValue(index);
+                }
+                Datum keyedValue = get(keyOrIndex);
+                return keyedValue != null ? keyedValue : defaultVal;
+            }
+            if (keyOrIndex instanceof Symbol || keyOrIndex instanceof Str) {
+                Datum exact = getExactStringToken(keyOrIndex);
+                if (exact != null) {
+                    return exact;
+                }
+            }
+            Datum keyedValue = get(keyOrIndex);
+            return keyedValue != null ? keyedValue : defaultVal;
+        }
+
+        /**
+         * Director getValue-style access. This mirrors bracket lookup for
+         * string/symbol keys, but numeric arguments remain positional only.
+         */
+        public Datum getValueByKeyOrIndexOrDefault(Datum keyOrIndex, Datum defaultVal) {
+            if (keyOrIndex instanceof Symbol || keyOrIndex instanceof Str) {
+                Datum exact = getExactStringToken(keyOrIndex);
+                if (exact != null) {
+                    return exact;
+                }
+                Datum compatible = get(keyOrIndex);
+                return compatible != null ? compatible : defaultVal;
+            }
+            int index = keyOrIndex.toInt() - 1;
+            if (index >= 0 && index < size()) {
+                return getValue(index);
+            }
+            if (!(keyOrIndex instanceof Int)) {
+                Datum keyedValue = get(keyOrIndex);
+                return keyedValue != null ? keyedValue : defaultVal;
+            }
+            return defaultVal;
+        }
+
+        private Datum getExactStringToken(Datum keyDatum) {
+            if (keyDatum instanceof Symbol sym) {
+                return get(sym.name(), true);
+            }
+            if (keyDatum instanceof Str str) {
+                return get(str.value(), false);
             }
             return null;
         }
@@ -877,9 +909,6 @@ public sealed interface Datum {
     /** Argument list for function calls (expects return value).
      *  No defensive copy — popArgs() already creates a fresh ArrayList. */
     record ArgList(java.util.List<Datum> items) implements Datum {
-        public ArgList {
-            items = normalizeDatumItems(items);
-        }
         public int count() { return items.size(); }
         @Override
         public String toString() { return "<arglist:" + items.size() + ">"; }
@@ -888,9 +917,6 @@ public sealed interface Datum {
     /** Argument list for function calls (no return value expected).
      *  No defensive copy — popArgs() already creates a fresh ArrayList. */
     record ArgListNoRet(java.util.List<Datum> items) implements Datum {
-        public ArgListNoRet {
-            items = normalizeDatumItems(items);
-        }
         public int count() { return items.size(); }
         @Override
         public String toString() { return "<arglist-noret:" + items.size() + ">"; }
@@ -962,13 +988,7 @@ public sealed interface Datum {
     }
 
     static Datum list(Datum... items) {
-        OwnedList values = new OwnedList(items != null ? items.length : 0);
-        if (items != null) {
-            for (Datum item : items) {
-                values.add(item);
-            }
-        }
-        return new List(values);
+        return new List(java.util.List.of(items));
     }
 
     static Datum list(java.util.List<Datum> items) {
@@ -1009,6 +1029,7 @@ public sealed interface Datum {
             case Float f -> "float";
             case Str s -> "string";
             case FieldText ft -> "string";
+            case BinaryData b -> "binary";
             case Symbol sym -> "symbol";
             case List l -> "list";
             case PropList pl -> "propList";
@@ -1046,11 +1067,32 @@ public sealed interface Datum {
         if (this.isNumber() && other.isNumber()) {
             return this.toDouble() == other.toDouble();
         }
+        if (this.isNumber() && other.isString()) {
+            Double otherNumber = parseComparableStringNumber(other.toStr());
+            return otherNumber != null && this.toDouble() == otherNumber;
+        }
+        if (this.isString() && other.isNumber()) {
+            Double thisNumber = parseComparableStringNumber(this.toStr());
+            return thisNumber != null && thisNumber == other.toDouble();
+        }
         // String/symbol cross-type comparison (case-insensitive)
         if ((this.isString() || this.isSymbol()) && (other.isString() || other.isSymbol())) {
             return this.toStr().equalsIgnoreCase(other.toStr());
         }
         return this.equals(other);
+    }
+
+    private static Double parseComparableStringNumber(String value) {
+        String trimmed = value.trim();
+        if (trimmed.isEmpty()) {
+            return 0.0;
+        }
+        try {
+            double parsed = Double.parseDouble(trimmed);
+            return Double.isNaN(parsed) || Double.isInfinite(parsed) ? null : parsed;
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     default boolean isTruthy() {
@@ -1131,6 +1173,8 @@ public sealed interface Datum {
             case Float f -> String.valueOf(f.value());
             case Str s -> s.value();
             case FieldText ft -> ft.value();
+            case BinaryData b -> b.value();
+            case StringChunkAccessor sca -> sca.value();
             case Symbol s -> s.name();
             default -> toString();
         };
@@ -1224,6 +1268,8 @@ public sealed interface Datum {
             case Float f -> f;
             case Str s -> s;
             case FieldText ft -> ft;
+            case BinaryData b -> b;
+            case StringChunkAccessor sca -> sca;
             case TextMemberChunkAccessor tmca -> tmca;
             case TextMemberRangeRef tmrr -> tmrr;
             case Symbol sym -> sym;
@@ -1251,7 +1297,7 @@ public sealed interface Datum {
             case List list -> {
                 java.util.List<Datum> copiedItems = new ArrayList<>(list.items().size());
                 for (Datum item : list.items()) {
-                    copiedItems.add(valueOrVoid(item).deepCopy());
+                    copiedItems.add(item.deepCopy());
                 }
                 yield new List(copiedItems);
             }
@@ -1268,14 +1314,14 @@ public sealed interface Datum {
             case ArgList al -> {
                 java.util.List<Datum> copiedItems = new ArrayList<>(al.items().size());
                 for (Datum item : al.items()) {
-                    copiedItems.add(valueOrVoid(item).deepCopy());
+                    copiedItems.add(item.deepCopy());
                 }
                 yield new ArgList(copiedItems);
             }
             case ArgListNoRet al -> {
                 java.util.List<Datum> copiedItems = new ArrayList<>(al.items().size());
                 for (Datum item : al.items()) {
-                    copiedItems.add(valueOrVoid(item).deepCopy());
+                    copiedItems.add(item.deepCopy());
                 }
                 yield new ArgListNoRet(copiedItems);
             }

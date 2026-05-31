@@ -14,6 +14,8 @@ public final class DatumFormatter {
 
     private static final int DEFAULT_MAX_STRING_LENGTH = 50;
     private static final int DEFAULT_BRIEF_STRING_LENGTH = 30;
+    private static final int EXPANDED_MAX_LIST_ITEMS = 8;
+    private static final int EXPANDED_MAX_PROPS = 8;
     private static final String INDENT = "  ";
 
     private DatumFormatter() {}
@@ -49,6 +51,7 @@ public final class DatumFormatter {
         if (d instanceof Datum.Float f) return String.valueOf(f.value());
         if (d instanceof Datum.Str s) return "\"" + StringUtils.truncate(s.value(), maxStringLength) + "\"";
         if (d instanceof Datum.FieldText ft) return "\"" + StringUtils.truncate(ft.value(), maxStringLength) + "\"";
+        if (d instanceof Datum.BinaryData b) return "<binary:" + b.value().length() + " bytes>";
         if (d instanceof Datum.Symbol sym) return "#" + sym.name();
         if (d instanceof Datum.List list) return "[list:" + list.items().size() + "]";
         if (d instanceof Datum.PropList pl) return "[propList:" + pl.size() + "]";
@@ -88,6 +91,7 @@ public final class DatumFormatter {
             case Datum.Float f -> String.valueOf(f.value());
             case Datum.Str s -> "\"" + StringUtils.truncate(StringUtils.escapeForDisplay(s.value()), DEFAULT_BRIEF_STRING_LENGTH) + "\"";
             case Datum.FieldText ft -> "\"" + StringUtils.truncate(StringUtils.escapeForDisplay(ft.value()), DEFAULT_BRIEF_STRING_LENGTH) + "\"";
+            case Datum.BinaryData b -> "<binary:" + b.value().length() + " bytes>";
             case Datum.Symbol sym -> "#" + sym.name();
             case Datum.List list -> "[list:" + list.items().size() + "]";
             case Datum.PropList pl -> "[propList:" + pl.size() + "]";
@@ -116,12 +120,13 @@ public final class DatumFormatter {
             case Datum.Float f -> String.valueOf(f.value());
             case Datum.Str s -> "\"" + StringUtils.escapeForDisplay(s.value()) + "\"";
             case Datum.FieldText ft -> "\"" + StringUtils.escapeForDisplay(ft.value()) + "\"";
+            case Datum.BinaryData b -> "<binary:" + b.value().length() + " bytes>";
             case Datum.Symbol sym -> "#" + sym.name();
             case Datum.List list -> formatListExpanded(list, seen);
             case Datum.PropList propList -> formatPropListExpanded(propList, seen);
             case Datum.ArgList argList -> "<arglist " + formatListItemsExpanded(argList.items(), seen) + ">";
             case Datum.ArgListNoRet argList -> "<arglist-noret " + formatListItemsExpanded(argList.items(), seen) + ">";
-            case Datum.ScriptInstance si -> formatScriptInstanceExpanded(si, seen);
+            case Datum.ScriptInstance si -> formatScriptInstanceExpanded(si);
             case Datum.Point p -> "point(" + p.x() + ", " + p.y() + ")";
             case Datum.Rect r -> "rect(" + r.left() + ", " + r.top() + ", " + r.right() + ", " + r.bottom() + ")";
             case Datum.Color c -> "color(" + c.r() + ", " + c.g() + ", " + c.b() + ")";
@@ -149,9 +154,14 @@ public final class DatumFormatter {
 
     private static String formatListItemsExpanded(java.util.List<Datum> items, Set<Object> seen) {
         StringBuilder sb = new StringBuilder("[");
-        for (int i = 0; i < items.size(); i++) {
+        int limit = Math.min(items.size(), EXPANDED_MAX_LIST_ITEMS);
+        for (int i = 0; i < limit; i++) {
             if (i > 0) sb.append(", ");
             sb.append(formatExpanded(items.get(i), seen));
+        }
+        if (items.size() > limit) {
+            if (limit > 0) sb.append(", ");
+            sb.append("... ").append(items.size() - limit).append(" more");
         }
         sb.append("]");
         return sb.toString();
@@ -164,7 +174,8 @@ public final class DatumFormatter {
         try {
             StringBuilder sb = new StringBuilder("[");
             var entries = propList.entries();
-            for (int i = 0; i < entries.size(); i++) {
+            int limit = Math.min(entries.size(), EXPANDED_MAX_PROPS);
+            for (int i = 0; i < limit; i++) {
                 if (i > 0) sb.append(", ");
                 Datum.PropEntry entry = entries.get(i);
                 if (entry.isSymbolKey()) {
@@ -174,6 +185,10 @@ public final class DatumFormatter {
                 }
                 sb.append(": ").append(formatExpanded(entry.value(), seen));
             }
+            if (entries.size() > limit) {
+                if (limit > 0) sb.append(", ");
+                sb.append("... ").append(entries.size() - limit).append(" more");
+            }
             sb.append("]");
             return sb.toString();
         } finally {
@@ -181,26 +196,19 @@ public final class DatumFormatter {
         }
     }
 
-    private static String formatScriptInstanceExpanded(Datum.ScriptInstance instance, Set<Object> seen) {
-        if (!seen.add(instance)) {
-            return "<script#" + instance.scriptId() + " <recursive>>";
+    private static String formatScriptInstanceExpanded(Datum.ScriptInstance instance) {
+        StringBuilder sb = new StringBuilder("<script#")
+                .append(instance.scriptId());
+        Datum ref = instance.properties().get("__scriptRef__");
+        if (ref != null && !ref.isVoid()) {
+            sb.append(" ").append(format(ref));
         }
-        try {
-            StringBuilder sb = new StringBuilder("<script#")
-                    .append(instance.scriptId())
-                    .append(" {");
-            int i = 0;
-            for (Map.Entry<String, Datum> entry : instance.properties().entrySet()) {
-                if (i++ > 0) sb.append(", ");
-                sb.append(entry.getKey())
-                  .append(": ")
-                  .append(formatExpanded(entry.getValue(), seen));
-            }
-            sb.append("}>");
-            return sb.toString();
-        } finally {
-            seen.remove(instance);
+        Datum id = instance.properties().get("id");
+        if (id != null && !id.isVoid()) {
+            sb.append(" id=").append(formatBrief(id));
         }
+        sb.append(" props=").append(instance.properties().size()).append(">");
+        return sb.toString();
     }
 
     /**
@@ -222,6 +230,7 @@ public final class DatumFormatter {
             case Datum.Float f -> String.valueOf(f.value());
             case Datum.Str s -> "\"" + escapeForJson(s.value()) + "\"";
             case Datum.FieldText ft -> "\"" + escapeForJson(ft.value()) + "\"";
+            case Datum.BinaryData b -> "\"<binary:" + b.value().length() + " bytes>\"";
             case Datum.Symbol sym -> "\"#" + sym.name() + "\"";
 
             case Datum.ArgList argList -> {

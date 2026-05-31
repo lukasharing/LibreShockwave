@@ -257,7 +257,7 @@ public final class ArithmeticOpcodes {
             return true;
         }
 
-        // List * scalar element-wise (used heavily by Habbo movement interpolation).
+        // List * scalar element-wise.
         if (a instanceof Datum.List la && !(b instanceof Datum.List)) {
             ctx.push(scaleList(la, b.toDouble(), b.isFloat()));
             return true;

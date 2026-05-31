@@ -98,18 +98,20 @@ public interface MoviePropertyProvider {
         return -1;
     }
 
-    // Thread-local provider for VM access
-    ThreadLocal<MoviePropertyProvider> CURRENT = new ThreadLocal<>();
+    final class Holder {
+        private Holder() {}
+        static MoviePropertyProvider current;
+    }
 
     static void setProvider(MoviePropertyProvider provider) {
-        CURRENT.set(provider);
+        Holder.current = provider;
     }
 
     static void clearProvider() {
-        CURRENT.remove();
+        Holder.current = null;
     }
 
     static MoviePropertyProvider getProvider() {
-        return CURRENT.get();
+        return Holder.current;
     }
 }

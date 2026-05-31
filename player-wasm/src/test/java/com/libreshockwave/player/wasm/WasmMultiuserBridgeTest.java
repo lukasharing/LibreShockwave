@@ -210,6 +210,52 @@ class WasmMultiuserBridgeTest {
     }
 
     @Test
+    void unexpectedCleanWebSocketCloseQueuesConnectionProblem() {
+        WasmMultiuserBridge bridge = new WasmMultiuserBridge();
+
+        bridge.notifyConnected(1);
+        bridge.pollMessages(1);
+        bridge.notifyDisconnected(1, 1000, true,
+                "close code=1000 wasClean=true url=ws://127.0.0.1:4173/mus-ws");
+
+        List<MultiuserNetBridge.NetMessage> messages = bridge.pollMessages(1);
+        assertEquals(1, messages.size());
+        assertEquals(-2, messages.get(0).errorCode());
+        assertEquals("ConnectionProblem", messages.get(0).subject());
+        assertEquals(true, messages.get(0).content().toStr().contains("closeCode=1000"));
+        assertEquals(true, messages.get(0).content().toStr().contains("wasClean=true"));
+        assertEquals(false, bridge.isConnected(1));
+    }
+
+    @Test
+    void sendAfterUnexpectedCloseDoesNotQueueBrowserSend() {
+        WasmMultiuserBridge bridge = new WasmMultiuserBridge();
+
+        bridge.notifyConnected(1);
+        bridge.pollMessages(1);
+        bridge.notifyDisconnected(1, 1000, true, "");
+        assertEquals(1, bridge.pollMessages(1).size());
+        bridge.requestSend(1, "0", "0", new Datum.Str("@@BCD"));
+
+        List<WasmMultiuserBridge.PendingRequest> requests = bridge.getPendingRequests();
+        assertEquals(List.of(), requests);
+    }
+
+    @Test
+    void reconnectClearsTerminalSendGuard() {
+        WasmMultiuserBridge bridge = new WasmMultiuserBridge();
+
+        bridge.notifyDisconnected(1, 1000, true, "");
+        bridge.requestConnect(1, "example.test", 1234, 1);
+        bridge.requestSend(1, "0", "0", new Datum.Str("@@BCD"));
+
+        List<WasmMultiuserBridge.PendingRequest> requests = bridge.getPendingRequests();
+        assertEquals(2, requests.size());
+        assertEquals(WasmMultiuserBridge.REQ_CONNECT, requests.get(0).type);
+        assertEquals("@@BCD", requests.get(1).content);
+    }
+
+    @Test
     void connectionProblemKeepsHostDiagnosticDetailInContent() {
         WasmMultiuserBridge bridge = new WasmMultiuserBridge();
 

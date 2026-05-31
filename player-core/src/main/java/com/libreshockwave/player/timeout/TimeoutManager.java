@@ -131,14 +131,14 @@ public class TimeoutManager implements TimeoutProvider {
      * @param currentTimeMs Current time in milliseconds
      */
     public void processTimeouts(LingoVM vm, long currentTimeMs) {
-        processTimeouts(vm, currentTimeMs, false);
+        processTimeoutsDueAt(vm, currentTimeMs);
     }
 
     public void processInputEventTimeouts(LingoVM vm, long currentTimeMs) {
-        processTimeouts(vm, currentTimeMs, true);
+        processTimeoutsDueAt(vm, currentTimeMs);
     }
 
-    private void processTimeouts(LingoVM vm, long currentTimeMs, boolean inputPump) {
+    private void processTimeoutsDueAt(LingoVM vm, long currentTimeMs) {
         if (timeouts.isEmpty()) return;
 
         // Copy keys to avoid ConcurrentModificationException (handlers may create/remove timeouts)
@@ -153,7 +153,7 @@ public class TimeoutManager implements TimeoutProvider {
             }
 
             long elapsed = currentTimeMs - entry.lastFiredMs;
-            if (elapsed >= entry.periodMs || (inputPump && entry.periodMs == 1)) {
+            if (elapsed >= entry.periodMs) {
                 entry.lastFiredMs = currentTimeMs;
                 // One-shot timeouts are removed BEFORE firing so the handler
                 // can re-create a timeout with the same name (Director behavior)

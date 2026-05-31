@@ -23,13 +23,25 @@ class TimeoutManagerTest {
     }
 
     @Test
-    void inputPumpFiresOneMillisecondTimeoutBeforeNextQueuedInputEvent() {
+    void inputPumpDoesNotFireOneMillisecondTimeoutBeforeItIsDue() {
         TimeoutManager manager = new TimeoutManager();
         RecordingVM vm = new RecordingVM();
         long now = System.currentTimeMillis();
 
         manager.createTimeout("refreshDisplay", 1, "refreshDisplay", Datum.VOID);
         manager.processInputEventTimeouts(vm, now);
+
+        assertEquals(0, vm.callCount);
+    }
+
+    @Test
+    void inputPumpFiresTimeoutAfterItsPeriodElapsed() {
+        TimeoutManager manager = new TimeoutManager();
+        RecordingVM vm = new RecordingVM();
+        long now = System.currentTimeMillis();
+
+        manager.createTimeout("refreshDisplay", 1, "refreshDisplay", Datum.VOID);
+        manager.processInputEventTimeouts(vm, now + 1);
 
         assertEquals(1, vm.callCount);
         assertEquals("refreshDisplay", vm.lastHandlerName);

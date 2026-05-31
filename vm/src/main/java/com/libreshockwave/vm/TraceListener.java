@@ -23,6 +23,12 @@ public interface TraceListener {
     default void onHandlerExit(HandlerInfo info, Datum returnValue) {}
 
     /**
+     * Whether this listener needs handler enter/exit payloads.
+     * Return false to skip building HandlerInfo when only error callbacks are needed.
+     */
+    default boolean needsHandlerTrace() { return true; }
+
+    /**
      * Called before each instruction is executed.
      */
     default void onInstruction(InstructionInfo info) {}

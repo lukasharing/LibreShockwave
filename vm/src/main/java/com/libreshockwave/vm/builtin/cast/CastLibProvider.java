@@ -92,15 +92,6 @@ public interface CastLibProvider {
     }
 
     /**
-     * Record the member slot most recently resolved through a movie-owned member registry.
-     * Some Director movies resolve a member by name through Lingo registry helpers and then
-     * read {@code field 0}; the player-side field provider needs the resolved slot to make
-     * that implicit field context deterministic.
-     */
-    default void rememberResolvedFieldMemberSlot(int slotValue) {
-    }
-
-    /**
      * Check whether a specific member slot should remain visible through
      * registry-style lookups such as movie-owned getmemnum()/exists() APIs.
      *
@@ -110,6 +101,17 @@ public interface CastLibProvider {
      */
     default boolean isRegistryVisibleMember(int castLibNumber, int memberNumber) {
         return memberExists(castLibNumber, memberNumber);
+    }
+
+    /**
+     * Resolve a raw member number stored by a movie-owned member registry into a
+     * full cast/member slot when the provider can do so without relying on a
+     * broad name lookup. Some Director movies persist plain member numbers in
+     * registry propLists, then later load additional casts whose member names can
+     * collide. Returning 0 means the raw value should be kept as authored.
+     */
+    default int resolveRawRegistryMemberSlot(String registryName, int memberNumber) {
+        return 0;
     }
 
     /**
@@ -127,6 +129,16 @@ public interface CastLibProvider {
     Datum getMemberProp(int castLibNumber, int memberNumber, String propName);
 
     /**
+     * Get a property from a styled text member range such as member.line[1].
+     * The range coordinates are 1-based Director chunk coordinates.
+     */
+    default Datum getMemberTextRangeProp(int castLibNumber, int memberNumber,
+                                         String chunkType, int start, int end,
+                                         String propName) {
+        return Datum.VOID;
+    }
+
+    /**
      * Set a cast member property.
      * @param castLibNumber The cast library number
      * @param memberNumber The member number
@@ -135,6 +147,16 @@ public interface CastLibProvider {
      * @return true if set successfully
      */
     boolean setMemberProp(int castLibNumber, int memberNumber, String propName, Datum value);
+
+    /**
+     * Set a property on a styled text member range such as member.char[1..5].color.
+     * The range coordinates are 1-based Director chunk coordinates.
+     */
+    default boolean setMemberTextRangeProp(int castLibNumber, int memberNumber,
+                                           String chunkType, int start, int end,
+                                           String propName, Datum value) {
+        return false;
+    }
 
     /**
      * Import an external file into an existing cast member.
@@ -355,18 +377,20 @@ public interface CastLibProvider {
         return null;
     }
 
-    // Thread-local provider for VM access
-    ThreadLocal<CastLibProvider> CURRENT = new ThreadLocal<>();
+    final class Holder {
+        private Holder() {}
+        static CastLibProvider current;
+    }
 
     static void setProvider(CastLibProvider provider) {
-        CURRENT.set(provider);
+        Holder.current = provider;
     }
 
     static void clearProvider() {
-        CURRENT.remove();
+        Holder.current = null;
     }
 
     static CastLibProvider getProvider() {
-        return CURRENT.get();
+        return Holder.current;
     }
 }

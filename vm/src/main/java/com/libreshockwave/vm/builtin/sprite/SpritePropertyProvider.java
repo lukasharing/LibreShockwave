@@ -48,18 +48,20 @@ public interface SpritePropertyProvider {
         return null;
     }
 
-    // Thread-local provider for VM access
-    ThreadLocal<SpritePropertyProvider> CURRENT = new ThreadLocal<>();
+    final class Holder {
+        private Holder() {}
+        static SpritePropertyProvider current;
+    }
 
     static void setProvider(SpritePropertyProvider provider) {
-        CURRENT.set(provider);
+        Holder.current = provider;
     }
 
     static void clearProvider() {
-        CURRENT.remove();
+        Holder.current = null;
     }
 
     static SpritePropertyProvider getProvider() {
-        return CURRENT.get();
+        return Holder.current;
     }
 }

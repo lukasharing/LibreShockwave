@@ -51,18 +51,20 @@ public interface TimeoutProvider {
      */
     boolean setTimeoutProp(String name, String prop, Datum value);
 
-    // Thread-local provider for VM access
-    ThreadLocal<TimeoutProvider> CURRENT = new ThreadLocal<>();
+    final class Holder {
+        private Holder() {}
+        static TimeoutProvider current;
+    }
 
     static void setProvider(TimeoutProvider provider) {
-        CURRENT.set(provider);
+        Holder.current = provider;
     }
 
     static void clearProvider() {
-        CURRENT.remove();
+        Holder.current = null;
     }
 
     static TimeoutProvider getProvider() {
-        return CURRENT.get();
+        return Holder.current;
     }
 }

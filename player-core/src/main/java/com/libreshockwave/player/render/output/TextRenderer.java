@@ -2,6 +2,7 @@ package com.libreshockwave.player.render.output;
 
 import com.libreshockwave.bitmap.Bitmap;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.ToIntFunction;
 
@@ -51,9 +52,14 @@ public interface TextRenderer {
     int getLineHeight(String fontName, int fontSize, String fontStyle,
                       int fixedLineSpace);
 
+    /**
+     * Get caret bounds within a text line.
+     *
+     * @return int array {yOffset, height}, relative to charPosToLoc()'s line top
+     */
     default int[] getCaretBounds(String fontName, int fontSize, String fontStyle,
                                  int fixedLineSpace) {
-        return new int[] {0, getLineHeight(fontName, fontSize, fontStyle, fixedLineSpace)};
+        return new int[]{0, getLineHeight(fontName, fontSize, fontStyle, fixedLineSpace)};
     }
 
     /**
@@ -73,11 +79,13 @@ public interface TextRenderer {
                                   int textColor, int bgColor) {
         // Default: delegate to renderText() using primary font info
         if (styledText == null) return null;
+        boolean effectiveAntialias = styledText.antialias()
+                && styledText.fontSize() >= styledText.antiAliasThreshold();
         return renderText(styledText.text(), width, height,
                 styledText.fontName(), styledText.fontSize(),
                 styledText.fontStyleString(),
                 styledText.alignment(), textColor, bgColor,
-                styledText.wordWrap(), styledText.antialias(),
+                styledText.wordWrap(), effectiveAntialias,
                 styledText.fixedLineSpace(), 0);
     }
 
@@ -90,7 +98,21 @@ public interface TextRenderer {
         if (text == null || text.isEmpty()) {
             return new String[]{""};
         }
-        return text.split("\\r\\n|\\r|\\n", -1);
+        ArrayList<String> lines = new ArrayList<>();
+        int start = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            if (ch != '\r' && ch != '\n') {
+                continue;
+            }
+            lines.add(text.substring(start, i));
+            if (ch == '\r' && i + 1 < text.length() && text.charAt(i + 1) == '\n') {
+                i++;
+            }
+            start = i + 1;
+        }
+        lines.add(text.substring(start));
+        return lines.toArray(new String[0]);
     }
 
     /**

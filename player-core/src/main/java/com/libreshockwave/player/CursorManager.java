@@ -16,6 +16,8 @@ import com.libreshockwave.util.IntValueProvider;
 import com.libreshockwave.util.ValueProvider;
 import com.libreshockwave.vm.datum.Datum;
 
+import java.util.function.IntPredicate;
+
 
 /**
  * Manages cursor display: detects cursor type based on mouse position and sprite state,
@@ -301,8 +303,14 @@ public class CursorManager {
     }
 
     private int hitTest(int stageX, int stageY) {
-        EventDispatcher dispatcher = eventDispatcherSupplier != null ? eventDispatcherSupplier.get() : null;
+        final EventDispatcher dispatcher = eventDispatcherSupplier != null ? eventDispatcherSupplier.get() : null;
+        IntPredicate forceBoundingBox = new IntPredicate() {
+            @Override
+            public boolean test(int channel) {
+                return dispatcher != null && dispatcher.isSpriteMouseInteractive(channel);
+            }
+        };
         return HitTester.hitTest(stageRenderer, currentFrameSupplier.getAsInt(), stageX, stageY,
-                channel -> dispatcher != null && dispatcher.isSpriteMouseInteractive(channel));
+                forceBoundingBox);
     }
 }

@@ -10,8 +10,8 @@ import java.util.Map;
  * Minimal Director XML Parser Xtra compatibility layer.
  *
  * The original Xtra exposes parsed XML nodes as property-list-like objects
- * with #name, #child, #attributeName and #attributeValue properties. Habbo's
- * figure loaders use only that surface, so this parser keeps the implementation
+ * with #name, #child, #attributeName and #attributeValue properties. Authored
+ * loaders consume that surface directly, so this parser keeps the implementation
  * deliberately small and deterministic.
  */
 public class XmlParserXtra implements Xtra {

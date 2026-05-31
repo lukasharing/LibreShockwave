@@ -1,11 +1,13 @@
 package com.libreshockwave.vm;
 
+import com.libreshockwave.bitmap.Bitmap;
 import com.libreshockwave.chunks.ScriptChunk;
 import com.libreshockwave.id.ChunkId;
 import com.libreshockwave.lingo.Opcode;
 import com.libreshockwave.vm.builtin.cast.CastLibProvider;
 import com.libreshockwave.vm.builtin.flow.UpdateProvider;
 import com.libreshockwave.vm.builtin.movie.MoviePropertyProvider;
+import com.libreshockwave.vm.builtin.net.ExternalParamProvider;
 import com.libreshockwave.vm.HandlerRef;
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.datum.DatumFormatter;
@@ -14,13 +16,90 @@ import com.libreshockwave.vm.support.NoOpCastLibProvider;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.util.HashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Unit tests for the Lingo VM.
  */
 class LingoVMTest {
+
+    @Test
+    void rectBuiltinReturnsImageBounds() {
+        LingoVM vm = new LingoVM(null);
+        Bitmap bitmap = new Bitmap(124, 11, 32);
+
+        Datum result = vm.callHandler("rect", List.of(new Datum.ImageRef(bitmap)));
+
+        assertEquals(new Datum.Rect(0, 0, 124, 11), result);
+    }
+
+    @Test
+    void unsetBareGlobalNamesResolveDirectorConstants() {
+        LingoVM vm = new LingoVM(null);
+
+        assertEquals("", vm.getGlobal("EMPTY").toStr());
+        assertEquals("\r", vm.getGlobal("RETURN").toStr());
+        assertEquals(1, vm.getGlobal("TRUE").toInt());
+        assertTrue(vm.getGlobal("definitely_not_a_constant").isVoid());
+    }
+
+    @Test
+    void tryCatchBuiltinsClearAndReportErrorState() {
+        LingoVM vm = new LingoVM(null);
+        vm.setErrorState(true);
+
+        Datum tryResult = vm.callBuiltin("try", List.of());
+
+        assertTrue(tryResult.isVoid());
+        assertFalse(vm.isInErrorState());
+
+        vm.setErrorState(true);
+        Datum catchResult = vm.callBuiltin("catch", List.of());
+
+        assertEquals(1, catchResult.toInt());
+        assertFalse(vm.isInErrorState());
+        assertEquals(0, vm.callBuiltin("catch", List.of()).toInt());
+    }
+
+    @Test
+    void authoredDisconnectPutDoesNotEnterScriptErrorPause() {
+        LingoVM vm = new LingoVM(null);
+        AtomicInteger errors = new AtomicInteger();
+        vm.setTraceListener(new TraceListener() {
+            @Override
+            public boolean needsHandlerTrace() {
+                return false;
+            }
+
+            @Override
+            public boolean needsInstructionTrace() {
+                return false;
+            }
+
+            @Override
+            public void onError(String message, Exception error) {
+                errors.incrementAndGet();
+            }
+        });
+
+        DebugConfig.setDebugPlaybackEnabled(true);
+        DebugConfig.setPauseOnScriptErrorEnabled(true);
+        try {
+            vm.callHandler("put", List.of(Datum.of(
+                    "Error: Time: 10:57:37 PM Method: disconnect Object: Message: Connection disconnected: info")));
+
+            assertFalse(vm.isInErrorState(),
+                    "authored disconnect dialogs are normal hotel state, not VM script crashes");
+            assertEquals(0, errors.get());
+        } finally {
+            DebugConfig.setDebugPlaybackEnabled(false);
+            DebugConfig.setPauseOnScriptErrorEnabled(false);
+            DebugConfig.setPauseOnAuthoredMajorEnabled(false);
+        }
+    }
 
     @Test
     void testBuiltinSetCursorAliasesCursor() {
@@ -38,6 +117,83 @@ class LingoVMTest {
     }
 
     @Test
+    void testDoubleClickBuiltinReadsMovieProperty() {
+        LingoVM vm = new LingoVM(null);
+        RecordingMovieProvider provider = new RecordingMovieProvider();
+        provider.doubleClickValue = Datum.TRUE;
+        MoviePropertyProvider.setProvider(provider);
+        try {
+            Datum result = vm.callHandler("doubleClick", List.of());
+
+            assertEquals(1, result.toInt());
+            assertEquals("doubleClick", provider.lastReadPropName);
+        } finally {
+            MoviePropertyProvider.clearProvider();
+        }
+    }
+
+    @Test
+    void classicInputFunctionBuiltinsReadMovieProperties() {
+        LingoVM vm = new LingoVM(null);
+        RecordingMovieProvider provider = new RecordingMovieProvider();
+        provider.properties.put("mouseH", Datum.of(42));
+        provider.properties.put("mouseV", Datum.of(84));
+        provider.properties.put("mouseLoc", new Datum.Point(42, 84));
+        provider.properties.put("clickOn", Datum.of(12));
+        provider.properties.put("clickLoc", new Datum.Point(40, 80));
+        provider.properties.put("keyCode", Datum.of(13));
+        provider.properties.put("shiftDown", Datum.TRUE);
+        provider.properties.put("optionDown", Datum.FALSE);
+        provider.properties.put("controlDown", Datum.TRUE);
+        MoviePropertyProvider.setProvider(provider);
+        try {
+            assertEquals(42, vm.callHandler("mouseH", List.of()).toInt());
+            assertEquals(84, vm.callHandler("mouseV", List.of()).toInt());
+            assertEquals(new Datum.Point(42, 84), vm.callHandler("mouseLoc", List.of()));
+            assertEquals(12, vm.callHandler("clickOn", List.of()).toInt());
+            assertEquals(new Datum.Point(40, 80), vm.callHandler("clickLoc", List.of()));
+            assertEquals(13, vm.callHandler("keyCode", List.of()).toInt());
+            assertEquals(1, vm.callHandler("shiftDown", List.of()).toInt());
+            assertEquals(0, vm.callHandler("optionDown", List.of()).toInt());
+            assertEquals(1, vm.callHandler("controlDown", List.of()).toInt());
+        } finally {
+            MoviePropertyProvider.clearProvider();
+        }
+    }
+
+    @Test
+    void rolloverFunctionReturnsCurrentChannelOrTestsSpriteArgument() {
+        LingoVM vm = new LingoVM(null);
+        RecordingMovieProvider provider = new RecordingMovieProvider();
+        provider.properties.put("rollover", Datum.of(7));
+        MoviePropertyProvider.setProvider(provider);
+        try {
+            assertEquals(7, vm.callHandler("rollover", List.of()).toInt());
+            assertEquals(1, vm.callHandler("rollover", List.of(Datum.of(7))).toInt());
+            assertEquals(1, vm.callHandler("rollover", List.of(Datum.SpriteRef.of(7))).toInt());
+            assertEquals(0, vm.callHandler("rollover", List.of(Datum.of(8))).toInt());
+        } finally {
+            MoviePropertyProvider.clearProvider();
+        }
+    }
+
+    @Test
+    void getMonotonicMillisBuiltinReadsMovieMilliseconds() {
+        LingoVM vm = new LingoVM(null);
+        RecordingMovieProvider provider = new RecordingMovieProvider();
+        provider.millisecondsValue = Datum.of(1234);
+        MoviePropertyProvider.setProvider(provider);
+        try {
+            Datum result = vm.callHandler("getMonotonicMillis", List.of());
+
+            assertEquals(1234, result.toInt());
+            assertEquals("milliseconds", provider.lastReadPropName);
+        } finally {
+            MoviePropertyProvider.clearProvider();
+        }
+    }
+
+    @Test
     void testGlobalVariables() {
         // Create a VM with a null file (we test globals without a file)
         LingoVM vm = new LingoVM(null);
@@ -48,6 +204,11 @@ class LingoVMTest {
         // Set and get
         vm.setGlobal("score", Datum.of(100));
         assertEquals(100, vm.getGlobal("score").toInt());
+        assertEquals(100, vm.getGlobal("SCORE").toInt());
+
+        vm.setGlobal("gCore", Datum.of("object-manager"));
+        assertEquals("object-manager", vm.getGlobal("gcore").toStr());
+        assertEquals("object-manager", vm.getGlobal("GCORE").toStr());
 
         // Unknown globals return VOID
         assertTrue(vm.getGlobal("unknown").isVoid());
@@ -83,6 +244,23 @@ class LingoVMTest {
         Datum fetched = vm.callHandler("getPref", List.of(Datum.of("Blocktime")));
         assertTrue(fetched.isString());
         assertEquals("123", fetched.toStr());
+    }
+
+    @Test
+    void testConvertToPropListParsesReturnDelimitedFields() {
+        LingoVM vm = new LingoVM(null);
+
+        Datum result = vm.callHandler("convertToPropList", List.of(
+                Datum.of("object.manager.class=[\"Object Manager Class\"]\r"
+                        + "error.manager.class=[\"Error Manager Class\"]"),
+                Datum.of("\r")));
+
+        assertInstanceOf(Datum.PropList.class, result);
+        Datum.PropList props = (Datum.PropList) result;
+        assertEquals("[\"Object Manager Class\"]",
+                props.getOrDefault("object.manager.class", false, Datum.VOID).toStr());
+        assertEquals("[\"Error Manager Class\"]",
+                props.getOrDefault("error.manager.class", false, Datum.VOID).toStr());
     }
 
     @Test
@@ -138,6 +316,106 @@ class LingoVMTest {
 
         assertEquals(1, vm.executeCount);
         assertEquals("script:getmemnum", result.toStr());
+    }
+
+    @Test
+    void testGetmemnumFallsBackToRuntimeCastWhenAuthoredHandlerMisses() {
+        OverridingHandlerVm vm = new OverridingHandlerVm("getmemnum", Datum.ZERO);
+        RecordingCastProvider provider = new RecordingCastProvider();
+        CastLibProvider.setProvider(provider);
+        try {
+            Datum result = vm.callHandler("getmemnum", List.of(Datum.of("Logo")));
+
+            assertEquals(1, vm.executeCount);
+            assertEquals((11 << 16) | 7, result.toInt());
+            assertEquals("Logo", provider.lastMemberByName);
+        } finally {
+            CastLibProvider.clearProvider();
+        }
+    }
+
+    @Test
+    void testMemberExistsFallsBackToRuntimeCastWhenAuthoredHandlerMisses() {
+        OverridingHandlerVm vm = new OverridingHandlerVm("memberExists", Datum.FALSE);
+        RecordingCastProvider provider = new RecordingCastProvider();
+        CastLibProvider.setProvider(provider);
+        try {
+            Datum result = vm.callHandler("memberExists", List.of(Datum.of("Logo")));
+
+            assertEquals(1, vm.executeCount);
+            assertEquals(1, result.toInt());
+            assertEquals("Logo", provider.lastMemberByName);
+        } finally {
+            CastLibProvider.clearProvider();
+        }
+    }
+
+    @Test
+    void testGetVariableFallsBackToShockwaveLaunchVariableWhenAuthoredReturnsDefault() {
+        OverridingHandlerVm vm = new OverridingHandlerVm("getVariable", Datum.EMPTY_STRING);
+        ExternalParamProvider.setProvider(new ExternalParamProvider() {
+            @Override
+            public String getParamValue(String name) {
+                return null;
+            }
+
+            @Override
+            public String getParamName(int index) {
+                return null;
+            }
+
+            @Override
+            public int getParamCount() {
+                return 0;
+            }
+
+            @Override
+            public java.util.Map<String, String> getAllParams() {
+                return java.util.Map.of();
+            }
+
+            @Override
+            public String getLaunchVariable(String name) {
+                return "external.texts.txt".equalsIgnoreCase(name)
+                        ? "http://example.test/external_texts.txt"
+                        : null;
+            }
+        });
+        try {
+            Datum result = vm.callHandler("getVariable",
+                    List.of(Datum.of("external.texts.txt"), Datum.EMPTY_STRING));
+
+            assertEquals(1, vm.executeCount);
+            assertEquals("http://example.test/external_texts.txt", result.toStr());
+        } finally {
+            ExternalParamProvider.clearProvider();
+        }
+    }
+
+    @Test
+    void testGlobalGetmemnumResolvesLiveMemberOutsideRegistryNamespace() {
+        LingoVM vm = new LingoVM(null);
+        CastLibProvider.setProvider(new LiveButRegistryHiddenCastProvider());
+        try {
+            Datum result = vm.callHandler("getmemnum", List.of(Datum.of("dynamic_artwork")));
+
+            assertEquals((4 << 16) | 9, result.toInt());
+        } finally {
+            CastLibProvider.clearProvider();
+        }
+    }
+
+    @Test
+    void testGlobalMemberExistsResolvesLiveMemberOutsideRegistryNamespace() {
+        LingoVM vm = new LingoVM(null);
+        CastLibProvider.setProvider(new LiveButRegistryHiddenCastProvider());
+        try {
+            Datum result = vm.callHandler("memberExists", List.of(Datum.of("dynamic_artwork")));
+
+            assertEquals(1, result.toInt());
+        } finally {
+            CastLibProvider.clearProvider();
+        }
     }
 
     @Test
@@ -315,6 +593,53 @@ class LingoVMTest {
     }
 
     @Test
+    void handlerTimeoutCanBeDisabledForDeterministicStepLimitedRuntimes() {
+        LingoVM vm = new LingoVM(null);
+
+        assertEquals(60_000, vm.getHandlerTimeoutMs());
+
+        vm.setHandlerTimeoutMs(0);
+        assertEquals(0, vm.getHandlerTimeoutMs());
+
+        vm.setHandlerTimeoutMs(-1);
+        assertEquals(0, vm.getHandlerTimeoutMs());
+
+        vm.setHandlerTimeoutMs(2500);
+        assertEquals(2500, vm.getHandlerTimeoutMs());
+    }
+
+    @Test
+    void disabledHandlerTimeoutStillAllowsInstructionStepLimitToStopRunawayHandlers() {
+        ScriptChunk.Handler handler = new ScriptChunk.Handler(
+                1, 0, 0, 0, 0, 0, 0, 0,
+                List.of(),
+                List.of(),
+                List.of(new ScriptChunk.Handler.Instruction(0, Opcode.JMP, 0x53, 0)),
+                java.util.Map.of(0, 0)
+        );
+        ScriptChunk script = new ScriptChunk(
+                null,
+                new ChunkId(99),
+                ScriptChunk.ScriptType.MOVIE_SCRIPT,
+                0,
+                List.of(handler),
+                List.of(),
+                List.of(),
+                List.of(),
+                new byte[0]
+        );
+        LingoVM vm = new LingoVM(null);
+        vm.setHandlerTimeoutMs(0);
+        vm.setStepLimit(3);
+
+        LingoException exception = assertThrows(
+                LingoException.class,
+                () -> vm.executeHandler(script, handler, List.of(), Datum.VOID)
+        );
+        assertTrue(exception.getMessage().contains("Step limit exceeded"));
+    }
+
+    @Test
     void testMemberBuiltinReturnsVoidForZeroMemberNumber() {
         LingoVM vm = new LingoVM(null);
         RecordingCastProvider provider = new RecordingCastProvider();
@@ -325,6 +650,24 @@ class LingoVMTest {
             assertTrue(result.isVoid());
             assertEquals(-1, provider.lastGetMemberCastLibNumber);
             assertEquals(-1, provider.lastGetMemberNumber);
+        } finally {
+            CastLibProvider.clearProvider();
+        }
+    }
+
+    @Test
+    void testMemberBuiltinPreservesMirroredEncodedSlot() {
+        LingoVM vm = new LingoVM(null);
+        RecordingCastProvider provider = new RecordingCastProvider();
+        CastLibProvider.setProvider(provider);
+        try {
+            Datum result = vm.callHandler("member", List.of(Datum.of(-((11 << 16) | 7))));
+
+            assertTrue(result instanceof Datum.CastMemberRef);
+            Datum.CastMemberRef ref = (Datum.CastMemberRef) result;
+            assertEquals(11, ref.castLibNum());
+            assertEquals(7, ref.memberNum());
+            assertTrue(ref.isMirrored());
         } finally {
             CastLibProvider.clearProvider();
         }
@@ -455,13 +798,29 @@ class LingoVMTest {
 
     private static final class RecordingMovieProvider implements MoviePropertyProvider {
         private String lastPropName;
+        private String lastReadPropName;
         private Datum lastValue = Datum.VOID;
+        private Datum doubleClickValue = Datum.FALSE;
+        private Datum millisecondsValue = Datum.VOID;
+        private final Map<String, Datum> properties = new HashMap<>();
         private String lastGotoUrl;
         private String lastGotoTarget;
         private String lastGotoMovieUrl;
 
         @Override
         public Datum getMovieProp(String propName) {
+            lastReadPropName = propName;
+            for (Map.Entry<String, Datum> entry : properties.entrySet()) {
+                if (entry.getKey().equalsIgnoreCase(propName)) {
+                    return entry.getValue();
+                }
+            }
+            if ("doubleClick".equalsIgnoreCase(propName)) {
+                return doubleClickValue;
+            }
+            if ("milliseconds".equalsIgnoreCase(propName)) {
+                return millisecondsValue;
+            }
             return Datum.VOID;
         }
 
@@ -482,6 +841,30 @@ class LingoVMTest {
         public int gotoNetMovie(String url) {
             lastGotoMovieUrl = url;
             return 73;
+        }
+    }
+
+    private static final class LiveButRegistryHiddenCastProvider extends NoOpCastLibProvider {
+        @Override
+        public Datum getRegistryMemberByName(int castLibNumber, String memberName) {
+            return Datum.VOID;
+        }
+
+        @Override
+        public Datum getMemberByName(int castLibNumber, String memberName) {
+            return "dynamic_artwork".equalsIgnoreCase(memberName)
+                    ? Datum.CastMemberRef.of(4, 9)
+                    : Datum.VOID;
+        }
+
+        @Override
+        public boolean memberExists(int castLibNumber, int memberNumber) {
+            return castLibNumber == 4 && memberNumber == 9;
+        }
+
+        @Override
+        public boolean isRegistryVisibleMember(int castLibNumber, int memberNumber) {
+            return false;
         }
     }
 
@@ -525,6 +908,11 @@ class LingoVMTest {
         }
 
         @Override
+        public boolean memberExists(int castLibNumber, int memberNumber) {
+            return castLibNumber == 11 && memberNumber == 7;
+        }
+
+        @Override
         public String getFieldValue(Object memberNameOrNum, int castId) {
             lastFieldCastId = castId;
             lastFieldMemberName = String.valueOf(memberNameOrNum);
@@ -561,15 +949,23 @@ class LingoVMTest {
     }
 
     private static final class OverridingHandlerVm extends LingoVM {
+        private final String handlerName;
+        private final Datum handlerResult;
         private int executeCount;
 
         private OverridingHandlerVm() {
+            this("getmemnum", Datum.of("script:getmemnum"));
+        }
+
+        private OverridingHandlerVm(String handlerName, Datum handlerResult) {
             super(null);
+            this.handlerName = handlerName;
+            this.handlerResult = handlerResult;
         }
 
         @Override
         public HandlerRef findHandler(String handlerName) {
-            if ("getmemnum".equalsIgnoreCase(handlerName)) {
+            if (this.handlerName.equalsIgnoreCase(handlerName)) {
                 return new HandlerRef(null, null);
             }
             return null;
@@ -580,7 +976,7 @@ class LingoVMTest {
                                     com.libreshockwave.chunks.ScriptChunk.Handler handler,
                                     List<Datum> args, Datum receiver) {
             executeCount++;
-            return Datum.of("script:getmemnum");
+            return handlerResult;
         }
     }
 
@@ -694,6 +1090,19 @@ class LingoVMTest {
     }
 
     @Test
+    void testBuiltinSystemDateExposesDirectorDateParts() {
+        LingoVM vm = new LingoVM(null);
+
+        Datum result = vm.callHandler("systemDate", List.of());
+
+        assertTrue(result instanceof Datum.PropList, "systemDate() should return an object with date fields");
+        Datum.PropList date = (Datum.PropList) result;
+        assertTrue(date.get("day").toInt() >= 1 && date.get("day").toInt() <= 31);
+        assertTrue(date.get("month").toInt() >= 1 && date.get("month").toInt() <= 12);
+        assertTrue(date.get("year").toInt() >= 2000);
+    }
+
+    @Test
     void testBuiltinIntegerReturnsVoidForNonNumericString() {
         // integer() returns VOID for non-numeric strings (Director behavior).
         // ScummVM: strtol fails, res left as default (VOID).
@@ -797,6 +1206,57 @@ class LingoVMTest {
     }
 
     @Test
+    void countBuiltinKeepsPlainStringsOnListSemantics() {
+        LingoVM vm = new LingoVM(null);
+
+        Datum result = vm.callHandler("count", List.of(Datum.of("Large TV")));
+
+        assertEquals(0, result.toInt());
+    }
+
+    @Test
+    void countBuiltinCountsStringChunkAccessors() {
+        LingoVM vm = new LingoVM(null);
+
+        Datum result = vm.callHandler("count",
+                List.of(new Datum.StringChunkAccessor("Large TV", "char")));
+
+        assertEquals(8, result.toInt());
+
+        result = vm.callHandler("count",
+                List.of(new Datum.StringChunkAccessor("plain,bold", "item")));
+
+        assertEquals(2, result.toInt());
+    }
+
+    @Test
+    void countBuiltinCountsTextMemberChunkAccessors() {
+        LingoVM vm = new LingoVM(null);
+        CastLibProvider.setProvider(new NoOpCastLibProvider() {
+            @Override
+            public Datum getMemberTextRangeProp(int castLibNumber, int memberNumber,
+                                                String chunkType, int start, int end,
+                                                String propName) {
+                if (castLibNumber == 3 && memberNumber == 7
+                        && "char".equals(chunkType)
+                        && start == 1 && end == -1
+                        && "text".equalsIgnoreCase(propName)) {
+                    return Datum.of("Large TV");
+                }
+                return Datum.VOID;
+            }
+        });
+        try {
+            Datum result = vm.callHandler("count",
+                    List.of(new Datum.TextMemberChunkAccessor(3, 7, "char")));
+
+            assertEquals(8, result.toInt());
+        } finally {
+            CastLibProvider.clearProvider();
+        }
+    }
+
+    @Test
     void testBuiltinGetAt() {
         LingoVM vm = new LingoVM(null);
 
@@ -818,7 +1278,47 @@ class LingoVMTest {
     }
 
     @Test
-    void testBuiltinGetaPropSeparatesSymbolAndStringNamespaces() {
+    void testBuiltinPropListGetAtPrefersPositionOverNumericKey() {
+        LingoVM vm = new LingoVM(null);
+        Datum.PropList propList = new Datum.PropList();
+        propList.add("first", Datum.of("positional"), true);
+        propList.add(Datum.of(1), Datum.of("numeric-key"));
+
+        Datum result = vm.callHandler("getAt", List.of(propList, Datum.of(1)));
+
+        assertEquals("positional", result.toStr());
+        assertEquals("numeric-key", vm.callHandler("getaProp", List.of(propList, Datum.of(1))).toStr());
+    }
+
+    @Test
+    void testBuiltinPropListSetAtRaisesWhenOutOfRange() {
+        LingoVM vm = new LingoVM(null);
+        Datum.PropList propList = new Datum.PropList();
+
+        assertThrows(LingoException.class,
+                () -> vm.callHandler("setAt", List.of(propList, Datum.of(42), Datum.of("roller"))));
+
+        assertEquals(0, propList.size());
+    }
+
+    @Test
+    void testBuiltinPropListSetAtKeyCompatibilityUsesSetAPropBehavior() {
+        LingoVM vm = new LingoVM(null);
+        vm.setPropListSetAtByKeyCompatibilityEnabled(true);
+        Datum.PropList propList = new Datum.PropList();
+        propList.add("manager", Datum.of("old"), true);
+        propList.add("manager", Datum.of("second"), false);
+
+        vm.callHandler("setAt", List.of(propList, Datum.of("manager"), Datum.of("new")));
+
+        assertEquals(2, propList.size());
+        assertTrue(propList.entries().getFirst().isSymbolKey());
+        assertEquals("new", propList.getValue(0).toStr());
+        assertEquals("second", propList.getValue(1).toStr());
+    }
+
+    @Test
+    void testBuiltinGetaPropUsesFirstCompatibleSymbolOrStringKey() {
         LingoVM vm = new LingoVM(null);
         Datum.PropList propList = new Datum.PropList();
         propList.add("room_interface", Datum.of(1), true);
@@ -828,11 +1328,11 @@ class LingoVMTest {
         Datum stringResult = vm.callHandler("getaProp", List.of(propList, Datum.of("room_interface")));
 
         assertEquals(1, symbolResult.toInt());
-        assertEquals(2, stringResult.toInt());
+        assertEquals(1, stringResult.toInt());
     }
 
     @Test
-    void testBuiltinDeletePropRemovesOnlyMatchingKeyType() {
+    void testBuiltinDeletePropRemovesFirstCompatibleSymbolOrStringKey() {
         LingoVM vm = new LingoVM(null);
         Datum.PropList propList = new Datum.PropList();
         propList.add("room_interface", Datum.of(1), true);
@@ -841,8 +1341,8 @@ class LingoVMTest {
         vm.callHandler("deleteProp", List.of(propList, Datum.of("room_interface")));
 
         assertEquals(1, propList.size());
-        assertTrue(propList.entries().getFirst().isSymbolKey());
-        assertEquals(1, propList.entries().getFirst().value().toInt());
+        assertFalse(propList.entries().getFirst().isSymbolKey());
+        assertEquals(2, propList.entries().getFirst().value().toInt());
     }
 
     @Test

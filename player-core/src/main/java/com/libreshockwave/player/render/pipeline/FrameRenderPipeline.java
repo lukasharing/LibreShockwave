@@ -9,6 +9,8 @@ import java.util.List;
  */
 public final class FrameRenderPipeline {
 
+    private static String lastStage = "";
+
     private final StageRenderer stageRenderer;
     private final SpriteBaker spriteBaker;
     private final List<FrameRenderPipelineStep> steps = new ArrayList<>();
@@ -32,7 +34,12 @@ public final class FrameRenderPipeline {
         steps.add(step);
     }
 
+    public static String getLastStage() {
+        return lastStage;
+    }
+
     public FrameSnapshot renderFrame(int frameNumber) {
+        lastStage = "init";
         FrameRenderPipelineContext context = new FrameRenderPipelineContext(
                 frameNumber,
                 stageRenderer.getStageWidth(),
@@ -43,13 +50,16 @@ public final class FrameRenderPipeline {
         );
 
         for (FrameRenderPipelineStep step : steps) {
+            lastStage = step.name();
             step.execute(context);
         }
 
+        lastStage = "verify-snapshot";
         if (context.snapshot() == null) {
             throw new IllegalStateException("Frame render pipeline did not produce a snapshot");
         }
 
+        lastStage = "done";
         return context.snapshot();
     }
 
@@ -117,9 +127,9 @@ public final class FrameRenderPipeline {
             return "publish-baked-sprites";
         }
 
-        @Override
+            @Override
         public void execute(FrameRenderPipelineContext context) {
-            stageRenderer.setLastBakedSprites(List.copyOf(context.sprites()));
+            stageRenderer.setLastBakedSprites(new ArrayList<>(context.sprites()));
             context.addTrace(name(), "Published baked sprites for hit testing");
         }
     }
@@ -138,10 +148,10 @@ public final class FrameRenderPipeline {
                     context.stageWidth(),
                     context.stageHeight(),
                     context.backgroundColor(),
-                    List.copyOf(context.sprites()),
+                    new ArrayList<>(context.sprites()),
                     context.debugInfo(),
                     context.stageImage(),
-                    spriteBaker.getTickCounter(),
+                    spriteBaker.getRenderRevision(),
                     context.buildTrace()
             ));
         }

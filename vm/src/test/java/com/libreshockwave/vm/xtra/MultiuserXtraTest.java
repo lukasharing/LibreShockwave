@@ -108,14 +108,33 @@ class MultiuserXtraTest {
         assertEquals(0, xtra.callHandler(1, "getNumberWaitingNetMessages", List.of()).toInt());
     }
 
+    @Test
+    void connectPassesAuthoredModeFlagToBridge() {
+        FakeBridge bridge = new FakeBridge();
+        MultiuserXtra xtra = new MultiuserXtra(bridge, (target, handlerName, args) -> {});
+
+        xtra.createInstance(List.of());
+        xtra.callHandler(1, "connectToNetServer",
+                List.of(Datum.of("*"), Datum.of("*"), Datum.of("example.test"),
+                        Datum.of(1234), Datum.of("*"), Datum.of(1)));
+
+        assertEquals(1, bridge.lastModeFlag);
+    }
+
     private static final class FakeBridge implements MultiuserNetBridge {
         private final List<NetMessage> queue = new ArrayList<>();
         int disconnects;
         int polls;
         int sends;
+        int lastModeFlag;
 
         @Override
         public void requestConnect(int instanceId, String host, int port) {
+        }
+
+        @Override
+        public void requestConnect(int instanceId, String host, int port, int modeFlag) {
+            lastModeFlag = modeFlag;
         }
 
         @Override

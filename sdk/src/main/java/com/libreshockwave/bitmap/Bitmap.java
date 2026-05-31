@@ -18,6 +18,7 @@ public class Bitmap {
     private boolean nativeAlpha; // True for Director-decoded 32-bit bitmaps with real alpha
     private boolean textRenderedImage; // True for bitmaps produced by the text renderer
     private int textRenderBackgroundColor;
+    private Runnable mutationCallback;
     private Palette imagePalette; // Palette for 8-bit images created via image(w,h,8,paletteMember)
     private int paletteRefCastLib = -1;
     private int paletteRefMemberNum = -1;
@@ -102,6 +103,13 @@ public class Bitmap {
     public void markScriptModified() {
         this.scriptModified = true;
         this.mutationRevision++;
+        if (mutationCallback != null) {
+            mutationCallback.run();
+        }
+    }
+
+    public void setMutationCallback(Runnable mutationCallback) {
+        this.mutationCallback = mutationCallback;
     }
 
     public boolean isNativeAlpha() {

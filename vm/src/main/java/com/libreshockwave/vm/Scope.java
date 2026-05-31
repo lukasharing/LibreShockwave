@@ -45,8 +45,8 @@ public final class Scope {
         this.script = script;
         this.handler = handler;
         this.instructions = handler.instructions();
-        this.originalArguments = Datum.normalizeDatumItems(arguments);
-        this.receiver = Datum.valueOrVoid(receiver);
+        this.originalArguments = arguments;  // trust callers — avoid List.copyOf allocation
+        this.receiver = receiver != null ? receiver : Datum.VOID;
         this.bytecodeIndex = 0;
         this.returnValue = Datum.VOID;
         this.returned = false;
@@ -85,7 +85,7 @@ public final class Scope {
         int offset = getDisplayArgumentOffset();
         int explicitCount = Math.max(0, originalArguments.size() - offset);
         if (explicitCount == 0) {
-            return List.of();
+            return new ArrayList<>();
         }
         List<Datum> args = new ArrayList<>(explicitCount);
         for (int i = 0; i < explicitCount; i++) {
@@ -98,7 +98,7 @@ public final class Scope {
                 args.add(Datum.VOID);
             }
         }
-        return List.copyOf(args);
+        return args;
     }
 
     public Datum getReceiver() {
@@ -136,22 +136,20 @@ public final class Scope {
         if (stackTop >= stack.length) {
             stack = Arrays.copyOf(stack, stack.length * 2);
         }
-        stack[stackTop++] = Datum.valueOrVoid(value);
+        stack[stackTop++] = value != null ? value : Datum.VOID;
     }
 
     public void replaceTop(Datum value) {
-        value = Datum.valueOrVoid(value);
         if (stackTop <= 0) {
             push(value);
             return;
         }
-        stack[stackTop - 1] = value;
+        stack[stackTop - 1] = value != null ? value : Datum.VOID;
     }
 
     public void replaceTopTwo(Datum value) {
-        value = Datum.valueOrVoid(value);
         if (stackTop >= 2) {
-            stack[stackTop - 2] = value;
+            stack[stackTop - 2] = value != null ? value : Datum.VOID;
             stack[--stackTop] = null;
         } else {
             stackTop = 0;
@@ -172,16 +170,20 @@ public final class Scope {
         if (stackTop <= 0) return Datum.VOID;
         Datum val = stack[--stackTop];
         stack[stackTop] = null; // help GC
-        return Datum.valueOrVoid(val);
+        return val != null ? val : Datum.VOID;
     }
 
     public Datum peek() {
-        return stackTop > 0 ? Datum.valueOrVoid(stack[stackTop - 1]) : Datum.VOID;
+        if (stackTop <= 0) return Datum.VOID;
+        Datum value = stack[stackTop - 1];
+        return value != null ? value : Datum.VOID;
     }
 
     public Datum peek(int depth) {
         int idx = stackTop - 1 - depth;
-        return (idx >= 0 && idx < stackTop) ? Datum.valueOrVoid(stack[idx]) : Datum.VOID;
+        if (idx < 0 || idx >= stackTop) return Datum.VOID;
+        Datum value = stack[idx];
+        return value != null ? value : Datum.VOID;
     }
 
     public int stackSize() {
@@ -209,12 +211,15 @@ public final class Scope {
 
     private int getParamOffset() {
         if (paramOffset < 0) {
-            // If the receiver is in effectiveArgs[0] but the handler's argCount doesn't
-            // count it (i.e., handler's first declared param is NOT 'me'), offset by 1.
+            // If the receiver is in effectiveArgs[0] but the handler's declared
+            // params do not include it, offset by 1 so param0 is the first
+            // explicit argument. Some external casts do not resolve per-script
+            // argument names through ScriptChunk, so fall back to declared count:
+            // a method with N explicit args and N+1 declared params includes me.
             if (receiver != null && !receiver.isVoid()
                     && !originalArguments.isEmpty()
                     && originalArguments.getFirst() == receiver
-                    && !isFirstParamDeclaredMe()) {
+                    && !prependedReceiverIsDeclaredParam()) {
                 paramOffset = 1;
             } else {
                 paramOffset = 0;
@@ -232,13 +237,27 @@ public final class Scope {
         return 0;
     }
 
-    private boolean isFirstParamDeclaredMe() {
+    private boolean prependedReceiverIsDeclaredParam() {
+        int declaredArgCount = handler.argCount();
+        if (!handler.argNameIds().isEmpty()) {
+            declaredArgCount = Math.max(declaredArgCount, handler.argNameIds().size());
+        }
+        int explicitArgCount = Math.max(0, originalArguments.size() - 1);
+        if (declaredArgCount > explicitArgCount) {
+            return true;
+        }
+
+        Boolean firstParamIsMe = isFirstParamDeclaredMe();
+        return firstParamIsMe != null && firstParamIsMe;
+    }
+
+    private Boolean isFirstParamDeclaredMe() {
         if (handler.argNameIds().isEmpty() || script == null || script.file() == null) {
-            return false;
+            return null;
         }
         var names = script.file().getScriptNamesForScript(script);
         if (names == null) {
-            return false;
+            return null;
         }
         String firstName = names.getName(handler.argNameIds().getFirst());
         return "me".equalsIgnoreCase(firstName);
@@ -252,13 +271,12 @@ public final class Scope {
         }
         // Otherwise return original argument with offset
         if (actualIndex >= 0 && actualIndex < originalArguments.size()) {
-            return Datum.valueOrVoid(originalArguments.get(actualIndex));
+            return originalArguments.get(actualIndex);
         }
         return Datum.VOID;
     }
 
     public void setParam(int index, Datum value) {
-        value = Datum.valueOrVoid(value);
         if (modifiedParams == null) {
             // Lazy allocation on first SET_PARAM
             int size = Math.max(index + 1, originalArguments.size());
@@ -280,7 +298,7 @@ public final class Scope {
 
     public void setLocal(int index, Datum value) {
         if (index >= 0 && index < locals.length) {
-            locals[index] = Datum.valueOrVoid(value);
+            locals[index] = value;
         }
         // Silently ignore out-of-bounds — matches previous HashMap behavior
     }
@@ -300,7 +318,7 @@ public final class Scope {
     }
 
     public void setReturnValue(Datum value) {
-        this.returnValue = Datum.valueOrVoid(value);
+        this.returnValue = value;
         this.returned = true;
     }
 

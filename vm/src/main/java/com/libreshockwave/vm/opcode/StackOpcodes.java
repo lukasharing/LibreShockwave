@@ -169,7 +169,7 @@ public final class StackOpcodes {
                 } else {
                     scriptName = firstArg.toStr();
                 }
-                memberRef = provider.getMemberByName(0, scriptName);
+                memberRef = provider.getScriptMemberByName(0, scriptName);
             }
         }
 

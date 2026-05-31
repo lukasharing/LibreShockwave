@@ -80,14 +80,28 @@ class PropListMethodDispatcherTest {
     }
 
     @Test
-    void getAtDoesNotCrossSymbolAndStringKeysByPropertyName() {
+    void getAtFallsBackAcrossSymbolAndStringKeysWhenExactKeyMissing() {
         Datum.PropList propList = new Datum.PropList();
         propList.add("color", Datum.of(255), false);
 
-        Datum result = PropListMethodDispatcher.dispatch(
+        Datum symbolResult = PropListMethodDispatcher.dispatch(
                 propList, "getAt", List.of(new Datum.Symbol("color")));
+        Datum stringResult = PropListMethodDispatcher.dispatch(
+                propList, "getAt", List.of(Datum.of("color")));
 
-        assertTrue(result.isVoid());
+        assertEquals(255, symbolResult.toInt());
+        assertEquals(255, stringResult.toInt());
+    }
+
+    @Test
+    void getValueFallsBackAcrossSymbolAndStringKeysWhenExactKeyMissing() {
+        Datum.PropList propList = new Datum.PropList();
+        propList.add("name", Datum.of(42), false);
+
+        Datum result = PropListMethodDispatcher.dispatch(
+                propList, "getValue", List.of(new Datum.Symbol("name")));
+
+        assertEquals(42, result.toInt());
     }
 
     @Test

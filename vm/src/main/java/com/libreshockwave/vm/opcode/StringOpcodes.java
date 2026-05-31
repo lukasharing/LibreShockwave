@@ -76,9 +76,20 @@ public final class StringOpcodes {
             ctx.push(Datum.FALSE);
             return true;
         }
-        boolean contains = h.toLowerCase().contains(n.toLowerCase());
+        boolean contains = containsIgnoreCase(h, n);
         ctx.push(contains ? Datum.TRUE : Datum.FALSE);
         return true;
+    }
+
+    private static boolean containsIgnoreCase(String haystack, String needle) {
+        int needleLength = needle.length();
+        int limit = haystack.length() - needleLength;
+        for (int i = 0; i <= limit; i++) {
+            if (haystack.regionMatches(true, i, needle, 0, needleLength)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -124,6 +135,24 @@ public final class StringOpcodes {
         int firstWord = ctx.pop().toInt();
         int lastChar = ctx.pop().toInt();
         int firstChar = ctx.pop().toInt();
+
+        if (stringDatum instanceof Datum.StringChunkAccessor accessor) {
+            ctx.push(stringChunkValue(accessor,
+                    firstChar, lastChar,
+                    firstWord, lastWord,
+                    firstItem, lastItem,
+                    firstLine, lastLine));
+            return true;
+        }
+
+        if (stringDatum instanceof Datum.TextMemberChunkAccessor accessor) {
+            ctx.push(textMemberRangeRef(accessor,
+                    firstChar, lastChar,
+                    firstWord, lastWord,
+                    firstItem, lastItem,
+                    firstLine, lastLine));
+            return true;
+        }
 
         // Fast path: single char extraction (char X of str) — ZERO allocations
         // This is the hottest path during the dump: ~540K calls in replaceChunks loops.
@@ -183,6 +212,147 @@ public final class StringOpcodes {
 
         ctx.push(Datum.of(result));
         return true;
+    }
+
+    private static Datum stringChunkValue(
+            Datum.StringChunkAccessor accessor,
+            int firstChar, int lastChar,
+            int firstWord, int lastWord,
+            int firstItem, int lastItem,
+            int firstLine, int lastLine) {
+        String chunkType = accessor.chunkType() != null
+                ? accessor.chunkType().toLowerCase()
+                : "char";
+        int[] bounds = boundsForChunk(chunkType, firstChar, lastChar,
+                firstWord, lastWord, firstItem, lastItem, firstLine, lastLine);
+        int first = bounds[0];
+        int last = bounds[1];
+        if (first == 0 && last == 0) {
+            int[] fallback = firstNonZeroBounds(firstChar, lastChar, firstWord, lastWord,
+                    firstItem, lastItem, firstLine, lastLine);
+            if (fallback != null) {
+                first = fallback[0];
+                last = fallback[1];
+            }
+        }
+        if (first == 0 && last == 0) {
+            first = 1;
+            last = -1;
+        } else if (first == 0) {
+            first = last;
+        } else if (last == 0) {
+            last = first;
+        }
+
+        StringChunkType type;
+        try {
+            type = StringChunkType.fromName(chunkType);
+        } catch (IllegalArgumentException ex) {
+            type = StringChunkType.CHAR;
+        }
+        return Datum.of(resolveChunkRange(accessor.value(), type, first, last, getItemDelimiter()));
+    }
+
+    private static Datum.TextMemberRangeRef textMemberRangeRef(
+            Datum.TextMemberChunkAccessor accessor,
+            int firstChar, int lastChar,
+            int firstWord, int lastWord,
+            int firstItem, int lastItem,
+            int firstLine, int lastLine) {
+        String chunkType = accessor.chunkType() != null
+                ? accessor.chunkType().toLowerCase()
+                : "char";
+
+        int first;
+        int last;
+        switch (chunkType) {
+            case "line" -> {
+                first = firstLine;
+                last = lastLine;
+            }
+            case "item" -> {
+                first = firstItem;
+                last = lastItem;
+            }
+            case "word" -> {
+                first = firstWord;
+                last = lastWord;
+            }
+            case "char" -> {
+                first = firstChar;
+                last = lastChar;
+            }
+            default -> {
+                chunkType = firstNonZeroChunkType(firstChar, lastChar, firstWord, lastWord,
+                        firstItem, lastItem, firstLine, lastLine);
+                int[] bounds = boundsForChunk(chunkType, firstChar, lastChar, firstWord, lastWord,
+                        firstItem, lastItem, firstLine, lastLine);
+                first = bounds[0];
+                last = bounds[1];
+            }
+        }
+
+        if (first == 0 && last == 0) {
+            int[] fallback = firstNonZeroBounds(firstChar, lastChar, firstWord, lastWord,
+                    firstItem, lastItem, firstLine, lastLine);
+            if (fallback != null) {
+                first = fallback[0];
+                last = fallback[1];
+            }
+        }
+        if (first == 0 && last == 0) {
+            first = 1;
+            last = -1;
+        } else if (first == 0) {
+            first = last;
+        } else if (last == 0) {
+            last = first;
+        }
+
+        return new Datum.TextMemberRangeRef(
+                accessor.castLibNum(),
+                accessor.memberNum(),
+                chunkType,
+                first,
+                last);
+    }
+
+    private static String firstNonZeroChunkType(
+            int firstChar, int lastChar,
+            int firstWord, int lastWord,
+            int firstItem, int lastItem,
+            int firstLine, int lastLine) {
+        if (firstLine != 0 || lastLine != 0) return "line";
+        if (firstItem != 0 || lastItem != 0) return "item";
+        if (firstWord != 0 || lastWord != 0) return "word";
+        if (firstChar != 0 || lastChar != 0) return "char";
+        return "char";
+    }
+
+    private static int[] firstNonZeroBounds(
+            int firstChar, int lastChar,
+            int firstWord, int lastWord,
+            int firstItem, int lastItem,
+            int firstLine, int lastLine) {
+        if (firstLine != 0 || lastLine != 0) return new int[]{firstLine, lastLine};
+        if (firstItem != 0 || lastItem != 0) return new int[]{firstItem, lastItem};
+        if (firstWord != 0 || lastWord != 0) return new int[]{firstWord, lastWord};
+        if (firstChar != 0 || lastChar != 0) return new int[]{firstChar, lastChar};
+        return null;
+    }
+
+    private static int[] boundsForChunk(
+            String chunkType,
+            int firstChar, int lastChar,
+            int firstWord, int lastWord,
+            int firstItem, int lastItem,
+            int firstLine, int lastLine) {
+        return switch (chunkType) {
+            case "line" -> new int[]{firstLine, lastLine};
+            case "item" -> new int[]{firstItem, lastItem};
+            case "word" -> new int[]{firstWord, lastWord};
+            default -> new int[]{firstChar, lastChar};
+        };
     }
 
     // Context variable types (matching dirplayer-rs ContextVars)
@@ -504,15 +674,13 @@ public final class StringOpcodes {
      */
     private static Datum getContextVar(ExecutionContext ctx, int varType,
                                        Datum idDatum, Datum castIdDatum) {
-        int variableMultiplier = ctx.getVariableMultiplier();
-
         switch (varType) {
             case VAR_TYPE_LOCAL: {
-                int localIndex = idDatum.toInt() / variableMultiplier;
+                int localIndex = idDatum.toInt();
                 return ctx.getLocal(localIndex);
             }
             case VAR_TYPE_ARG: {
-                int argIndex = idDatum.toInt() / variableMultiplier;
+                int argIndex = idDatum.toInt();
                 return ctx.getParam(argIndex);
             }
             case VAR_TYPE_FIELD: {
@@ -553,16 +721,14 @@ public final class StringOpcodes {
      */
     private static void setContextVar(ExecutionContext ctx, int varType,
                                       Datum idDatum, Datum castIdDatum, Datum value) {
-        int variableMultiplier = ctx.getVariableMultiplier();
-
         switch (varType) {
             case VAR_TYPE_LOCAL: {
-                int localIndex = idDatum.toInt() / variableMultiplier;
+                int localIndex = idDatum.toInt();
                 ctx.setLocal(localIndex, value);
                 break;
             }
             case VAR_TYPE_ARG: {
-                int argIndex = idDatum.toInt() / variableMultiplier;
+                int argIndex = idDatum.toInt();
                 ctx.setParam(argIndex, value);
                 break;
             }
@@ -640,17 +806,13 @@ public final class StringOpcodes {
         // CHAR type has no delimiter — skip delimiter handling entirely.
         // This is the hot path for replaceChunks (delete char[1..N]).
         if (chunk.type() != StringChunkType.CHAR) {
-            // For LINE type, detect actual delimiter from the source string
-            String delim = (chunk.type() == StringChunkType.LINE) ? getLineDelimiter(str) : getChunkDelimiter(chunk.type(), itemDelimiter);
-            // Try to consume trailing delimiter
-            if (deleteEnd < str.length()) {
-                if (delim.length() > 0 && str.startsWith(delim, deleteEnd)) {
-                    deleteEnd += delim.length();
-                }
+            int contentEnd = chunk.type() == StringChunkType.LINE
+                    ? StringChunkUtils.lineContentLength(str)
+                    : str.length();
+            if (deleteEnd < contentEnd) {
+                deleteEnd += chunkDelimiterWidthAt(str, deleteEnd, chunk.type(), itemDelimiter);
             } else if (deleteStart > 0) {
-                if (delim.length() > 0 && str.substring(0, deleteStart).endsWith(delim)) {
-                    deleteStart -= delim.length();
-                }
+                deleteStart -= chunkDelimiterWidthBefore(str, deleteStart, chunk.type(), itemDelimiter);
             }
         }
 
@@ -690,16 +852,19 @@ public final class StringOpcodes {
             return getItemByteRange(str, first, last, itemDelimiter);
         }
 
-        // WORD/LINE: use existing split+cache approach
+        // LINE: direct scan preserves mixed CR/LF/CRLF and excludes trailing
+        // protocol terminators exactly like Director-authored parsers expect.
+        if (type == StringChunkType.LINE) {
+            return getLineByteRange(str, first, last);
+        }
+
+        // WORD: use existing split+cache approach
         List<String> chunks = StringChunkUtils.splitIntoChunks(str, type, itemDelimiter);
         if (chunks.isEmpty()) return null;
         if (first > chunks.size()) return null;
         if (last > chunks.size()) last = chunks.size();
 
-        // For LINE type, detect the actual delimiter from the source string
-        // (may be \r, \n, or \r\n). Using a fixed \r\n causes off-by-one when
-        // the text uses single-char \r delimiters (e.g., "Staff HQ\r..." loses first char).
-        String delimiter = (type == StringChunkType.LINE) ? getLineDelimiter(str) : getChunkDelimiter(type, itemDelimiter);
+        String delimiter = getChunkDelimiter(type, itemDelimiter);
         int start = 0;
         for (int i = 0; i < first - 1; i++) {
             start += chunks.get(i).length();
@@ -728,17 +893,78 @@ public final class StringOpcodes {
         int rangeStart = -1;
 
         for (int i = 0; i <= str.length(); i++) {
-            if (i == str.length() || str.charAt(i) == delimiter) {
+            if (i == str.length() || StringChunkUtils.isItemDelimiterAt(str, i, delimiter)) {
                 if (chunkNum == first) rangeStart = chunkStart;
                 if (chunkNum == last) {
                     return rangeStart >= 0 ? new int[] { rangeStart, i } : null;
                 }
                 if (chunkNum > last) break;
+                int width = i < str.length() ? StringChunkUtils.itemDelimiterWidth(str, i, delimiter) : 1;
                 chunkNum++;
-                chunkStart = i + 1;
+                chunkStart = i + width;
+                i += width - 1;
             }
         }
         return (rangeStart >= 0) ? new int[] { rangeStart, str.length() } : null;
+    }
+
+    private static int[] getLineByteRange(String str, int first, int last) {
+        int lineNum = 1;
+        int lineStart = 0;
+        int rangeStart = -1;
+        int i = 0;
+        int limit = StringChunkUtils.lineContentLength(str);
+
+        while (i < limit) {
+            if (StringChunkUtils.isLineDelimiterAt(str, i)) {
+                if (lineNum == first) rangeStart = lineStart;
+                if (lineNum == last) {
+                    return rangeStart >= 0 ? new int[] { rangeStart, i } : null;
+                }
+                int width = StringChunkUtils.lineDelimiterWidth(str, i);
+                lineNum++;
+                i += width;
+                lineStart = i;
+            } else {
+                i++;
+            }
+        }
+
+        if (lineNum == first) rangeStart = lineStart;
+        if (rangeStart >= 0 && lineNum <= last) {
+            return new int[] { rangeStart, limit };
+        }
+        return null;
+    }
+
+    private static int chunkDelimiterWidthAt(String str, int index, StringChunkType type, char itemDelimiter) {
+        if (index < 0 || index >= str.length()) {
+            return 0;
+        }
+        return switch (type) {
+            case CHAR -> 0;
+            case WORD -> str.charAt(index) == ' ' ? 1 : 0;
+            case LINE -> StringChunkUtils.isLineDelimiterAt(str, index)
+                    ? StringChunkUtils.lineDelimiterWidth(str, index)
+                    : 0;
+            case ITEM -> StringChunkUtils.isItemDelimiterAt(str, index, itemDelimiter)
+                    ? StringChunkUtils.itemDelimiterWidth(str, index, itemDelimiter)
+                    : 0;
+        };
+    }
+
+    private static int chunkDelimiterWidthBefore(String str, int index, StringChunkType type, char itemDelimiter) {
+        if (index <= 0 || index > str.length()) {
+            return 0;
+        }
+        if ((type == StringChunkType.LINE || type == StringChunkType.ITEM && itemDelimiter == '\r')
+                && index >= 2
+                && str.charAt(index - 2) == '\r'
+                && str.charAt(index - 1) == '\n') {
+            return 2;
+        }
+        int candidate = index - 1;
+        return chunkDelimiterWidthAt(str, candidate, type, itemDelimiter) > 0 ? 1 : 0;
     }
 
     /**
@@ -831,11 +1057,4 @@ public final class StringOpcodes {
         };
     }
 
-    /**
-     * Get the actual line delimiter for a given string.
-     * Uses the same detection as splitIntoChunks to ensure consistent behavior.
-     */
-    private static String getLineDelimiter(String str) {
-        return StringChunkUtils.pickLineDelimiter(str);
-    }
 }

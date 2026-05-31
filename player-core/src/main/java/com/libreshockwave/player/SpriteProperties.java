@@ -8,9 +8,9 @@ import com.libreshockwave.chunks.CastMemberChunk;
 import com.libreshockwave.id.InkMode;
 import com.libreshockwave.player.cast.CastLibManager;
 import com.libreshockwave.player.cast.CastMember;
+import com.libreshockwave.player.debug.LifecycleDiagnostics;
 import com.libreshockwave.player.render.SpriteRegistry;
 import com.libreshockwave.player.sprite.SpriteState;
-import com.libreshockwave.vm.builtin.sprite.SpriteEventBrokerSupport;
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.builtin.sprite.SpritePropertyProvider;
 
@@ -129,8 +129,8 @@ public class SpriteProperties implements SpritePropertyProvider {
             case "skew" -> Datum.of(sprite.getSkew());
             case "fliph" -> Datum.of(sprite.isFlipH() ? 1 : 0);
             case "flipv" -> Datum.of(sprite.isFlipV() ? 1 : 0);
-            case "moveable", "moveablesprite" -> Datum.of(0);
-            case "editable", "editabletext" -> Datum.of(0);
+            case "moveable", "moveablesprite" -> Datum.of(sprite.isMoveableSprite() ? 1 : 0);
+            case "editable", "editabletext" -> Datum.of(sprite.isEditable() ? 1 : 0);
             case "trails" -> Datum.of(sprite.getTrails());
             case "cursor" -> Datum.of(sprite.getCursor());
             case "scriptinstancelist" -> new Datum.List(new java.util.ArrayList<>(sprite.getScriptInstanceList()));
@@ -408,6 +408,7 @@ public class SpriteProperties implements SpritePropertyProvider {
                     for (Datum item : list.items()) {
                         if (item instanceof Datum.ScriptInstance si) {
                             si.properties().put("spritenum", Datum.of(spriteNum));
+                            si.properties().put("spriteNum", Datum.of(spriteNum));
                         }
                     }
                     sprite.setScriptInstanceList(list.items());
@@ -428,9 +429,16 @@ public class SpriteProperties implements SpritePropertyProvider {
                 }
                 return true;
             }
+            case "moveable", "moveablesprite" -> {
+                sprite.setMoveableSprite(value.isTruthy());
+                return true;
+            }
+            case "editable", "editabletext" -> {
+                sprite.setEditable(value.isTruthy());
+                return true;
+            }
             // Silently accept but don't do anything special
-            case "moveable", "moveablesprite", "editable", "editabletext",
-                 "tweened", "constraint", "scriptnum", "type", "id" -> {
+            case "tweened", "constraint", "scriptnum", "type", "id" -> {
                 return true;
             }
             default -> {
@@ -461,7 +469,6 @@ public class SpriteProperties implements SpritePropertyProvider {
     }
 
     private static void setColorValue(Datum value, java.util.function.IntConsumer setter) {
-        value = Datum.valueOrVoid(value);
         if (!value.isVoid()) {
             if (value instanceof Datum.Color c) {
                 setter.accept((c.r() << 16) | (c.g() << 8) | c.b());
@@ -474,32 +481,19 @@ public class SpriteProperties implements SpritePropertyProvider {
     private static void applyEmptyMemberOverride(SpriteState sprite) {
         sprite.setDynamicMember(0, 0);
         sprite.resetReleasedSpriteTransforms();
+        LifecycleDiagnostics.logSpriteEmptyOverride("spriteMemberEmptyOverride", sprite);
     }
 
     private static void resetReleasedEmptyChannel(SpriteState sprite) {
-        sprite.setScriptInstanceList(retainSyntheticBrokerInstances(sprite.getScriptInstanceList()));
+        sprite.setScriptInstanceList(java.util.List.of());
         sprite.setVisible(false);
         sprite.setCursor(0);
         sprite.setBlend(100);
         sprite.setStretch(0);
         sprite.resetReleasedChannelGeometry();
         sprite.resetReleasedSpriteTransforms();
-    }
-
-    private static java.util.List<Datum> retainSyntheticBrokerInstances(java.util.List<Datum> scriptInstances) {
-        if (scriptInstances == null || scriptInstances.isEmpty()) {
-            return java.util.List.of();
-        }
-        java.util.List<Datum> retained = new java.util.ArrayList<>();
-        for (Datum script : scriptInstances) {
-            if (script instanceof Datum.ScriptInstance instance) {
-                Datum synthetic = instance.properties().get(SpriteEventBrokerSupport.SYNTHETIC_BROKER_FLAG);
-                if (synthetic != null && synthetic.isTruthy()) {
-                    retained.add(instance);
-                }
-            }
-        }
-        return retained;
+        sprite.clearDynamicMember();
+        LifecycleDiagnostics.logReleasedEmptyChannel("spriteReleasedEmptyChannel", sprite);
     }
 
     private boolean assignMember(SpriteState sprite, Datum value, boolean viaSetMemberMethod) {

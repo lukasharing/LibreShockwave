@@ -135,4 +135,158 @@ class SoftwareFrameRendererTransformTest {
         assertEquals(0xFFFF0000, rendered.getPixel(0, 0));
         assertEquals(0xFF0000FF, rendered.getPixel(1, 0));
     }
+
+    @Test
+    void addPinBlackPixelsDoNotDarkenTheStage() {
+        Bitmap src = new Bitmap(2, 1, 32, new int[]{
+                0xFF000000,
+                0xFF202020
+        });
+        RenderSprite sprite = new RenderSprite(
+                1,
+                0, 0,
+                2, 1,
+                0,
+                true,
+                RenderSprite.SpriteType.BITMAP,
+                null,
+                null,
+                0, 0xFFFFFF,
+                false, false,
+                33, 100,
+                false, false,
+                0.0, 0.0,
+                src,
+                false
+        );
+
+        Bitmap rendered = new FrameSnapshot(
+                1, 2, 1, 0x406080,
+                List.of(sprite),
+                "",
+                null,
+                0,
+                RenderPipelineTrace.EMPTY
+        ).renderFrame();
+
+        assertEquals(0xFF406080, rendered.getPixel(0, 0));
+        assertEquals(0xFF6080A0, rendered.getPixel(1, 0));
+    }
+
+    @Test
+    void scaledAddPinBlackPixelsDoNotDarkenTheStage() {
+        Bitmap src = new Bitmap(2, 1, 32, new int[]{
+                0xFF000000,
+                0xFF202020
+        });
+        RenderSprite sprite = new RenderSprite(
+                1,
+                0, 0,
+                4, 1,
+                0,
+                true,
+                RenderSprite.SpriteType.BITMAP,
+                null,
+                null,
+                0, 0xFFFFFF,
+                false, false,
+                33, 100,
+                false, false,
+                0.0, 0.0,
+                src,
+                false
+        );
+
+        Bitmap rendered = new FrameSnapshot(
+                1, 4, 1, 0x406080,
+                List.of(sprite),
+                "",
+                null,
+                0,
+                RenderPipelineTrace.EMPTY
+        ).renderFrame();
+
+        assertEquals(0xFF406080, rendered.getPixel(0, 0));
+        assertEquals(0xFF406080, rendered.getPixel(1, 0));
+        assertEquals(0xFF6080A0, rendered.getPixel(2, 0));
+        assertEquals(0xFF6080A0, rendered.getPixel(3, 0));
+    }
+
+    @Test
+    void subtractPinWhitePixelCanDarkenFullscreenDimmer() {
+        Bitmap src = new Bitmap(1, 1, 32, new int[]{
+                0xFFFFFFFF
+        });
+        RenderSprite sprite = new RenderSprite(
+                1,
+                0, 0,
+                2, 1,
+                0,
+                true,
+                RenderSprite.SpriteType.BITMAP,
+                null,
+                null,
+                0, 0xFFFFFF,
+                false, false,
+                35, 100,
+                false, false,
+                0.0, 0.0,
+                src,
+                false
+        );
+
+        Bitmap rendered = new FrameSnapshot(
+                1, 2, 1, 0x406080,
+                List.of(sprite),
+                "",
+                null,
+                0,
+                RenderPipelineTrace.EMPTY
+        ).renderFrame();
+
+        assertEquals(0xFF000000, rendered.getPixel(0, 0));
+        assertEquals(0xFF000000, rendered.getPixel(1, 0));
+    }
+
+    @Test
+    void nonPinAddAndSubtractWrapWhilePinModesClamp() {
+        assertSinglePixelInk(34, 0xF0F000, 0xFF202020, 0xFF101020);
+        assertSinglePixelInk(33, 0xF0F000, 0xFF202020, 0xFFFFFF20);
+        assertSinglePixelInk(38, 0x103020, 0xFF204010, 0xFFF0F010);
+        assertSinglePixelInk(35, 0x103020, 0xFF204010, 0xFF000010);
+    }
+
+    private static void assertSinglePixelInk(int ink, int backgroundColor, int sourceColor, int expectedColor) {
+        Bitmap src = new Bitmap(1, 1, 32, new int[]{
+                sourceColor
+        });
+        RenderSprite sprite = new RenderSprite(
+                1,
+                0, 0,
+                1, 1,
+                0,
+                true,
+                RenderSprite.SpriteType.BITMAP,
+                null,
+                null,
+                0, 0xFFFFFF,
+                false, false,
+                ink, 100,
+                false, false,
+                0.0, 0.0,
+                src,
+                false
+        );
+
+        Bitmap rendered = new FrameSnapshot(
+                1, 1, 1, backgroundColor,
+                List.of(sprite),
+                "",
+                null,
+                0,
+                RenderPipelineTrace.EMPTY
+        ).renderFrame();
+
+        assertEquals(expectedColor, rendered.getPixel(0, 0));
+    }
 }

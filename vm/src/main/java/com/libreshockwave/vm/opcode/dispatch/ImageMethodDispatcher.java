@@ -677,7 +677,8 @@ public final class ImageMethodDispatcher {
         if (!(destRectDatum instanceof Datum.Rect destRect)) {
             return Datum.VOID;
         }
-        if (!(srcRectDatum instanceof Datum.Rect srcRect)) {
+        Datum.Rect srcRect = resolveSourceRect(srcRectDatum, src);
+        if (srcRect == null) {
             return Datum.VOID;
         }
 
@@ -939,6 +940,16 @@ public final class ImageMethodDispatcher {
         }
 
         return Datum.VOID;
+    }
+
+    private static Datum.Rect resolveSourceRect(Datum srcRectDatum, Bitmap src) {
+        if (srcRectDatum instanceof Datum.Rect srcRect) {
+            return srcRect;
+        }
+        if (srcRectDatum == null || srcRectDatum.isVoid()) {
+            return new Datum.Rect(0, 0, src.getWidth(), src.getHeight());
+        }
+        return null;
     }
 
     private static boolean shouldUseImageDefaultMatte(Bitmap src, Palette.InkMode ink) {
@@ -1375,6 +1386,9 @@ public final class ImageMethodDispatcher {
 
         int edgeRgb = dominantOpaqueEdgeRgb(src, left, top, right, bottom);
         if (edgeRgb < 0 || edgeRgb == 0xFFFFFF || !isLowSaturationRgb(edgeRgb)) {
+            return null;
+        }
+        if (edgeRgb == 0x000000 && !src.isTextRenderedImage() && !src.isScriptModified()) {
             return null;
         }
         if (!opaqueCornersMatch(src, left, top, right, bottom, edgeRgb)) {

@@ -230,14 +230,13 @@ public final class StringChunkUtils {
             }
             return count;
         } else if (chunkType == StringChunkType.LINE) {
-            String delim = pickLineDelimiter(str);
             int count = 1;
-            int dLen = delim.length();
             int i = 0;
-            while (i <= str.length() - dLen) {
-                if (str.regionMatches(i, delim, 0, dLen)) {
+            int limit = lineContentLength(str);
+            while (i < limit) {
+                if (isLineDelimiterAt(str, i)) {
                     count++;
-                    i += dLen;
+                    i += lineDelimiterWidth(str, i);
                 } else {
                     i++;
                 }
@@ -280,22 +279,21 @@ public final class StringChunkUtils {
             }
             return "";
         } else if (chunkType == StringChunkType.LINE) {
-            String delim = pickLineDelimiter(str);
-            int dLen = delim.length();
             int lineNum = 1;
             int start = 0;
             int i = 0;
-            while (i <= str.length() - dLen) {
-                if (str.regionMatches(i, delim, 0, dLen)) {
+            int limit = lineContentLength(str);
+            while (i < limit) {
+                if (isLineDelimiterAt(str, i)) {
                     if (lineNum == index) return str.substring(start, i);
                     lineNum++;
-                    start = i + dLen;
+                    start = i + lineDelimiterWidth(str, i);
                     i = start;
                 } else {
                     i++;
                 }
             }
-            return lineNum == index ? str.substring(start) : "";
+            return lineNum == index ? str.substring(start, limit) : "";
         }
         return "";
     }
@@ -433,7 +431,7 @@ public final class StringChunkUtils {
         return (segStart >= 0) ? str.substring(segStart) : "";
     }
 
-    private static boolean isItemDelimiterAt(String str, int index, char delimiter) {
+    public static boolean isItemDelimiterAt(String str, int index, char delimiter) {
         char ch = str.charAt(index);
         if (delimiter == '\r') {
             return ch == '\r' || ch == '\n';
@@ -441,7 +439,7 @@ public final class StringChunkUtils {
         return ch == delimiter;
     }
 
-    private static int itemDelimiterWidth(String str, int index, char delimiter) {
+    public static int itemDelimiterWidth(String str, int index, char delimiter) {
         if (delimiter == '\r'
                 && str.charAt(index) == '\r'
                 && index + 1 < str.length()
@@ -486,24 +484,24 @@ public final class StringChunkUtils {
 
     /** Get lines [startIdx..endIdx] joined by \r\n, using one-pass scan. */
     public static String getLineRangeDirect(String str, int startIdx, int endIdx) {
-        String delim = pickLineDelimiter(str);
-        int dLen = delim.length();
         int lineNum = 1;
         int segStart = (startIdx == 1) ? 0 : -1;
         int i = 0;
-        while (i <= str.length() - dLen) {
-            if (str.regionMatches(i, delim, 0, dLen)) {
-                if (startIdx > 1 && lineNum == startIdx - 1) segStart = i + dLen;
+        int limit = lineContentLength(str);
+        while (i < limit) {
+            if (isLineDelimiterAt(str, i)) {
+                int width = lineDelimiterWidth(str, i);
+                if (startIdx > 1 && lineNum == startIdx - 1) segStart = i + width;
                 if (lineNum == endIdx) {
                     return (segStart >= 0) ? str.substring(segStart, i) : "";
                 }
                 lineNum++;
-                i += dLen;
+                i += width;
             } else {
                 i++;
             }
         }
-        return (segStart >= 0) ? str.substring(segStart) : "";
+        return (segStart >= 0) ? str.substring(segStart, limit) : "";
     }
 
     // ========================================================================
@@ -576,30 +574,31 @@ public final class StringChunkUtils {
             }
             return words;
         } else if (chunkType == StringChunkType.LINE) {
-            String lineDelim = pickLineDelimiter(str);
             List<String> lines = new ArrayList<>();
             int start = 0;
-            int delimLen = lineDelim.length();
-            while (true) {
-                int idx = str.indexOf(lineDelim, start);
-                if (idx == -1) {
-                    lines.add(str.substring(start));
-                    break;
+            int i = 0;
+            int limit = lineContentLength(str);
+            while (i < limit) {
+                if (isLineDelimiterAt(str, i)) {
+                    lines.add(str.substring(start, i));
+                    i += lineDelimiterWidth(str, i);
+                    start = i;
+                } else {
+                    i++;
                 }
-                lines.add(str.substring(start, idx));
-                start = idx + delimLen;
             }
+            lines.add(str.substring(start, limit));
             return lines;
         } else if (chunkType == StringChunkType.ITEM) {
             List<String> items = new ArrayList<>();
             StringBuilder current = new StringBuilder();
             for (int i = 0; i < str.length(); i++) {
-                char c = str.charAt(i);
-                if (c == itemDelimiter) {
+                if (isItemDelimiterAt(str, i, itemDelimiter)) {
                     items.add(current.toString());
                     current.setLength(0);
+                    i += itemDelimiterWidth(str, i, itemDelimiter) - 1;
                 } else {
-                    current.append(c);
+                    current.append(str.charAt(i));
                 }
             }
             items.add(current.toString());
@@ -628,5 +627,30 @@ public final class StringChunkUtils {
         if (str.contains("\n")) return "\n";
         if (str.contains("\r")) return "\r";
         return "\r\n"; // default
+    }
+
+    public static boolean isLineDelimiterAt(String str, int index) {
+        char ch = str.charAt(index);
+        return ch == '\r' || ch == '\n';
+    }
+
+    public static int lineContentLength(String str) {
+        int end = str.length();
+        while (end > 0) {
+            char ch = str.charAt(end - 1);
+            if (ch != '\u0001' && ch != '\u0002') {
+                break;
+            }
+            end--;
+        }
+        return end;
+    }
+
+    public static int lineDelimiterWidth(String str, int index) {
+        return str.charAt(index) == '\r'
+                && index + 1 < str.length()
+                && str.charAt(index + 1) == '\n'
+                ? 2
+                : 1;
     }
 }

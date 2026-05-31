@@ -16,18 +16,20 @@ public interface SoundProvider {
     boolean isPlaying(int channelNum);
     int getElapsedTime(int channelNum);
 
-    // Thread-local provider pattern
-    ThreadLocal<SoundProvider> CURRENT = new ThreadLocal<>();
+    final class Holder {
+        private Holder() {}
+        static SoundProvider current;
+    }
 
     static void setProvider(SoundProvider provider) {
-        CURRENT.set(provider);
+        Holder.current = provider;
     }
 
     static void clearProvider() {
-        CURRENT.remove();
+        Holder.current = null;
     }
 
     static SoundProvider getProvider() {
-        return CURRENT.get();
+        return Holder.current;
     }
 }

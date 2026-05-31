@@ -80,13 +80,12 @@ public class BitmapCache {
         }
 
         try {
-            Palette effectivePalette = paletteOverride;
-
             // Parse BitmapInfo for useAlpha and paletteId.
-            // Resolve the palette BEFORE decoding so we use the same palette for
-            // both bitmap decoding and InkProcessor backColor resolution.
+            // Do not resolve the default palette here. BitmapResolver handles
+            // cross-file palette references for external casts; resolving through
+            // member.file() first can fall back to System Mac before the real
+            // palette in the main movie or another cast is considered.
             boolean useAlpha = false;
-            Palette palette = effectivePalette;
             if (member.specificData() != null && member.specificData().length >= 10) {
                 DirectorFile memberFile = member.file();
                 int dirVer = 1200;
@@ -95,17 +94,15 @@ public class BitmapCache {
                 }
                 BitmapInfo info = BitmapInfo.parse(member.specificData(), dirVer);
                 useAlpha = info.useAlpha();
-                if (palette == null && memberFile != null) {
-                    palette = memberFile.resolvePalette(info.paletteId());
-                }
             }
 
-            // Decode with resolved palette to ensure pixel colors match the
-            // palette used for InkProcessor backColor resolution.
+            // Decode with the explicit override only for paletteRef. Otherwise
+            // let BitmapResolver choose the authored palette, including cross-file
+            // palette refs in the main movie and loaded external casts.
             Optional<Bitmap> bitmap;
             DirectorFile.clearJpegDecodePending();
-            if (palette != null) {
-                bitmap = player.getBitmapResolver().decodeBitmap(member, palette);
+            if (paletteOverride != null) {
+                bitmap = player.getBitmapResolver().decodeBitmap(member, paletteOverride);
             } else {
                 bitmap = player.getBitmapResolver().decodeBitmap(member);
             }
@@ -119,6 +116,7 @@ public class BitmapCache {
 
             Bitmap raw = bitmap.get();
             raw = coerceNonNativeAlphaToOpaque(raw, useAlpha);
+            Palette palette = raw.getImagePalette() != null ? raw.getImagePalette() : paletteOverride;
 
             // Director applies foreColor/backColor colorization BEFORE ink processing
             // for 1-bit bitmaps. This is critical for masks: a mask with foreColor=white

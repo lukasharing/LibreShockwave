@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class InputHandlerMouseClickTest {
 
@@ -118,6 +119,31 @@ class InputHandlerMouseClickTest {
 
         assertEquals(30, inputState.getRolloverSprite(),
                 "rollover() should not require a prior mouseMove before the click");
+    }
+
+    @Test
+    void rolloverOnlyEventsInvalidateSpriteRevision() {
+        InputState inputState = new InputState();
+        StageRenderer stageRenderer = new StageRenderer(null);
+        stageRenderer.setLastBakedSprites(List.of(
+                sprite(40, 10, 10)
+        ));
+
+        RecordingDispatcher dispatcher = new RecordingDispatcher(inputState, 40);
+        InputHandler handler = new InputHandler(
+                inputState,
+                stageRenderer,
+                new CastLibManager(null, null),
+                () -> 1,
+                () -> dispatcher);
+
+        handler.onMouseMove(11, 11);
+        int revisionBefore = stageRenderer.getSpriteRegistry().getRevision();
+        handler.processInputEvents();
+
+        assertEquals(List.of("mouseEnter:40", "mouseWithin:40"), dispatcher.spriteEvents);
+        assertTrue(stageRenderer.getSpriteRegistry().getRevision() > revisionBefore,
+                "hover handlers can mutate visual state even when no mouse button event is queued");
     }
 
     private static RenderSprite sprite(int channel, int x, int y) {

@@ -72,7 +72,7 @@ class CastMemberLifecycleTest {
     }
 
     @Test
-    void paletteSetterRemapsDynamicBitmapMembersWithoutFileBacking() {
+    void paletteSetterPreservesRgbDynamicBitmapMembersWithoutIndexMetadata() {
         Palette oldPalette = new Palette(new int[]{0xFFFFFF, 0x6C5230}, "old");
         Palette newPalette = new Palette(new int[]{0xFFFFFF, 0xC49A5A}, "new");
 
@@ -87,7 +87,7 @@ class CastMemberLifecycleTest {
                 castLib == 9 && memberNum == 5 ? newPalette : null);
         try {
             assertTrue(member.setProp("palette", Datum.CastMemberRef.of(9, 5)));
-            assertEquals(0xFFC49A5A, member.getBitmap().getPixel(0, 0));
+            assertEquals(0xFF6C5230, member.getBitmap().getPixel(0, 0));
             assertSame(newPalette, member.getBitmap().getImagePalette());
 
             Datum palette = member.getProp("palette");
@@ -119,50 +119,74 @@ class CastMemberLifecycleTest {
     }
 
     @Test
-    void createDynamicMemberReusesFirstErasedRuntimeSlot() {
+    void createDynamicMemberUsesFirstVisibleEmptySlotAndReusesErasedSlot() {
         CastLib castLib = new CastLib(4, null, null);
 
         CastMember first = castLib.createDynamicMember("bitmap");
         CastMember second = castLib.createDynamicMember("text");
 
-        assertEquals(10000, first.getMemberNumber());
-        assertEquals(10001, second.getMemberNumber());
+        assertEquals(1, first.getMemberNumber());
+        assertEquals(2, second.getMemberNumber());
 
         first.erase();
 
         CastMember reused = castLib.createDynamicMember("palette");
 
         assertSame(first, reused);
-        assertEquals(10000, reused.getMemberNumber());
+        assertEquals(1, reused.getMemberNumber());
         assertEquals("palette", reused.getProp("type").toKeyName());
         assertTrue(reused.getProp("type").isSymbol());
     }
 
     @Test
-    void duplicateAuthoredMemberNamesResolveToLatestSlot() throws Exception {
+    void createDynamicMemberMayUseEmptySlotsBelowAuthoredRange() throws Exception {
+        CastLib castLib = new CastLib(4, null, null);
+        installAuthoredChunk(castLib, 500, createBitmapChunk(500, "authored_member"));
+
+        CastMember dynamic = castLib.createDynamicMember("bitmap");
+
+        assertEquals(1, dynamic.getMemberNumber());
+    }
+
+    @Test
+    void retargetingCastLibFileNameClearsAllPreviousMembers() throws Exception {
+        CastLib castLib = new CastLib(4, null, null);
+
+        CastMemberChunk authoredChunk = createBitmapChunk(12000, "authored_high_slot");
+        CastMember authoredWrapper = new CastMember(4, 12000, authoredChunk, null);
+        CastMember runtimeDynamic = new CastMember(4, 12001, MemberType.BITMAP);
+        runtimeDynamic.setName("runtime_buffer");
+
+        installAuthoredChunk(castLib, 12000, authoredChunk);
+        installRuntimeMember(castLib, 12000, authoredWrapper);
+        installRuntimeMember(castLib, 12001, runtimeDynamic);
+
+        assertTrue(castLib.setProp("fileName", Datum.of("replacement.cst")));
+
+        assertNull(castLib.getCachedMember(12000));
+        assertNull(castLib.getCachedMember(12001));
+    }
+
+    @Test
+    void duplicateAuthoredMemberNamesResolveToFirstSlot() throws Exception {
         CastLib castLib = new CastLib(4, null, null);
         CastMemberChunk placeholder = createTextXtraChunk(42, "shared_button_ok");
         CastMemberChunk replacement = createTextXtraChunk(488, "shared_button_ok");
         installAuthoredChunk(castLib, 42, placeholder);
         installAuthoredChunk(castLib, 488, replacement);
 
-        assertSame(replacement, castLib.findMemberByName("shared_button_ok"));
-        assertEquals(488, castLib.getMemberByName("shared_button_ok").getMemberNumber());
+        assertSame(placeholder, castLib.findMemberByName("shared_button_ok"));
+        assertEquals(42, castLib.getMemberByName("shared_button_ok").getMemberNumber());
     }
 
     @Test
-    void globalMemberLookupPrefersVisibleExternalDuplicateOverTransparentBootstrapPlaceholder()
+    void globalMemberLookupUsesFirstCastWhenLaterDuplicateHasBitmapMedia()
             throws Exception {
         CastLib bootstrap = new CastLib(1, null, null);
         CastLib external = new CastLib(2, null, null);
 
         CastMemberChunk placeholderChunk = createBitmapChunk(17, "shared_button_ok");
         installAuthoredChunk(bootstrap, 5, placeholderChunk);
-        CastMember placeholder = new CastMember(1, 5, placeholderChunk, null);
-        Bitmap transparent = new Bitmap(2, 1, 32, new int[]{0x00000000, 0x00000000});
-        transparent.setNativeAlpha(true);
-        placeholder.setBitmapDirectly(transparent);
-        installRuntimeMember(bootstrap, 5, placeholder);
 
         CastMemberChunk visibleChunk = createBitmapChunk(1706, "shared_button_ok");
         installAuthoredChunk(external, 488, visibleChunk);
@@ -177,8 +201,57 @@ class CastMemberLifecycleTest {
         Datum resolved = manager.getMemberByName(0, "shared_button_ok");
 
         assertInstanceOf(Datum.CastMemberRef.class, resolved);
+        assertEquals(1, ((Datum.CastMemberRef) resolved).castLibNum());
+        assertEquals(5, ((Datum.CastMemberRef) resolved).memberNum());
+    }
+
+    @Test
+    void duplicateBitmapNamesInOneCastResolveToFirstSlot() throws Exception {
+        CastLib castLib = new CastLib(2, null, null);
+        installAuthoredChunk(castLib, 10, createBitmapChunk(10, "shared_background"));
+        installAuthoredChunk(castLib, 20, createBitmapChunk(20, "shared_background"));
+        installAuthoredChunk(castLib, 30, createBitmapChunk(30, "shared_background"));
+
+        CastMember visible = new CastMember(2, 20, MemberType.BITMAP);
+        visible.setBitmapDirectly(new Bitmap(2, 1, 32, new int[]{0x00000000, 0xFFFFFFFF}));
+        installRuntimeMember(castLib, 20, visible);
+
+        CastLibManager manager = new CastLibManager(null, null);
+        installCastLib(manager, 2, castLib);
+
+        Datum resolved = manager.getMemberByName(2, "shared_background");
+
+        assertInstanceOf(Datum.CastMemberRef.class, resolved);
         assertEquals(2, ((Datum.CastMemberRef) resolved).castLibNum());
-        assertEquals(488, ((Datum.CastMemberRef) resolved).memberNum());
+        assertEquals(10, ((Datum.CastMemberRef) resolved).memberNum());
+    }
+
+    @Test
+    void renamingAuthoredMemberUpdatesLookupWithoutKeepingOldChunkName() throws Exception {
+        CastLib castLib = new CastLib(2, null, null);
+        installAuthoredChunk(castLib, 10, createBitmapChunk(10, "old_name"));
+
+        CastMember oldRef = castLib.getMemberByName("old_name");
+        assertNotNull(oldRef);
+        assertEquals(10, oldRef.getMemberNumber());
+
+        assertTrue(castLib.setMemberProp(10, "name", Datum.of("new_name")));
+
+        assertEquals("new_name", castLib.getMemberProp(10, "name").toStr());
+        assertNull(castLib.getMemberByName("old_name"));
+        assertEquals(10, castLib.getMemberByName("new_name").getMemberNumber());
+    }
+
+    @Test
+    void renamedMemberDoesNotBeatEarlierDuplicateName() throws Exception {
+        CastLib castLib = new CastLib(2, null, null);
+        installAuthoredChunk(castLib, 5, createBitmapChunk(5, "new_name"));
+        installAuthoredChunk(castLib, 10, createBitmapChunk(10, "old_name"));
+
+        assertTrue(castLib.setMemberProp(10, "name", Datum.of("new_name")));
+
+        assertEquals(5, castLib.getMemberByName("new_name").getMemberNumber());
+        assertNull(castLib.getMemberByName("old_name"));
     }
 
     @Test

@@ -11,12 +11,15 @@ import com.libreshockwave.chunks.TextChunk;
 import com.libreshockwave.format.ChunkType;
 import com.libreshockwave.id.CastLibId;
 import com.libreshockwave.id.MemberId;
+import com.libreshockwave.lingo.StringChunkType;
 import com.libreshockwave.player.render.RenderConfig;
 import com.libreshockwave.player.render.output.TextRenderer;
 import com.libreshockwave.vm.LingoVM;
 import com.libreshockwave.vm.builtin.cast.CastLibProvider;
+import com.libreshockwave.vm.builtin.movie.MoviePropertyProvider;
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.util.LingoValueParser;
+import com.libreshockwave.vm.util.StringChunkUtils;
 
 import java.util.Arrays;
 import java.util.Objects;
@@ -87,6 +90,7 @@ public class CastMember {
 
     // Cached properties
     private String name;
+    private boolean nameExplicitlySet;
     private MemberType memberType;
     private int regPointX;
     private int regPointY;
@@ -115,8 +119,10 @@ public class CastMember {
     private String textAlignment = "left";
     private int textColor = 0xFF000000; // ARGB black
     private int textBgColor = 0xFFFFFFFF; // ARGB white
+    private boolean textBgColorExplicit;
     private boolean textWordWrap = false;
     private boolean textAntialias = false;
+    private int textAntiAliasThreshold = 14;
     private int textBoxType = 0; // 0 = adjust to fit, 1 = fixed
     private int textRectLeft = 0;
     private int textRectTop = 0;
@@ -126,6 +132,7 @@ public class CastMember {
     private int textTopSpacing = 0;
     private boolean textImageDirty = true; // Re-render when properties change
     private Bitmap textRenderedImage; // Cached rendered text image
+    private boolean textRenderedImageScriptMutated;
     private int textRenderedWidth = -1;
     private int textRenderedHeight = -1;
     private int textRenderedBgColor = Integer.MIN_VALUE;
@@ -142,13 +149,12 @@ public class CastMember {
         this.memberType = chunk.memberType();
         this.regPointX = chunk.regPointX();
         this.regPointY = chunk.regPointY();
+        if (memberType == MemberType.XTRA && chunk.isTextXtra()) {
+            this.textAntialias = true;
+        }
 
-        // Clear name for text members that have no STXT data (empty placeholder slots).
-        // This prevents the Resource Manager from indexing them, avoiding false-positive
-        // memberExists() results (e.g. Habbo .props members with no property data).
         // Clear name for text members with empty content (placeholder slots).
-        // This prevents the Resource Manager from indexing them, avoiding
-        // false-positive memberExists() results for .props members.
+        // This prevents authored member registries from indexing empty field slots.
         if ((memberType == MemberType.TEXT || memberType == MemberType.BUTTON)
                 && !this.name.isEmpty() && sourceFile != null) {
             String earlyText = loadTextEagerly();
@@ -174,6 +180,10 @@ public class CastMember {
      * Constructor for dynamically created members (via new(#type, castLib)).
      */
     public CastMember(int castLibNumber, int memberNumber, MemberType memberType) {
+        this(castLibNumber, memberNumber, memberType, false);
+    }
+
+    public CastMember(int castLibNumber, int memberNumber, MemberType memberType, boolean directorTextAsset) {
         this.castLibId = new CastLibId(castLibNumber);
         this.memberId = new MemberId(memberNumber);
         this.chunk = null;
@@ -182,6 +192,9 @@ public class CastMember {
         this.memberType = memberType;
         this.state = State.LOADED; // Dynamic members are immediately ready
         this.regPointPinnedToMember = false;
+        if (directorTextAsset && memberType == MemberType.TEXT) {
+            this.textAntialias = true;
+        }
     }
 
     /**
@@ -242,6 +255,7 @@ public class CastMember {
                 sourceFile.decodeBitmap(chunk, palette)
                         .ifPresent(b -> {
                             bitmap = b.copyWithNonNativeAlphaOpaque();
+                            attachBitmapImageMutationCallback(bitmap);
                             transparentPlaceholderBitmap = false;
                         });
                 lastDecodedPaletteVersion = paletteVersion;
@@ -343,6 +357,7 @@ public class CastMember {
             sourceFile.decodeBitmap(chunk)
                     .ifPresent(b -> {
                         bitmap = b.copyWithNonNativeAlphaOpaque();
+                        attachBitmapImageMutationCallback(bitmap);
                         transparentPlaceholderBitmap = false;
                     });
         } catch (Exception e) {
@@ -398,6 +413,8 @@ public class CastMember {
                 textFont = styledText.fontName();
             }
             textFontSize = styledText.fontSize();
+            textAntialias = styledText.antialias();
+            textAntiAliasThreshold = styledText.antiAliasThreshold();
         } else {
             textContent = "";
         }
@@ -409,6 +426,16 @@ public class CastMember {
      */
     public boolean hasDynamicText() {
         return dynamicText != null;
+    }
+
+    public Bitmap getScriptModifiedTextImage() {
+        if (!isTextLike()) {
+            return null;
+        }
+        if (textImageDirty || textRenderedImage == null || !textRenderedImageScriptMutated) {
+            return null;
+        }
+        return textRenderedImage;
     }
 
     /**
@@ -467,6 +494,10 @@ public class CastMember {
         return name;
     }
 
+    public boolean hasRuntimeNameOverride() {
+        return nameExplicitlySet;
+    }
+
     public void setName(String name) {
         updateName(name);
     }
@@ -474,6 +505,7 @@ public class CastMember {
     private void updateName(String newName) {
         String nextName = newName != null ? newName : "";
         this.name = nextName;
+        this.nameExplicitlySet = true;
     }
 
     private boolean isRuntimeDynamicMember() {
@@ -491,8 +523,15 @@ public class CastMember {
     }
 
     public void reuseAs(MemberType newType) {
+        reuseAs(newType, false);
+    }
+
+    public void reuseAs(MemberType newType, boolean directorTextAsset) {
         resetRuntimePayload();
         memberType = newType != null ? newType : MemberType.NULL;
+        if (directorTextAsset && memberType == MemberType.TEXT) {
+            this.textAntialias = true;
+        }
         state = State.LOADED;
     }
 
@@ -541,7 +580,7 @@ public class CastMember {
     public int getTextFontSize() { return textFontSize; }
     public String getTextFontStyle() { return textFontStyle; }
     public int getTextFixedLineSpace() { return textFixedLineSpace; }
-    public int getTextLineAdvance() { return textFixedLineSpace; }
+    public int getTextLineAdvance() { return effectiveTextLineAdvance(); }
     public boolean isTextWordWrap() { return textWordWrap; }
 
     /**
@@ -553,13 +592,25 @@ public class CastMember {
         String text = getTextContent();
         if (text == null || text.isEmpty()) return 0;
         return textRenderer.locToCharPos(text, localX, localY,
-                textFont, textFontSize, textFontStyle, textFixedLineSpace,
-                textAlignment, fieldWidth);
+                textFont, textFontSize, textFontStyle, effectiveTextLineAdvance(),
+                getTextAlignmentForWidth(fieldWidth), fieldWidth);
     }
 
     public String getTextAlignment() { return textAlignment; }
-    public String getTextAlignmentForWidth(int fieldWidth) { return textAlignment; }
+
+    public String getTextAlignmentForWidth(int fieldWidth) {
+        if (!editable || fieldWidth <= 0 || textWordWrap) {
+            return textAlignment;
+        }
+        if ("center".equals(textAlignment) || "right".equals(textAlignment)) {
+            return "editable-" + textAlignment;
+        }
+        return textAlignment;
+    }
+
     public int getTextBgColor() { return textBgColor; }
+
+    public boolean hasExplicitTextBgColor() { return textBgColorExplicit; }
 
     public boolean isLoaded() {
         return state == State.LOADED;
@@ -571,6 +622,7 @@ public class CastMember {
         }
         if (bitmap == null && memberType == MemberType.BITMAP && chunk != null) {
             bitmap = createTransparentBitmapFromInfo();
+            attachBitmapImageMutationCallback(bitmap);
         }
         if (transparentPlaceholderBitmap) {
             retryPlaceholderDecode();
@@ -583,6 +635,10 @@ public class CastMember {
         }
         syncBitmapAnchorState();
         return bitmap;
+    }
+
+    boolean hasMaterializedBitmap() {
+        return bitmap != null && !transparentPlaceholderBitmap;
     }
 
     private Bitmap createTransparentBitmapFromInfo() {
@@ -611,6 +667,7 @@ public class CastMember {
             sourceFile.decodeBitmap(chunk)
                     .ifPresent(b -> {
                         bitmap = b.copyWithNonNativeAlphaOpaque();
+                        attachBitmapImageMutationCallback(bitmap);
                         transparentPlaceholderBitmap = false;
                     });
         } catch (Exception ignored) {
@@ -621,6 +678,7 @@ public class CastMember {
     /** Set bitmap directly (for initial load, not Lingo assignment). Does NOT mark as script-modified. */
     public void setBitmapDirectly(Bitmap bmp) {
         this.bitmap = bmp;
+        attachBitmapImageMutationCallback(this.bitmap);
         this.transparentPlaceholderBitmap = false;
         syncBitmapAnchorState();
     }
@@ -678,6 +736,8 @@ public class CastMember {
 
     public int getPaletteRefCastLib() { return paletteRefCastLib; }
     public int getPaletteRefMemberNum() { return paletteRefMemberNum; }
+    public String getPaletteRefSystemName() { return paletteRefSystemName; }
+    public com.libreshockwave.bitmap.Palette getRuntimePaletteOverride() { return runtimePaletteOverride; }
     public int getPaletteVersion() { return paletteVersion; }
 
     /**
@@ -818,6 +878,7 @@ public class CastMember {
                     bitmap = new Bitmap(1, 1, 32);
                     transparentPlaceholderBitmap = false;
                     bitmap.fill(0xFFFFFFFF);
+                    attachBitmapImageMutationCallback(bitmap);
                 }
                 // Return a live ImageRef that always resolves to this member's current bitmap.
                 // This is critical: Lingo like pImg = member.image must stay in sync even after
@@ -834,9 +895,9 @@ public class CastMember {
             case "width" -> Datum.of(textRectRight - textRectLeft);
             case "height" -> {
                 // Director auto-expands text member height for boxType=adjust, but
-                // it does not shrink below the scripted rect. Habbo's r33/r31 text
-                // wrapper relies on height and rect agreeing when it builds a
-                // fake-alpha mask from member.image.
+                // it does not shrink below the scripted rect. Authored text wrappers
+                // can rely on height and rect agreeing when building a mask from
+                // member.image.
                 if (textBoxType == 0) {
                     Bitmap rendered = renderTextToImage();
                     if (rendered != null) {
@@ -867,8 +928,17 @@ public class CastMember {
                 yield new Datum.Rect(textRectLeft, textRectTop, textRectRight, textRectBottom);
             }
             case "image" -> {
-                Bitmap img = renderTextToImage();
+                // Text member .image is local member artwork. A scripted
+                // background belongs in that artwork, but the default white
+                // tool color must not become an invented opaque text box when
+                // window code copies the image over an existing panel.
+                Bitmap img = getTextMemberImageForImageRef();
                 if (img != null) {
+                    // Director returns the rendered image value at this point,
+                    // not a delayed reference to future writer text. The bitmap
+                    // itself stays mutable so code that draws into member.image
+                    // still invalidates the owning text member via its mutation
+                    // callback.
                     yield new Datum.ImageRef(img);
                 }
                 yield Datum.VOID;
@@ -877,18 +947,20 @@ public class CastMember {
             case "fontsize" -> Datum.of(textFontSize);
             case "fontstyle" -> Datum.of(textFontStyle);
             case "alignment" -> Datum.symbol(textAlignment);
-            case "color" -> new Datum.Color(
+            case "color", "txtcolor" -> new Datum.Color(
                     (textColor >> 16) & 0xFF,
                     (textColor >> 8) & 0xFF,
                     textColor & 0xFF);
-            case "bgcolor" -> new Datum.Color(
+            case "bgcolor", "txtbgcolor", "palette" -> new Datum.Color(
                     (textBgColor >> 16) & 0xFF,
                     (textBgColor >> 8) & 0xFF,
                     textBgColor & 0xFF);
             case "wordwrap" -> Datum.of(textWordWrap ? 1 : 0);
             case "antialias" -> Datum.of(textAntialias ? 1 : 0);
+            case "antialiasthreshold" -> Datum.of(textAntiAliasThreshold);
             case "boxtype" -> Datum.of(textBoxType);
             case "fixedlinespace" -> Datum.of(textFixedLineSpace);
+            case "lineheight" -> Datum.of(effectiveTextLineAdvance());
             case "topspacing" -> Datum.of(textTopSpacing);
             case "editable" -> Datum.of(editable ? 1 : 0);
             case "charposttoloc" -> Datum.VOID; // handled as method, not property
@@ -897,49 +969,95 @@ public class CastMember {
     }
 
     /**
-     * Render the text content of this member to a Bitmap.
+     * Render the text content of this member to a Bitmap for direct sprite output.
      * Delegates to the platform-specific TextRenderer.
-     * This implements Director's text member .image property.
      */
     public Bitmap renderTextToImage() {
         int width = textRectRight - textRectLeft;
         if (textBoxType == 0 && !textWordWrap) {
             width = Math.max(width, measureAutoTextWidth(getTextContent()));
         }
-        // For boxType=adjust (0), let the renderer auto-size the height to fit
-        // the text content. Director auto-adjusts the rect height when text is set,
-        // so the stored rectBottom may not reflect the actual content height.
-        int height = textBoxType == 0 ? 0 : (textRectBottom - textRectTop);
-        return renderTextToImage(width, height, textBgColor);
+        int rectHeight = Math.max(1, textRectBottom - textRectTop);
+        // For boxType=adjust (0), Director expands when needed, but it still
+        // renders into the scripted rect when that rect is already tall enough.
+        // Window text wrappers depend on this because they copy pTextMem.image
+        // into an equally sized buffer; returning a shorter image makes
+        // copyPixels scale the text vertically.
+        int height = rectHeight;
+        if (textBoxType == 0) {
+            int naturalHeight = measureAdjustedTextHeight(width, rectHeight);
+            height = isRuntimeDynamicMember() && rectHeight >= 256
+                    ? naturalHeight
+                    : Math.max(rectHeight, naturalHeight);
+        }
+        return renderTextToImage(width, height, imageRenderBgColor());
     }
 
-    private Bitmap renderTextMaskImage() {
-        if (textRenderer == null) {
-            return null;
-        }
+    private Bitmap renderTextMemberImage() {
         int width = textRectRight - textRectLeft;
         if (textBoxType == 0 && !textWordWrap) {
-            width = Math.max(width, measureAutoTextWidth(getTextContent()));
+            int naturalWidth = measureAutoTextWidth(getTextContent());
+            if (isRuntimeDynamicMember() && (textRectBottom - textRectTop) >= 256) {
+                width = naturalWidth;
+            } else {
+                width = Math.max(width, naturalWidth);
+            }
         }
-        int height = textBoxType == 0 ? 0 : (textRectBottom - textRectTop);
-        Bitmap maskImage = textRenderer.renderText(
-                getTextContent(),
-                width,
-                height,
-                textFont,
-                textFontSize,
-                textFontStyle,
-                textAlignment,
-                0xFF000000,
-                0xFFFFFFFF,
-                textWordWrap,
-                textAntialias,
-                textFixedLineSpace,
-                textTopSpacing);
-        if (maskImage != null && maskImage.hasTransparentPixels()) {
-            maskImage.setNativeAlpha(true);
+        int rectHeight = Math.max(1, textRectBottom - textRectTop);
+        int height = rectHeight;
+        if (textBoxType == 0) {
+            int naturalHeight = measureAdjustedTextHeight(width, rectHeight);
+            height = isRuntimeDynamicMember() && rectHeight >= 256
+                    ? naturalHeight
+                    : Math.max(rectHeight, naturalHeight);
         }
-        return maskImage;
+        return renderTextToImage(width, height, memberImageRenderBgColor());
+    }
+
+    private Bitmap getTextMemberImageForImageRef() {
+        if (textRenderedImage != null && !textImageDirty) {
+            return textRenderedImage;
+        }
+        return renderTextMemberImage();
+    }
+
+    private int measureAdjustedTextHeight(int width, int rectHeight) {
+        if (textRenderer == null) {
+            return rectHeight;
+        }
+        Bitmap measured = renderTextToImage(width, 0, imageRenderBgColor());
+        return measured != null ? Math.max(1, measured.getHeight()) : rectHeight;
+    }
+
+    private int imageRenderBgColor() {
+        return textBgColor;
+    }
+
+    private int memberImageRenderBgColor() {
+        return textBgColorExplicit ? textBgColor : 0x00FFFFFF;
+    }
+
+    private boolean effectiveTextAntialias() {
+        return textAntialias && textFontSize >= textAntiAliasThreshold;
+    }
+
+    private int effectiveTextLineAdvance() {
+        int baseLineHeight = baseTextLineHeight();
+        if (textTopSpacing == 1 && baseLineHeight == textFontSize) {
+            return baseLineHeight;
+        }
+        return Math.max(1, baseLineHeight + Math.max(0, textTopSpacing));
+    }
+
+    private int baseTextLineHeight() {
+        int baseLineHeight = textFixedLineSpace;
+        if (textRenderer != null) {
+            baseLineHeight = textRenderer.getLineHeight(textFont, textFontSize, textFontStyle, textFixedLineSpace);
+        }
+        if (baseLineHeight <= 0) {
+            baseLineHeight = textFontSize;
+        }
+        return baseLineHeight;
     }
 
     private int measureAutoTextWidth(String text) {
@@ -981,11 +1099,14 @@ public class CastMember {
         }
 
         String text = getTextContent();
+        String alignment = getTextAlignmentForWidth(width);
         textRenderedImage = textRenderer.renderText(text, width, height,
                 textFont, textFontSize, textFontStyle,
-                textAlignment, textColor, bgColor,
-                textWordWrap, textAntialias,
+                alignment, textColor, bgColor,
+                textWordWrap, effectiveTextAntialias(),
                 textFixedLineSpace, textTopSpacing);
+        textRenderedImageScriptMutated = false;
+        attachTextImageMutationCallback(textRenderedImage);
         if (textRenderedImage != null && ((((bgColor >>> 24) & 0xFF) < 0xFF)
                 || textRenderedImage.hasTransparentPixels())) {
             textRenderedImage.setNativeAlpha(true);
@@ -996,6 +1117,23 @@ public class CastMember {
         textImageDirty = false;
 
         return textRenderedImage;
+    }
+
+    private void attachTextImageMutationCallback(Bitmap bitmap) {
+        if (bitmap == null) {
+            return;
+        }
+        bitmap.setMutationCallback(() -> {
+            textRenderedImageScriptMutated = true;
+            notifyMemberVisualChanged();
+        });
+    }
+
+    private void attachBitmapImageMutationCallback(Bitmap bitmap) {
+        if (bitmap == null) {
+            return;
+        }
+        bitmap.setMutationCallback(this::notifyMemberVisualChanged);
     }
 
     private Datum getScriptProp(String prop) {
@@ -1017,6 +1155,27 @@ public class CastMember {
         return switch (prop) {
             case "width", "height" -> Datum.of(0); // TODO: parse from specificData
             default -> Datum.VOID;
+        };
+    }
+
+    private static int textBoxTypeFromDatum(Datum value) {
+        if (value instanceof Datum.Symbol symbol) {
+            return textBoxTypeFromName(symbol.name());
+        }
+        if (value instanceof Datum.Str str) {
+            return textBoxTypeFromName(str.value());
+        }
+        return value.toInt();
+    }
+
+    private static int textBoxTypeFromName(String name) {
+        if (name == null) {
+            return 0;
+        }
+        return switch (name.trim().toLowerCase()) {
+            case "adjust" -> 0;
+            case "fixed", "scroll", "limit" -> 1;
+            default -> 0;
         };
     }
 
@@ -1072,6 +1231,7 @@ public class CastMember {
             Bitmap newBmp = sourceBitmap.copy();
             newBmp.markScriptModified();
             this.bitmap = newBmp;
+            attachBitmapImageMutationCallback(this.bitmap);
             this.transparentPlaceholderBitmap = false;
             if (!regPointPinnedToMember) {
                 if (sourceBitmap.hasAnchorPoint()) {
@@ -1113,8 +1273,10 @@ public class CastMember {
             this.textAlignment = source.textAlignment;
             this.textColor = source.textColor;
             this.textBgColor = source.textBgColor;
+            this.textBgColorExplicit = source.textBgColorExplicit;
             this.textWordWrap = source.textWordWrap;
             this.textAntialias = source.textAntialias;
+            this.textAntiAliasThreshold = source.textAntiAliasThreshold;
             this.textBoxType = source.textBoxType;
             this.textRectLeft = source.textRectLeft;
             this.textRectTop = source.textRectTop;
@@ -1136,6 +1298,7 @@ public class CastMember {
                 Bitmap copy = srcBitmap.copy();
                 copy.markScriptModified();
                 this.bitmap = copy;
+                attachBitmapImageMutationCallback(this.bitmap);
                 this.transparentPlaceholderBitmap = false;
                 this.regPointX = source.getRegPointX();
                 this.regPointY = source.getRegPointY();
@@ -1221,17 +1384,7 @@ public class CastMember {
                 return true;
             }
             case "fontstyle" -> {
-                if (value instanceof Datum.List list) {
-                    // Director fontStyle is a list like [#bold, #italic]
-                    StringBuilder sb = new StringBuilder();
-                    for (Datum item : list.items()) {
-                        if (sb.length() > 0) sb.append(",");
-                        sb.append(item.toStr());
-                    }
-                    this.textFontStyle = sb.toString();
-                } else {
-                    this.textFontStyle = value.toStr();
-                }
+                this.textFontStyle = normalizeFontStyle(value);
                 textImageDirty = true;
                 notifyMemberVisualChanged();
                 return true;
@@ -1246,7 +1399,7 @@ public class CastMember {
                 notifyMemberVisualChanged();
                 return true;
             }
-            case "color" -> {
+            case "color", "txtcolor" -> {
                 // Director ignores VOID — keeps the current color
                 if (!value.isVoid()) {
                     this.textColor = Datum.datumToArgb(value);
@@ -1255,10 +1408,11 @@ public class CastMember {
                 }
                 return true;
             }
-            case "bgcolor" -> {
+            case "bgcolor", "txtbgcolor", "palette" -> {
                 // Director ignores VOID — keeps the current bgColor (default white)
                 if (!value.isVoid()) {
                     this.textBgColor = Datum.datumToArgb(value);
+                    this.textBgColorExplicit = true;
                     textImageDirty = true;
                     notifyMemberVisualChanged();
                 }
@@ -1276,8 +1430,14 @@ public class CastMember {
                 notifyMemberVisualChanged();
                 return true;
             }
+            case "antialiasthreshold" -> {
+                this.textAntiAliasThreshold = Math.max(0, value.toInt());
+                textImageDirty = true;
+                notifyMemberVisualChanged();
+                return true;
+            }
             case "boxtype" -> {
-                this.textBoxType = value.toInt();
+                this.textBoxType = textBoxTypeFromDatum(value);
                 textImageDirty = true;
                 notifyMemberVisualChanged();
                 return true;
@@ -1312,6 +1472,14 @@ public class CastMember {
                 notifyMemberVisualChanged();
                 return true;
             }
+            case "lineheight" -> {
+                int lineHeight = Math.max(1, value.toInt());
+                this.textFixedLineSpace = lineHeight;
+                this.textTopSpacing = 0;
+                textImageDirty = true;
+                notifyMemberVisualChanged();
+                return true;
+            }
             case "topspacing" -> {
                 this.textTopSpacing = value.toInt();
                 textImageDirty = true;
@@ -1331,6 +1499,8 @@ public class CastMember {
                     this.textRenderedWidth = this.bitmap.getWidth();
                     this.textRenderedHeight = this.bitmap.getHeight();
                     this.textRenderedBgColor = Integer.MIN_VALUE;
+                    this.textRenderedImageScriptMutated = true;
+                    attachTextImageMutationCallback(this.textRenderedImage);
                     this.textImageDirty = false;
                     notifyMemberVisualChanged();
                     return true;
@@ -1343,6 +1513,130 @@ public class CastMember {
         }
     }
 
+    private static String normalizeFontStyle(Datum value) {
+        boolean[] styles = new boolean[3]; // bold, italic, underline
+        collectFontStyle(value, styles);
+        StringBuilder out = new StringBuilder();
+        appendFontStyle(out, styles[0], "bold");
+        appendFontStyle(out, styles[1], "italic");
+        appendFontStyle(out, styles[2], "underline");
+        return out.length() > 0 ? out.toString() : "plain";
+    }
+
+    private static void collectFontStyle(Datum value, boolean[] styles) {
+        if (value instanceof Datum.List list) {
+            for (Datum item : list.items()) {
+                collectFontStyle(item, styles);
+            }
+            return;
+        }
+        if (value == null || value.isVoid()) {
+            return;
+        }
+        String raw = value instanceof Datum.Symbol s ? s.name() : value.toStr();
+        for (String token : raw.split("[,\\s]+")) {
+            String style = token.trim().toLowerCase();
+            if (style.startsWith("#")) {
+                style = style.substring(1);
+            }
+            switch (style) {
+                case "bold" -> styles[0] = true;
+                case "italic" -> styles[1] = true;
+                case "underline" -> styles[2] = true;
+                default -> {
+                    // "plain" and unsupported Director style names are ignored
+                    // so renderer matching sees one canonical representation.
+                }
+            }
+        }
+    }
+
+    private static void appendFontStyle(StringBuilder out, boolean enabled, String style) {
+        if (!enabled) {
+            return;
+        }
+        if (out.length() > 0) {
+            out.append(", ");
+        }
+        out.append(style);
+    }
+
+    public boolean setTextRangeProp(String chunkType, int start, int end, String propName, Datum value) {
+        if (!isTextLike() || propName == null) {
+            return false;
+        }
+        String prop = propName.toLowerCase();
+        if (!isTextRangeStyleProp(prop)) {
+            return false;
+        }
+
+        String text = getTextContent();
+        int length = text != null ? text.length() : 0;
+        if (!coversWholeTextRange(chunkType, start, end, length)) {
+            return true;
+        }
+
+        return setTextProp(prop, value);
+    }
+
+    public Datum getTextRangeProp(String chunkType, int start, int end, String propName) {
+        if (!isTextLike() || propName == null) {
+            return Datum.VOID;
+        }
+        String prop = propName.toLowerCase();
+        String text = getTextRange(chunkType, start, end);
+        return switch (prop) {
+            case "text" -> Datum.of(text);
+            case "length" -> Datum.of(text.length());
+            case "ilk" -> Datum.symbol("string");
+            default -> Datum.VOID;
+        };
+    }
+
+    private String getTextRange(String chunkType, int start, int end) {
+        String text = getTextContent();
+        String normalizedType = chunkType != null ? chunkType.toLowerCase() : "char";
+        StringChunkType type;
+        try {
+            type = StringChunkType.fromName(normalizedType);
+        } catch (IllegalArgumentException ex) {
+            type = StringChunkType.CHAR;
+        }
+
+        char itemDelimiter = MoviePropertyProvider.ItemDelimiterCache._char;
+        int count = StringChunkUtils.countChunks(text, type, itemDelimiter);
+        int normalizedStart = start < 0 ? count : (start == 0 ? 1 : start);
+        int normalizedEnd = end < 0 ? count : (end == 0 ? normalizedStart : end);
+        if (normalizedStart < 1 || normalizedEnd < normalizedStart) {
+            return "";
+        }
+        if (normalizedStart == normalizedEnd) {
+            return StringChunkUtils.getChunk(text, type, normalizedStart, itemDelimiter);
+        }
+        return StringChunkUtils.getChunkRange(text, type, normalizedStart, normalizedEnd, itemDelimiter);
+    }
+
+    private static boolean isTextRangeStyleProp(String prop) {
+        return "color".equals(prop)
+                || "txtcolor".equals(prop)
+                || "font".equals(prop)
+                || "fontsize".equals(prop)
+                || "fontstyle".equals(prop);
+    }
+
+    private static boolean coversWholeTextRange(String chunkType, int start, int end, int textLength) {
+        String type = chunkType != null ? chunkType.toLowerCase() : "char";
+        if (!"char".equals(type)) {
+            return start <= 1 && end < 0;
+        }
+        if (textLength <= 0) {
+            return start <= 1 && (end <= 0 || end >= textLength);
+        }
+        int normalizedStart = start < 0 ? textLength : (start == 0 ? 1 : start);
+        int normalizedEnd = end < 0 ? textLength : (end == 0 ? normalizedStart : end);
+        return normalizedStart <= 1 && normalizedEnd >= textLength;
+    }
+
     private boolean setBitmapProp(String prop, Datum value) {
         return switch (prop) {
             case "paletteref", "palette" -> applyRuntimePaletteOverride(value);
@@ -1352,6 +1646,7 @@ public class CastMember {
                     Bitmap newBmp = sourceBitmap.copy();
                     newBmp.markScriptModified();
                     this.bitmap = newBmp;
+                    attachBitmapImageMutationCallback(this.bitmap);
                     this.transparentPlaceholderBitmap = false;
                     if (!regPointPinnedToMember) {
                         if (sourceBitmap.hasAnchorPoint()) {
@@ -1377,6 +1672,7 @@ public class CastMember {
                     this.transparentPlaceholderBitmap = false;
                     this.bitmap.fill(0xFFFFFFFF);
                     this.bitmap.markScriptModified();
+                    attachBitmapImageMutationCallback(this.bitmap);
                     notifyMemberVisualChanged();
                 }
                 yield true;
@@ -1393,6 +1689,7 @@ public class CastMember {
                     this.transparentPlaceholderBitmap = false;
                     this.bitmap.fill(0xFFFFFFFF);
                     this.bitmap.markScriptModified();
+                    attachBitmapImageMutationCallback(this.bitmap);
                     notifyMemberVisualChanged();
                 }
                 yield true;
@@ -1427,6 +1724,7 @@ public class CastMember {
 
     private void resetRuntimePayload() {
         name = "";
+        nameExplicitlySet = false;
         bitmap = null;
         transparentPlaceholderBitmap = false;
         script = null;
@@ -1446,8 +1744,10 @@ public class CastMember {
         textAlignment = "left";
         textColor = 0xFF000000;
         textBgColor = 0xFFFFFFFF;
+        textBgColorExplicit = false;
         textWordWrap = false;
         textAntialias = false;
+        textAntiAliasThreshold = 14;
         textBoxType = 0;
         textRectLeft = 0;
         textRectTop = 0;
@@ -1476,13 +1776,23 @@ public class CastMember {
     public Datum callMethod(String methodName, java.util.List<Datum> args) {
         String method = methodName.toLowerCase();
         return switch (method) {
-            case "getprop" -> {
+            case "getprop", "getpropref" -> {
                 // Director: member.getProp(#propName, index)
                 // Returns a sub-element of a compound property (e.g., Point, Rect)
+                // or a styled text chunk reference (e.g., member.line[1]).
                 if (args.size() < 2) yield Datum.VOID;
                 String propSymbol = args.get(0) instanceof Datum.Symbol sym
                         ? sym.name() : args.get(0).toStr();
                 int index = args.get(1).toInt();
+                if (isTextLike() && isTextChunkProp(propSymbol)) {
+                    int end = args.size() >= 3 ? args.get(2).toInt() : index;
+                    yield new Datum.TextMemberRangeRef(
+                            castLibId.value(),
+                            memberId.value(),
+                            propSymbol.toLowerCase(),
+                            index,
+                            end);
+                }
                 Datum propValue = getProp(propSymbol.toLowerCase());
                 if (propValue instanceof Datum.Point p) {
                     yield Datum.of(index == 1 ? p.x() : p.y());
@@ -1513,8 +1823,8 @@ public class CastMember {
 
                 int fieldWidth = Math.max(1, textRectRight - textRectLeft);
                 int[] pos = textRenderer.charPosToLoc(text, charIndex,
-                        textFont, textFontSize, textFontStyle, textFixedLineSpace,
-                        textAlignment, fieldWidth);
+                        textFont, textFontSize, textFontStyle, effectiveTextLineAdvance(),
+                        getTextAlignmentForWidth(fieldWidth), fieldWidth);
                 yield new Datum.Point(pos[0], pos[1]);
             }
             case "count" -> {
@@ -1536,12 +1846,17 @@ public class CastMember {
                 if ("char".equals(chunkType)) {
                     yield Datum.of(text.length());
                 } else if ("word".equals(chunkType)) {
-                    String trimmed = text.trim();
-                    yield trimmed.isEmpty() ? Datum.ZERO : Datum.of(trimmed.split("\\s+").length);
+                    yield Datum.of(StringChunkUtils.countChunks(text,
+                            StringChunkType.WORD,
+                            MoviePropertyProvider.ItemDelimiterCache._char));
                 } else if ("line".equals(chunkType)) {
-                    yield Datum.of(text.split("[\r\n]", -1).length);
+                    yield Datum.of(StringChunkUtils.countChunks(text,
+                            StringChunkType.LINE,
+                            MoviePropertyProvider.ItemDelimiterCache._char));
                 } else if ("item".equals(chunkType)) {
-                    yield Datum.of(text.split(",", -1).length);
+                    yield Datum.of(StringChunkUtils.countChunks(text,
+                            StringChunkType.ITEM,
+                            MoviePropertyProvider.ItemDelimiterCache._char));
                 } else {
                     yield Datum.ZERO;
                 }
@@ -1551,6 +1866,16 @@ public class CastMember {
                 yield Datum.of(1);
             }
             default -> Datum.VOID;
+        };
+    }
+
+    private static boolean isTextChunkProp(String propName) {
+        if (propName == null) {
+            return false;
+        }
+        return switch (propName.toLowerCase()) {
+            case "char", "word", "item", "line" -> true;
+            default -> false;
         };
     }
 

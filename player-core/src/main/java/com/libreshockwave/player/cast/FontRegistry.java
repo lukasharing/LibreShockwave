@@ -4,9 +4,9 @@ import com.libreshockwave.font.BitmapFont;
 import com.libreshockwave.font.Pfr1Font;
 import com.libreshockwave.font.Pfr1TtfConverter;
 import com.libreshockwave.font.TtfBitmapRasterizer;
-import com.libreshockwave.util.ValueProvider;
 
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Registry mapping font names to PFR1 bitmap font data.
@@ -17,59 +17,24 @@ import java.util.concurrent.ConcurrentHashMap;
 public class FontRegistry {
 
     /** Font name (lowercase) -> parsed PFR1 font */
-    private static final ConcurrentHashMap<String, Pfr1Font> parsedFonts = new ConcurrentHashMap<>();
+    private static final Map<String, Pfr1Font> parsedFonts = new HashMap<>();
 
     /** Font name (lowercase) -> TTF byte array (for AWT Font.createFont) */
-    private static final ConcurrentHashMap<String, byte[]> ttfCache = new ConcurrentHashMap<>();
+    private static final Map<String, byte[]> ttfCache = new HashMap<>();
 
     /** Cache: "fontName:size" -> rasterized BitmapFont (for SimpleTextRenderer) */
-    private static final ConcurrentHashMap<String, BitmapFont> rasterizedCache = new ConcurrentHashMap<>();
-
-    /** Embedded TTF font variants used when a Director movie aliases a font not otherwise present. */
-    private static final ConcurrentHashMap<String, TtfVariants> embeddedTtfFonts = new ConcurrentHashMap<>();
+    private static final Map<String, BitmapFont> rasterizedCache = new HashMap<>();
 
     /** First registered PFR font name — used as last-resort fallback */
     private static volatile String firstRegisteredFont;
 
     /** Canonical font name -> member key (lowercase) for fuzzy matching */
-    private static final ConcurrentHashMap<String, String> canonicalIndex = new ConcurrentHashMap<>();
+    private static final Map<String, String> canonicalIndex = new HashMap<>();
 
     /** Director font cast members can alias short names such as "v" to a platform font name. */
-    private static final ConcurrentHashMap<String, FontAlias> aliases = new ConcurrentHashMap<>();
-
-    /** First bundled pixel font name, used when no runtime PFR font has loaded yet. */
-    private static volatile String firstEmbeddedTtfFont;
+    private static final Map<String, FontAlias> aliases = new HashMap<>();
 
     public record FontAlias(String fontName, boolean bold) {
-    }
-
-    private record TtfVariants(
-            ValueProvider<byte[]> regular,
-            ValueProvider<byte[]> bold,
-            ValueProvider<byte[]> italic,
-            ValueProvider<byte[]> boldItalic
-    ) {
-        ValueProvider<byte[]> get(boolean boldRequested, boolean italicRequested) {
-            ValueProvider<byte[]> requested = switch ((boldRequested ? 1 : 0) + (italicRequested ? 2 : 0)) {
-                case 1 -> bold;
-                case 2 -> italic;
-                case 3 -> boldItalic;
-                default -> regular;
-            };
-            return requested != null ? requested : regular;
-        }
-
-        boolean hasBold() {
-            return bold != null;
-        }
-    }
-
-    static {
-        registerEmbeddedTtfFont("Volter",
-                com.libreshockwave.fonts.volter.volter::getData,
-                com.libreshockwave.fonts.volter.volter_bold::getData,
-                null,
-                null);
     }
 
     /**
@@ -139,67 +104,24 @@ public class FontRegistry {
         return aliases.get(fontName.toLowerCase());
     }
 
-    public static void registerEmbeddedTtfFont(String fontName,
-                                               ValueProvider<byte[]> regular,
-                                               ValueProvider<byte[]> bold,
-                                               ValueProvider<byte[]> italic,
-                                               ValueProvider<byte[]> boldItalic) {
-        if (fontName == null || fontName.isBlank() || regular == null) {
-            return;
-        }
-        String key = fontName.toLowerCase();
-        embeddedTtfFonts.put(key, new TtfVariants(regular, bold, italic, boldItalic));
-        canonicalIndex.put(canonicalFontName(fontName), key);
-        if (firstEmbeddedTtfFont == null) {
-            firstEmbeddedTtfFont = fontName;
-        }
-    }
-
-    public static BitmapFont getEmbeddedBitmapFont(String fontName, int fontSize,
-                                                   boolean bold, boolean italic) {
-        if (fontName == null) return null;
-        String key = fontName.toLowerCase();
-        TtfVariants embedded = embeddedTtfFonts.get(key);
-        if (embedded == null) return null;
-
-        String cacheKey = key + ":" + fontSize + ":embedded:" + (bold ? 1 : 0) + ":" + (italic ? 1 : 0);
-        BitmapFont cached = rasterizedCache.get(cacheKey);
-        if (cached != null) return cached;
-
-        ValueProvider<byte[]> supplier = embedded.get(bold, italic);
-        if (supplier == null) return null;
-
-        BitmapFont rasterized = TtfBitmapRasterizer.rasterize(supplier.get(), fontSize, fontName);
-        if (rasterized != null) {
-            rasterizedCache.put(cacheKey, rasterized);
-        }
-        return rasterized;
-    }
-
     /**
      * Get a rasterized bitmap font for the given name and size.
      * Tries PFR fonts first, then bundled Mac system fonts as fallback.
      * Uses TtfBitmapRasterizer (pure Java, TeaVM-compatible).
      */
     public static BitmapFont getBitmapFont(String fontName, int fontSize) {
-        return getBitmapFont(fontName, fontSize, false, false);
-    }
-
-    public static BitmapFont getBitmapFont(String fontName, int fontSize, boolean bold, boolean italic) {
         if (fontName == null) return null;
 
         String key = fontName.toLowerCase();
 
         // Check rasterized cache
-        String cacheKey = bold || italic
-                ? key + ":" + fontSize + ":" + (bold ? 1 : 0) + ":" + (italic ? 1 : 0)
-                : key + ":" + fontSize;
+        String cacheKey = key + ":" + fontSize;
         BitmapFont cached = rasterizedCache.get(cacheKey);
         if (cached != null) return cached;
 
         // TTF rasterizer from PFR-converted TTF (pure Java — works on both desktop and WASM)
         byte[] ttfBytes = ttfCache.get(key);
-        if (ttfBytes != null && !bold && !italic) {
+        if (ttfBytes != null) {
             BitmapFont rasterized = TtfBitmapRasterizer.rasterize(ttfBytes, fontSize, fontName);
             if (rasterized != null) {
                 rasterizedCache.put(cacheKey, rasterized);
@@ -217,13 +139,8 @@ public class FontRegistry {
             }
         }
 
-        BitmapFont embedded = getEmbeddedBitmapFont(fontName, fontSize, bold, italic);
-        if (embedded != null) {
-            return embedded;
-        }
-
         // Bundled Mac system font fallback (Geneva, Chicago, Monaco, etc.)
-        BitmapFont macFont = MacFontBundle.getFont(fontName, fontSize, bold, italic);
+        BitmapFont macFont = MacFontBundle.getFont(fontName, fontSize);
         if (macFont != null) return macFont; // already cached by MacFontBundle
 
         return null;
@@ -242,18 +159,6 @@ public class FontRegistry {
      * Used as last-resort fallback when no matching font is found.
      */
     public static String getFirstRegisteredFont() {
-        return firstRegisteredFont;
-    }
-
-    /**
-     * Preferred pixel font for legacy Director text runs that request an
-     * embedded face without a font-map id. Bundled Director pixel fonts take
-     * precedence so runtime font registration order cannot change the default.
-     */
-    public static String getPreferredDirectorPixelFont() {
-        if (firstEmbeddedTtfFont != null && !firstEmbeddedTtfFont.isBlank()) {
-            return firstEmbeddedTtfFont;
-        }
         return firstRegisteredFont;
     }
 
@@ -308,12 +213,6 @@ public class FontRegistry {
         return parsedFonts.containsKey(fontName.toLowerCase());
     }
 
-    public static boolean hasEmbeddedBoldVariant(String fontName) {
-        if (fontName == null) return false;
-        TtfVariants embedded = embeddedTtfFonts.get(fontName.toLowerCase());
-        return embedded != null && embedded.hasBold();
-    }
-
     /**
      * Register a pre-built BitmapFont (e.g., from GDI rasterization).
      * This bypasses the TTF/PFR pipeline and stores directly in the rasterized cache.
@@ -334,11 +233,5 @@ public class FontRegistry {
         canonicalIndex.clear();
         aliases.clear();
         firstRegisteredFont = null;
-        firstEmbeddedTtfFont = null;
-        registerEmbeddedTtfFont("Volter",
-                com.libreshockwave.fonts.volter.volter::getData,
-                com.libreshockwave.fonts.volter.volter_bold::getData,
-                null,
-                null);
     }
 }

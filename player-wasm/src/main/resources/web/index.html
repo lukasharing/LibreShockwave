@@ -20,7 +20,7 @@
                 <!-- Toolbar -->
                 <div class="toolbar">
                     <span class="toolbar-sep">URL:</span>
-                    <input type="text" id="url-input" class="url-input" value="https://sandbox.h4bbo.net/dcr/14.1_b8/habbo.dcr">
+                    <input type="text" id="url-input" class="url-input" value="" placeholder="https://example.com/movie.dcr">
                     <button id="load-url-btn" class="btn">Go</button>
                     <button id="params-btn" class="btn">Params...</button>
                     <label class="toolbar-checkbox"><input type="checkbox" id="debug-playback-cb" checked> Debug Log</label>
@@ -95,14 +95,7 @@
 
     <script src="libreshockwave.js"></script>
     <script>
-        // Default Habbo params
-        var habboParams = {
-            sw1: 'site.url=http://www.habbo.co.uk;url.prefix=http://www.habbo.co.uk',
-            sw2: 'connection.info.host=au.h4bbo.net;connection.info.port=30001',
-            sw3: 'client.reload.url=https://sandbox.h4bbo.net/',
-            sw4: 'connection.mus.host=au.h4bbo.net;connection.mus.port=38101',
-            sw5: 'external.variables.txt=https://sandbox.h4bbo.net/gamedata/external_variables.txt;external.texts.txt=https://sandbox.h4bbo.net/gamedata/external_texts.txt'
-        };
+        var defaultParams = {};
 
         // Restore debug playback preference (default: checked)
         var debugCb = document.getElementById('debug-playback-cb');
@@ -111,12 +104,13 @@
             if (saved !== null) debugCb.checked = (saved === '1');
         } catch(e) {}
 
-        // Create the player with Habbo params pre-set
+        // Create the generic player. Movie-specific params can be entered in the
+        // params dialog or supplied by a dedicated launcher page.
         var player = LibreShockwave.create("stage", {
             autoplay: true,
             remember: true,
             debugPlayback: debugCb.checked,
-            params: habboParams,
+            params: defaultParams,
             onLoad: function(info) {
                 status.textContent = 'Loaded (' + info.width + 'x' + info.height + ', ' + info.frameCount + ' frames)';
                 document.getElementById('tempo-input').value = player._tempoOverride > 0 ? player._tempoOverride : (info.tempo || 15);
@@ -239,15 +233,7 @@
         document.getElementById('params-add-btn').addEventListener('click', function() { addParamRow('', ''); });
 
         // === Preset Management ===
-        var builtinPresets = {
-            'Habbo (default)': {
-                sw1: 'site.url=http://www.habbo.co.uk;url.prefix=http://www.habbo.co.uk',
-                sw2: 'connection.info.host=localhost;connection.info.port=30001',
-                sw3: 'client.reload.url=https://sandbox.h4bbo.net/',
-                sw4: 'connection.mus.host=localhost;connection.mus.port=38101',
-                sw5: 'external.variables.txt=https://sandbox.h4bbo.net/gamedata/external_variables.txt;external.texts.txt=https://sandbox.h4bbo.net/gamedata/external_texts.txt'
-            }
-        };
+        var builtinPresets = {};
 
         function getUserPresets() {
             try { return JSON.parse(localStorage.getItem('ls_paramPresets') || '{}'); } catch(e) { return {}; }

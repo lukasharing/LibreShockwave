@@ -1,5 +1,6 @@
 package com.libreshockwave.vm.builtin.data;
 
+import com.libreshockwave.bitmap.Bitmap;
 import com.libreshockwave.chunks.ScriptChunk;
 import com.libreshockwave.vm.builtin.cast.CastLibProvider;
 import com.libreshockwave.vm.builtin.xtra.XtraBuiltins;
@@ -130,6 +131,19 @@ public final class ConstructorBuiltins {
     }
 
     private static Datum rect(LingoVM vm, List<Datum> args) {
+        if (args.size() == 1) {
+            Datum arg = args.get(0);
+            if (arg instanceof Datum.Rect) {
+                return arg;
+            }
+            if (arg instanceof Datum.ImageRef imageRef) {
+                Bitmap bitmap = imageRef.bitmap();
+                if (bitmap == null) {
+                    return new Datum.Rect(0, 0, 0, 0);
+                }
+                return new Datum.Rect(0, 0, bitmap.getWidth(), bitmap.getHeight());
+            }
+        }
         // Director supports rect(point1, point2) → rect(p1.x, p1.y, p2.x, p2.y)
         if (args.size() == 2 && args.get(0) instanceof Datum.Point p1 && args.get(1) instanceof Datum.Point p2) {
             return new Datum.Rect(p1.x(), p1.y(), p2.x(), p2.y());
@@ -190,13 +204,14 @@ public final class ConstructorBuiltins {
     /**
      * paletteIndex(index) - create a color by looking up an index in the active movie palette.
      * In Director, paletteIndex(n) resolves index n through the current palette to produce
-     * an RGB color. Used extensively by Habbo's window system for row backgrounds, buttons, etc.
+     * an RGB color. Used by authored window systems for row backgrounds, buttons, etc.
      */
     private static Datum paletteIndex(LingoVM vm, List<Datum> args) {
         if (args.isEmpty()) {
             return new Datum.PaletteIndexColor(0);
         }
-        return new Datum.PaletteIndexColor(Datum.valueOrVoid(args.get(0)).toInt() & 0xFF);
+        Datum index = args.get(0);
+        return new Datum.PaletteIndexColor((index != null ? index : Datum.VOID).toInt() & 0xFF);
     }
 
     /**

@@ -4,6 +4,7 @@ import com.libreshockwave.bitmap.Bitmap;
 import com.libreshockwave.cast.XmedStyledText;
 import com.libreshockwave.font.BitmapFont;
 import com.libreshockwave.player.cast.FontRegistry;
+import com.libreshockwave.player.cast.VolterFontBundle;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -15,62 +16,16 @@ import java.util.List;
  * with a built-in fallback font for when PFR fonts aren't available yet.
  */
 public class SimpleTextRenderer implements TextRenderer {
-    private static final List<String> RECENT_RENDER_PROBES = new ArrayList<>();
-
-    public static List<String> getRecentRenderProbes() {
-        return new ArrayList<>(RECENT_RENDER_PROBES);
-    }
-
-    private static void addRenderProbe(String probe) {
-        if (RECENT_RENDER_PROBES.size() >= 40) {
-            RECENT_RENDER_PROBES.remove(0);
-        }
-        RECENT_RENDER_PROBES.add(probe);
-    }
-
     @Override
     public Bitmap renderText(String text, int width, int height,
                              String fontName, int fontSize, String fontStyle,
                              String alignment, int textColor, int bgColor,
                              boolean wordWrap, boolean antialias,
                              int fixedLineSpace, int topSpacing) {
-        return renderTextInternal(text, width, height, fontName, fontSize, fontStyle,
-                alignment, textColor, bgColor, wordWrap, antialias,
-                fixedLineSpace, topSpacing, false);
-    }
-
-    public Bitmap renderLegacyStxtText(String text, int width, int height,
-                                       String fontName, int fontSize, String fontStyle,
-                                       String alignment, int textColor, int bgColor,
-                                       boolean wordWrap, boolean antialias,
-                                       int fixedLineSpace, int topSpacing) {
-        return renderTextInternal(text, width, height, fontName, fontSize, fontStyle,
-                alignment, textColor, bgColor, wordWrap, antialias,
-                fixedLineSpace, topSpacing, true);
-    }
-
-    private Bitmap renderTextInternal(String text, int width, int height,
-                                      String fontName, int fontSize, String fontStyle,
-                                      String alignment, int textColor, int bgColor,
-                                      boolean wordWrap, boolean antialias,
-                                      int fixedLineSpace, int topSpacing,
-                                      boolean preferRegisteredDirectorFonts) {
         if (text == null) text = "";
+        boolean autoHeight = height <= 1;
         if (width <= 0) width = 200;
-        if (height <= 0) height = 1; // auto-size: neededHeight will expand to fit
-        if (width >= 100 && width <= 400
-                && (text.length() > 20 || "right".equalsIgnoreCase(alignment))) {
-            addRenderProbe("width=" + width
-                    + " height=" + height
-                    + " font=" + fontName
-                    + " size=" + fontSize
-                    + " style=" + fontStyle
-                    + " align=" + alignment
-                    + " wrap=" + wordWrap
-                    + " fixedLineSpace=" + fixedLineSpace
-                    + " topSpacing=" + topSpacing
-                    + " text=\"" + text.replace("\r", "\\r").replace("\n", "\\n") + "\"");
-        }
+        if (height <= 1) height = 1; // auto-size: neededHeight will expand to fit
 
         String style = fontStyle != null ? fontStyle.toLowerCase() : "";
         boolean wantsBold = style.contains("bold");
@@ -79,13 +34,12 @@ public class SimpleTextRenderer implements TextRenderer {
 
         // Check for PFR bitmap font (or Windows TTF, or Mac BDF)
         boolean[] usedRealBold = {false};
-        BitmapFont pfrFont = resolveBitmapFont(fontName, fontSize, wantsBold, wantsItalic,
-                usedRealBold, preferRegisteredDirectorFonts);
+        BitmapFont pfrFont = resolveBitmapFont(fontName, fontSize, wantsBold, wantsItalic, usedRealBold);
         if (pfrFont != null) {
             boolean syntheticBold = wantsBold && !usedRealBold[0];
             Bitmap result = renderWithBitmapFont(pfrFont, text, width, height,
                     alignment, textColor, bgColor, wordWrap,
-                    fixedLineSpace, topSpacing, syntheticBold, underline);
+                    fixedLineSpace, topSpacing, syntheticBold, underline, autoHeight);
             if (antialias && result != null) {
                 result = applyTextAA(result, bgColor);
             }
@@ -95,7 +49,7 @@ public class SimpleTextRenderer implements TextRenderer {
         // Fallback: render with built-in pixel font
         Bitmap result = renderWithBuiltinFont(text, width, height, fontSize,
                 alignment, textColor, bgColor, wordWrap,
-                fixedLineSpace, topSpacing, underline);
+                fixedLineSpace, topSpacing, underline, autoHeight);
         if (antialias && result != null) {
             result = applyTextAA(result, bgColor);
         }
@@ -112,8 +66,9 @@ public class SimpleTextRenderer implements TextRenderer {
                                  int width, int height,
                                  int textColor, int bgColor) {
         if (styledText == null || styledText.text() == null) return null;
+        boolean autoHeight = height <= 1;
         if (width <= 0) width = 200;
-        if (height <= 0) height = 1; // auto-size: neededHeight will expand to fit
+        if (height <= 1) height = 1; // auto-size: neededHeight will expand to fit
 
         String text = styledText.text();
         String fontName = styledText.fontName();
@@ -121,7 +76,8 @@ public class SimpleTextRenderer implements TextRenderer {
         String styleStr = styledText.fontStyleString();
         String alignment = styledText.alignment();
         boolean wordWrap = styledText.wordWrap();
-        boolean antialias = false; // disabled — AA blurs bitmap fonts at small sizes
+        boolean antialias = styledText.antialias()
+                && styledText.fontSize() >= styledText.antiAliasThreshold();
         int fixedLineSpace = styledText.fixedLineSpace();
 
         String style = styleStr != null ? styleStr.toLowerCase() : "";
@@ -136,8 +92,7 @@ public class SimpleTextRenderer implements TextRenderer {
             boolean syntheticBold = wantsBold && !usedRealBold[0];
             Bitmap result = renderWithBitmapFont(font, text, width, height,
                     alignment, textColor, bgColor, wordWrap,
-                    fixedLineSpace, 0, syntheticBold, underline);
-            underlineStyledSpans(result, font, styledText, textColor);
+                    fixedLineSpace, 0, syntheticBold, underline, autoHeight);
             if (antialias && result != null) {
                 result = applyTextAA(result, bgColor);
             }
@@ -147,82 +102,11 @@ public class SimpleTextRenderer implements TextRenderer {
         // Fallback: render with built-in pixel font
         Bitmap result = renderWithBuiltinFont(text, width, height, fontSize,
                 alignment, textColor, bgColor, wordWrap,
-                fixedLineSpace, 0, underline);
+                fixedLineSpace, 0, underline, autoHeight);
         if (antialias && result != null) {
             result = applyTextAA(result, bgColor);
         }
         return result;
-    }
-
-    private static void underlineStyledSpans(Bitmap bitmap, BitmapFont font, XmedStyledText styledText, int textColor) {
-        if (bitmap == null || font == null || styledText == null || styledText.styledSpans().isEmpty()) {
-            return;
-        }
-
-        boolean hasUnderline = false;
-        for (var span : styledText.styledSpans()) {
-            if (span.underline()) {
-                hasUnderline = true;
-                break;
-            }
-        }
-        if (!hasUnderline) {
-            return;
-        }
-
-        int[] pixels = bitmap.getPixels();
-        int width = bitmap.getWidth();
-        int height = bitmap.getHeight();
-        String text = styledText.text();
-        if (text == null || text.isEmpty()) {
-            return;
-        }
-
-        int lineHeight = styledText.fixedLineSpace() > 0 ? styledText.fixedLineSpace() : font.getLineHeight();
-        int y = 0;
-        int lineStart = 0;
-        while (lineStart <= text.length() && y < height) {
-            int lineEnd = lineStart;
-            while (lineEnd < text.length() && text.charAt(lineEnd) != '\r' && text.charAt(lineEnd) != '\n') {
-                lineEnd++;
-            }
-
-            String line = text.substring(lineStart, lineEnd);
-            int lineWidth = font.getStringWidth(line);
-            int lineX = switch (styledText.alignment()) {
-                case "center" -> (width - lineWidth) / 2;
-                case "right" -> width - lineWidth;
-                default -> 0;
-            };
-            int glyphY = y;
-
-            for (var span : styledText.styledSpans()) {
-                if (!span.underline()) {
-                    continue;
-                }
-                int start = Math.max(lineStart, span.startOffset());
-                int end = Math.min(lineEnd, span.endOffset());
-                if (start >= end) {
-                    continue;
-                }
-                int startX = lineX + font.getStringWidth(text.substring(lineStart, start));
-                int endX = lineX + font.getStringWidth(text.substring(lineStart, end));
-                int inkBottom = findInkBottom(pixels, width, height, startX, endX,
-                        glyphY, Math.min(height - 1, glyphY + font.getLineHeight() - 1));
-                int underlineY = Math.min(height - 1, Math.max(glyphY, inkBottom));
-                drawUnderline(pixels, width, height, underlineY, startX, endX, textColor);
-            }
-
-            if (lineEnd >= text.length()) {
-                break;
-            }
-            if (text.charAt(lineEnd) == '\r' && lineEnd + 1 < text.length() && text.charAt(lineEnd + 1) == '\n') {
-                lineStart = lineEnd + 2;
-            } else {
-                lineStart = lineEnd + 1;
-            }
-            y += lineHeight;
-        }
     }
 
     /**
@@ -235,8 +119,7 @@ public class SimpleTextRenderer implements TextRenderer {
                                                boolean[] usedRealBold) {
         if (fontName == null) return null;
 
-        BitmapFont aliasFont = resolveDirectorFontAlias(fontName, fontSize, bold, italic,
-                usedRealBold, true, false);
+        BitmapFont aliasFont = resolveDirectorFontAlias(fontName, fontSize, bold, italic, usedRealBold, true);
         if (aliasFont != null) {
             return aliasFont;
         }
@@ -286,16 +169,18 @@ public class SimpleTextRenderer implements TextRenderer {
         if (pfrFont != null) {
             int lineHeight = fixedLineSpace > 0 ? fixedLineSpace : pfrFont.getLineHeight();
             if (text == null || text.isEmpty() || charIndex <= 0) {
-                int alignX = alignmentOffset(alignment, fieldWidth, text == null || text.isEmpty() ? 0 :
-                        pfrFont.getStringWidth(TextRenderer.splitLines(text)[0]));
+                String firstLine = text == null || text.isEmpty() ? "" : TextRenderer.splitLines(text)[0];
+                int alignX = alignmentOffset(alignment, fieldWidth,
+                        getStringWidthWithFallback(pfrFont, firstLine));
                 return new int[]{alignX, 0};
             }
             int[] lineInfo = TextRenderer.findCharLine(text, charIndex);
             String[] lines = TextRenderer.splitLines(text);
             String fullLine = (lineInfo[0] < lines.length) ? lines[lineInfo[0]] : "";
             String lineSubstr = (lineInfo[0] < lines.length) ? fullLine.substring(0, lineInfo[1]) : "";
-            int x = pfrFont.getStringWidth(lineSubstr) + (lineInfo[1] > 0 ? 1 : 0);
-            int alignX = alignmentOffset(alignment, fieldWidth, pfrFont.getStringWidth(fullLine));
+            int x = getStringWidthWithFallback(pfrFont, lineSubstr) + (lineInfo[1] > 0 ? 1 : 0);
+            int alignX = alignmentOffset(alignment, fieldWidth,
+                    getStringWidthWithFallback(pfrFont, fullLine));
             int y = lineInfo[0] * lineHeight;
             return new int[]{x + alignX, y};
         }
@@ -328,6 +213,37 @@ public class SimpleTextRenderer implements TextRenderer {
     }
 
     @Override
+    public int[] getCaretBounds(String fontName, int fontSize, String fontStyle,
+                                int fixedLineSpace) {
+        BitmapFont pfrFont = resolveBitmapFont(fontName, fontSize);
+        if (pfrFont != null) {
+            int lineHeight = fixedLineSpace > 0 ? fixedLineSpace : pfrFont.getLineHeight();
+            int caretHeight = Math.max(1, Math.min(lineHeight, Math.max(1, pfrFont.getFontSize())));
+            int leading = Math.max(0, lineHeight - pfrFont.getLineHeight());
+            int verticalOverflow = Math.max(0, pfrFont.getLineHeight() - lineHeight);
+
+            int sampleWidth = Math.max(1, pfrFont.getCharWidth('H') + Math.abs(pfrFont.getCharOffsetX('H')) + 4);
+            int sampleHeight = Math.max(1, Math.max(lineHeight, pfrFont.getLineHeight() + 2));
+            int[] pixels = new int[sampleWidth * sampleHeight];
+            pfrFont.drawChar('H', pixels, sampleWidth, sampleHeight, 1, 0, 0xFFFFFFFF);
+
+            int inkTop = findInkTop(pixels, sampleWidth, sampleHeight, 0, sampleWidth, 0, sampleHeight - 1);
+            int inkBottom = findInkBottom(pixels, sampleWidth, sampleHeight, 0, sampleWidth, 0, sampleHeight - 1);
+            if (inkTop >= 0 && inkBottom >= inkTop) {
+                int top = leading - verticalOverflow + inkTop;
+                top = Math.max(0, Math.min(Math.max(0, lineHeight - caretHeight), top));
+                return new int[]{top, caretHeight};
+            }
+
+            return new int[]{Math.max(0, (lineHeight - caretHeight) / 2), caretHeight};
+        }
+
+        int lineHeight = fixedLineSpace > 0 ? fixedLineSpace : builtinLineHeight(fontSize);
+        int caretHeight = Math.max(1, Math.min(lineHeight, Math.max(1, fontSize)));
+        return new int[]{Math.max(0, (lineHeight - caretHeight) / 2), caretHeight};
+    }
+
+    @Override
     public int locToCharPos(String text, int x, int y,
                             String fontName, int fontSize, String fontStyle,
                             int fixedLineSpace, String alignment, int fieldWidth) {
@@ -342,11 +258,12 @@ public class SimpleTextRenderer implements TextRenderer {
             int charsBefore = TextRenderer.lineStartIndex(text, lineIndex);
             String line = lines[lineIndex];
             // Subtract alignment offset to convert field-relative x to text-relative x
-            int alignX = alignmentOffset(alignment, fieldWidth, pfrFont.getStringWidth(line));
+            int alignX = alignmentOffset(alignment, fieldWidth,
+                    getStringWidthWithFallback(pfrFont, line));
             int localX = x - alignX;
             int cx = 0;
             for (int i = 0; i < line.length(); i++) {
-                int cw = pfrFont.getCharWidth(line.charAt(i));
+                int cw = fontForChar(pfrFont, line.charAt(i)).getCharWidth(line.charAt(i));
                 if (cx + cw / 2 >= localX) return charsBefore + i;
                 cx += cw;
             }
@@ -367,11 +284,78 @@ public class SimpleTextRenderer implements TextRenderer {
 
     private static int alignmentOffset(String alignment, int fieldWidth, int lineWidth) {
         if (alignment == null || fieldWidth <= 0) return 0;
-        return switch (alignment) {
+        String baseAlignment = baseAlignment(alignment);
+        if (isEditableAlignment(alignment) && lineWidth > fieldWidth
+                && ("center".equals(baseAlignment) || "right".equals(baseAlignment))) {
+            return fieldWidth - lineWidth;
+        }
+        return switch (baseAlignment) {
             case "center" -> Math.max(0, (fieldWidth - lineWidth) / 2);
             case "right" -> Math.max(0, fieldWidth - lineWidth);
             default -> 0;
         };
+    }
+
+    private static int renderAlignmentOffset(String alignment, int fieldWidth, int lineWidth) {
+        if (alignment == null || fieldWidth <= 0) return 0;
+        String baseAlignment = baseAlignment(alignment);
+        if (isEditableAlignment(alignment) && lineWidth > fieldWidth
+                && ("center".equals(baseAlignment) || "right".equals(baseAlignment))) {
+            return fieldWidth - lineWidth;
+        }
+        return switch (baseAlignment) {
+            case "center" -> (fieldWidth - lineWidth) / 2;
+            case "right" -> fieldWidth - lineWidth;
+            default -> 0;
+        };
+    }
+
+    private static int leftEdgeGuardForBitmapLine(BitmapFont font, String line,
+                                                   String alignment, int fieldWidth,
+                                                   int lineWidth, int x) {
+        if (font == null || line == null || line.isEmpty() || x != 0) {
+            return 0;
+        }
+        String baseAlignment = baseAlignment(alignment);
+        if (baseAlignment != null && !"left".equalsIgnoreCase(baseAlignment)) {
+            return 0;
+        }
+        if (fieldWidth <= 0 || lineWidth + 1 > fieldWidth) {
+            return 0;
+        }
+        return firstGlyphTouchesLeftEdge(font, line) ? 1 : 0;
+    }
+
+    private static boolean firstGlyphTouchesLeftEdge(BitmapFont font, String line) {
+        for (int i = 0; i < line.length(); i++) {
+            char ch = line.charAt(i);
+            BitmapFont drawFont = fontForChar(font, ch);
+            int charWidth = drawFont.getCharWidth(ch);
+            if (charWidth <= 0) {
+                continue;
+            }
+            int sampleW = Math.max(1, charWidth + Math.abs(drawFont.getCharOffsetX(ch)) + 2);
+            int sampleH = Math.max(1, drawFont.getLineHeight());
+            int[] sample = new int[sampleW * sampleH];
+            drawFont.drawChar(ch, sample, sampleW, sampleH, 0, 0, 0xFFFFFFFF);
+            for (int y = 0; y < sampleH; y++) {
+                if (((sample[y * sampleW] >>> 24) & 0xFF) != 0) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return false;
+    }
+
+    private static boolean isEditableAlignment(String alignment) {
+        return alignment != null && alignment.startsWith("editable-");
+    }
+
+    private static String baseAlignment(String alignment) {
+        return isEditableAlignment(alignment)
+                ? alignment.substring("editable-".length())
+                : alignment;
     }
 
     /**
@@ -384,12 +368,10 @@ public class SimpleTextRenderer implements TextRenderer {
      */
     private static BitmapFont resolveBitmapFont(String fontName, int fontSize,
                                                     boolean bold, boolean italic,
-                                                    boolean[] usedRealBold,
-                                                    boolean preferRegisteredDirectorFonts) {
+                                                    boolean[] usedRealBold) {
         if (fontName == null) return null;
 
-        BitmapFont aliasFont = resolveDirectorFontAlias(fontName, fontSize, bold, italic,
-                usedRealBold, false, preferRegisteredDirectorFonts);
+        BitmapFont aliasFont = resolveDirectorFontAlias(fontName, fontSize, bold, italic, usedRealBold, false);
         if (aliasFont != null) {
             return aliasFont;
         }
@@ -435,25 +417,23 @@ public class SimpleTextRenderer implements TextRenderer {
     private static BitmapFont resolveDirectorFontAlias(String fontName, int fontSize,
                                                        boolean bold, boolean italic,
                                                        boolean[] usedRealBold,
-                                                       boolean preferMacFonts,
-                                                       boolean preferRegisteredDirectorFonts) {
+                                                       boolean preferMacFonts) {
         FontRegistry.FontAlias alias = FontRegistry.getFontAlias(fontName);
         String resolvedName = alias != null ? alias.fontName() : fontName;
         boolean resolvedBold = bold || (alias != null && alias.bold());
-        int aliasSize = directorAliasFontSize(fontSize);
 
-        if (preferRegisteredDirectorFonts) {
-            BitmapFont registered = resolveRegisteredDirectorFont(fontName, resolvedName,
-                    aliasSize, resolvedBold, italic, usedRealBold);
-            if (registered != null) {
-                return registered;
+        if (FontRegistry.hasPfrFont(fontName)) {
+            BitmapFont exact = FontRegistry.getBitmapFont(fontName, fontSize);
+            if (exact != null) {
+                usedRealBold[0] = resolvedBold;
+                return exact;
             }
         }
 
-        BitmapFont bundled = FontRegistry.getEmbeddedBitmapFont(resolvedName, aliasSize, resolvedBold, italic);
-        if (bundled != null) {
-            usedRealBold[0] = resolvedBold && FontRegistry.hasEmbeddedBoldVariant(resolvedName);
-            return bundled;
+        BitmapFont volter = VolterFontBundle.getFont(resolvedName, fontSize, resolvedBold);
+        if (volter != null) {
+            usedRealBold[0] = resolvedBold;
+            return volter;
         }
 
         if (alias == null) {
@@ -461,8 +441,8 @@ public class SimpleTextRenderer implements TextRenderer {
         }
 
         BitmapFont first = preferMacFonts
-                ? com.libreshockwave.player.cast.MacFontBundle.getFont(resolvedName, aliasSize, resolvedBold, italic)
-                : com.libreshockwave.player.cast.WindowsFontBundle.getFont(resolvedName, aliasSize, resolvedBold, italic);
+                ? com.libreshockwave.player.cast.MacFontBundle.getFont(resolvedName, fontSize, resolvedBold, italic)
+                : com.libreshockwave.player.cast.WindowsFontBundle.getFont(resolvedName, fontSize, resolvedBold, italic);
         if (first != null) {
             usedRealBold[0] = resolvedBold && (preferMacFonts
                     ? com.libreshockwave.player.cast.MacFontBundle.hasBoldVariant(resolvedName)
@@ -471,8 +451,8 @@ public class SimpleTextRenderer implements TextRenderer {
         }
 
         BitmapFont second = preferMacFonts
-                ? com.libreshockwave.player.cast.WindowsFontBundle.getFont(resolvedName, aliasSize, resolvedBold, italic)
-                : com.libreshockwave.player.cast.MacFontBundle.getFont(resolvedName, aliasSize, resolvedBold, italic);
+                ? com.libreshockwave.player.cast.WindowsFontBundle.getFont(resolvedName, fontSize, resolvedBold, italic)
+                : com.libreshockwave.player.cast.MacFontBundle.getFont(resolvedName, fontSize, resolvedBold, italic);
         if (second != null) {
             usedRealBold[0] = resolvedBold && (preferMacFonts
                     ? com.libreshockwave.player.cast.WindowsFontBundle.hasBoldVariant(resolvedName)
@@ -480,66 +460,25 @@ public class SimpleTextRenderer implements TextRenderer {
             return second;
         }
 
-        BitmapFont registered = FontRegistry.getBitmapFont(resolvedName, aliasSize);
+        BitmapFont registered = FontRegistry.getBitmapFont(resolvedName, fontSize);
         if (registered != null) {
             return registered;
         }
 
         String resolved = FontRegistry.resolveFont(resolvedName);
-        return resolved != null ? FontRegistry.getBitmapFont(resolved, aliasSize) : null;
-    }
-
-    private static BitmapFont resolveRegisteredDirectorFont(String originalName, String resolvedName,
-                                                            int fontSize, boolean bold, boolean italic,
-                                                            boolean[] usedRealBold) {
-        if (italic) {
-            return null;
-        }
-        if (bold) {
-            BitmapFont boldFont = resolveRegisteredPfrCandidate(originalName + "-Bold", fontSize);
-            if (boldFont == null) {
-                boldFont = resolveRegisteredPfrCandidate(originalName + " Bold", fontSize);
-            }
-            if (boldFont == null && !originalName.equals(resolvedName)) {
-                boldFont = resolveRegisteredPfrCandidate(resolvedName + "-Bold", fontSize);
-                if (boldFont == null) {
-                    boldFont = resolveRegisteredPfrCandidate(resolvedName + " Bold", fontSize);
-                }
-            }
-            if (boldFont != null) {
-                usedRealBold[0] = true;
-                return boldFont;
-            }
-        }
-
-        BitmapFont exact = resolveRegisteredPfrCandidate(originalName, fontSize);
-        if (exact == null && !originalName.equals(resolvedName)) {
-            exact = resolveRegisteredPfrCandidate(resolvedName, fontSize);
-        }
-        return exact;
-    }
-
-    private static BitmapFont resolveRegisteredPfrCandidate(String fontName, int fontSize) {
-        String resolved = FontRegistry.resolveFont(fontName);
-        if (resolved == null || !FontRegistry.hasPfrFont(resolved)) {
-            return null;
-        }
-        return FontRegistry.getBitmapFont(resolved, fontSize);
-    }
-
-    private static int directorAliasFontSize(int fontSize) {
-        return fontSize >= 11 ? fontSize - 1 : fontSize;
+        return resolved != null ? FontRegistry.getBitmapFont(resolved, fontSize) : null;
     }
 
     /** Backward-compatible overload without bold/italic. */
     private static BitmapFont resolveBitmapFont(String fontName, int fontSize) {
-        return resolveBitmapFont(fontName, fontSize, false, false, new boolean[]{false}, false);
+        return resolveBitmapFont(fontName, fontSize, false, false, new boolean[]{false});
     }
 
     private Bitmap renderWithBitmapFont(BitmapFont font, String text, int width, int height,
                                          String alignment, int textColor, int bgColor,
                                          boolean wordWrap, int fixedLineSpace, int topSpacing,
-                                         boolean syntheticBold, boolean underline) {
+                                         boolean syntheticBold, boolean underline,
+                                         boolean autoHeight) {
         int lineHeight = fixedLineSpace > 0 ? fixedLineSpace : font.getLineHeight();
 
         String[] rawLines = TextRenderer.splitLines(text);
@@ -547,7 +486,9 @@ public class SimpleTextRenderer implements TextRenderer {
         List<String> lines = new ArrayList<>();
         if (wordWrap) {
             for (String rawLine : rawLines) {
-                TextRenderer.wrapLine(rawLine, font::getStringWidth, width, lines);
+                TextRenderer.wrapLine(rawLine,
+                        s -> getStringWidthWithFallback(font, s),
+                        width, lines);
             }
         } else {
             for (String rawLine : rawLines) {
@@ -560,10 +501,14 @@ public class SimpleTextRenderer implements TextRenderer {
         //   member.topSpacing = requestedFixedLineSpace - fontSize
         // A one-pixel topSpacing is the default font leading and does not widen
         // the line advance; larger values represent explicit fixed line spacing.
+        boolean defaultLeading = isDefaultLeading(font, lineHeight, topSpacing);
         int lineAdvance = bitmapLineAdvance(font, lineHeight, topSpacing);
-        int neededHeight = lines.size() * lineAdvance + excludedLeading(font, lineHeight, topSpacing);
-        if (neededHeight > height) height = neededHeight;
-
+        int firstLineTop = defaultLeading ? 0 : topSpacing;
+        int lineBoxHeight = Math.max(lineHeight, font.getLineHeight());
+        int neededHeight = firstLineTop
+                + Math.max(0, lines.size() - 1) * lineAdvance
+                + lineBoxHeight;
+        if (autoHeight && neededHeight > height) height = neededHeight;
         int[] pixels = new int[width * height];
         for (int i = 0; i < pixels.length; i++) pixels[i] = bgColor;
 
@@ -571,27 +516,32 @@ public class SimpleTextRenderer implements TextRenderer {
         // Leading goes above the text within each line.
         int leading = Math.max(0, lineHeight - font.getLineHeight());
         int verticalOverflow = Math.max(0, font.getLineHeight() - lineHeight);
-        int y = topSpacing + (topSpacing > 1 ? 1 : 0);
-        for (String line : lines) {
+        int y = firstLineTop;
+        for (int lineIndex = 0; lineIndex < lines.size(); lineIndex++) {
+            String line = lines.get(lineIndex);
             if (y >= height) break;
-            int x = 0;
-            switch (alignment) {
-                case "center" -> x = (width - font.getStringWidth(line)) / 2;
-                case "right" -> x = width - font.getStringWidth(line);
-            }
+            int lineWidth = getStringWidthWithFallback(font, line);
+            int x = renderAlignmentOffset(alignment, width, lineWidth);
+            x += leftEdgeGuardForBitmapLine(font, line, alignment, width, lineWidth, x);
             int lineStartX = x;
-            int glyphY = y + leading - verticalOverflow;
+            int glyphY = Math.max(0, y + leading - verticalOverflow);
             for (int i = 0; i < line.length(); i++) {
                 char ch = line.charAt(i);
-                font.drawChar(ch, pixels, width, height, x, glyphY, textColor);
-                if (syntheticBold) {
-                    font.drawChar(ch, pixels, width, height, x + 1, glyphY, textColor);
+                BitmapFont drawFont = fontForChar(font, ch);
+                int drawY = glyphY;
+                if (drawFont != font) {
+                    int baseline = glyphY + font.getAscent();
+                    drawY = baseline - drawFont.getAscent();
                 }
-                x += font.getCharWidth(ch);
+                drawFont.drawChar(ch, pixels, width, height, x, drawY, textColor);
+                if (syntheticBold) {
+                    drawFont.drawChar(ch, pixels, width, height, x + 1, drawY, textColor);
+                }
+                x += drawFont.getCharWidth(ch);
             }
             if (underline && line.length() > 0) {
-                int inkBottom = findInkBottom(pixels, width, height, lineStartX, x, glyphY, Math.min(height - 1, glyphY + font.getLineHeight() - 1));
-                int underlineY = Math.min(height - 1, Math.max(glyphY, inkBottom));
+                int baseline = glyphY + font.getAscent();
+                int underlineY = baseline + bitmapUnderlineOffset(font);
                 drawUnderline(pixels, width, height, underlineY, lineStartX, x, textColor);
             }
             y += lineAdvance;
@@ -599,15 +549,54 @@ public class SimpleTextRenderer implements TextRenderer {
 
         Bitmap bitmap = new Bitmap(width, height, 32, pixels);
         bitmap.markScriptModified();
+        bitmap.markTextRenderedImage(bgColor);
         return bitmap;
+    }
+
+    private static int getStringWidthWithFallback(BitmapFont font, String text) {
+        if (text == null || text.isEmpty()) {
+            return 0;
+        }
+        int width = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            width += fontForChar(font, ch).getCharWidth(ch);
+        }
+        return width;
+    }
+
+    private static BitmapFont fontForChar(BitmapFont primary, char ch) {
+        if (primary == null || primary.canDraw(ch)) {
+            return primary;
+        }
+        BitmapFont fallback = fallbackFontForChar(ch, primary.getFontSize());
+        if (fallback != null) {
+            return fallback;
+        }
+        return primary;
+    }
+
+    private static BitmapFont fallbackFontForChar(char ch, int fontSize) {
+        String[] fallbackNames = {
+                "Verdana", "Arial", "Geneva", "Helvetica", "Courier", "Times"
+        };
+        for (String name : fallbackNames) {
+            BitmapFont font = com.libreshockwave.player.cast.WindowsFontBundle.getFont(
+                    name, fontSize, false, false);
+            if (font != null && font.canDraw(ch)) {
+                return font;
+            }
+            font = com.libreshockwave.player.cast.MacFontBundle.getFont(
+                    name, fontSize, false, false);
+            if (font != null && font.canDraw(ch)) {
+                return font;
+            }
+        }
+        return null;
     }
 
     private static int bitmapLineAdvance(BitmapFont font, int lineHeight, int topSpacing) {
         return lineHeight + (isDefaultLeading(font, lineHeight, topSpacing) ? 0 : topSpacing);
-    }
-
-    private static int excludedLeading(BitmapFont font, int lineHeight, int topSpacing) {
-        return isDefaultLeading(font, lineHeight, topSpacing) ? topSpacing : 0;
     }
 
     private static boolean isDefaultLeading(BitmapFont font, int lineHeight, int topSpacing) {
@@ -621,7 +610,7 @@ public class SimpleTextRenderer implements TextRenderer {
     private Bitmap renderWithBuiltinFont(String text, int width, int height, int fontSize,
                                           String alignment, int textColor, int bgColor,
                                           boolean wordWrap, int fixedLineSpace, int topSpacing,
-                                          boolean underline) {
+                                          boolean underline, boolean autoHeight) {
         int charW = builtinCharWidth(fontSize);
         int lineHeight = fixedLineSpace > 0 ? fixedLineSpace : builtinLineHeight(fontSize);
         int ascent = builtinAscent(fontSize);
@@ -644,35 +633,40 @@ public class SimpleTextRenderer implements TextRenderer {
         // Per-line leading: topSpacing adds above each line (see renderWithBitmapFont comment)
         int lineAdvance = lineHeight + topSpacing;
         int neededHeight = lines.size() * lineAdvance;
-        if (neededHeight > height) height = neededHeight;
-
+        if (autoHeight && neededHeight > height) height = neededHeight;
         int[] pixels = new int[width * height];
         for (int i = 0; i < pixels.length; i++) pixels[i] = bgColor;
 
         int y = topSpacing;
-        for (String line : lines) {
+        for (int lineIndex = 0; lineIndex < lines.size(); lineIndex++) {
+            String line = lines.get(lineIndex);
             if (y >= height) break;
-            int x = 0;
-            switch (alignment) {
-                case "center" -> x = (width - line.length() * charW) / 2;
-                case "right" -> x = width - line.length() * charW;
-            }
+            int x = renderAlignmentOffset(alignment, width, line.length() * charW);
             int lineStartX = x;
             for (int i = 0; i < line.length(); i++) {
                 drawBuiltinChar(line.charAt(i), pixels, width, height, x, y + ascent, scale, textColor);
                 x += charW;
             }
             if (underline && line.length() > 0) {
-                int glyphTop = Math.max(0, y);
-                int glyphBottom = findInkBottom(pixels, width, height, lineStartX, x, glyphTop, Math.min(height - 1, y + ascent));
-                drawUnderline(pixels, width, height, Math.min(height - 1, glyphBottom), lineStartX, x, textColor);
+                int underlineY = y + ascent + builtinUnderlineOffset(fontSize);
+                drawUnderline(pixels, width, height, underlineY, lineStartX, x, textColor);
             }
             y += lineAdvance;
         }
 
         Bitmap bitmap = new Bitmap(width, height, 32, pixels);
         bitmap.markScriptModified();
+        bitmap.markTextRenderedImage(bgColor);
         return bitmap;
+    }
+
+    private static int bitmapUnderlineOffset(BitmapFont font) {
+        int fontSize = font != null ? font.getFontSize() : 9;
+        return Math.max(1, Math.round(fontSize * 0.08f));
+    }
+
+    private static int builtinUnderlineOffset(int fontSize) {
+        return Math.max(1, Math.round(fontSize * 0.08f));
     }
 
     private static void drawUnderline(int[] pixels, int width, int height,
@@ -686,18 +680,51 @@ public class SimpleTextRenderer implements TextRenderer {
 
     private static int findInkBottom(int[] pixels, int width, int height,
                                      int startX, int endX, int startY, int endY) {
+        return findInkBottom(pixels, width, height, startX, endX, startY, endY, 0x00000000);
+    }
+
+    private static int findInkBottom(int[] pixels, int width, int height,
+                                     int startX, int endX, int startY, int endY,
+                                     int bgColor) {
         int clampedStartX = Math.max(0, startX);
         int clampedEndX = Math.min(width, endX);
         int clampedStartY = Math.max(0, startY);
         int clampedEndY = Math.min(height - 1, endY);
         for (int y = clampedEndY; y >= clampedStartY; y--) {
             for (int x = clampedStartX; x < clampedEndX; x++) {
-                if (((pixels[y * width + x] >>> 24) & 0xFF) != 0) {
+                if (isInkPixel(pixels[y * width + x], bgColor)) {
                     return y;
                 }
             }
         }
         return clampedStartY;
+    }
+
+    private static int findInkTop(int[] pixels, int width, int height,
+                                  int startX, int endX, int startY, int endY) {
+        int clampedStartX = Math.max(0, startX);
+        int clampedEndX = Math.min(width, endX);
+        int clampedStartY = Math.max(0, startY);
+        int clampedEndY = Math.min(height - 1, endY);
+        for (int y = clampedStartY; y <= clampedEndY; y++) {
+            for (int x = clampedStartX; x < clampedEndX; x++) {
+                if (((pixels[y * width + x] >>> 24) & 0xFF) != 0) {
+                    return y;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private static boolean isInkPixel(int pixel, int bgColor) {
+        int alpha = (pixel >>> 24) & 0xFF;
+        if (alpha == 0) {
+            return false;
+        }
+        if (((bgColor >>> 24) & 0xFF) == 0xFF) {
+            return pixel != bgColor;
+        }
+        return true;
     }
 
     /**
@@ -741,6 +768,7 @@ public class SimpleTextRenderer implements TextRenderer {
 
         Bitmap result = new Bitmap(w, h, 32, dst);
         result.markScriptModified();
+        result.markTextRenderedImage(bgColor);
         return result;
     }
 

@@ -7,7 +7,6 @@ import com.libreshockwave.player.cast.CastLibManager;
 import com.libreshockwave.player.cast.CastMember;
 import com.libreshockwave.player.render.SpriteRegistry;
 import com.libreshockwave.player.sprite.SpriteState;
-import com.libreshockwave.vm.builtin.sprite.SpriteEventBrokerSupport;
 import com.libreshockwave.vm.datum.Datum;
 import org.junit.jupiter.api.Test;
 
@@ -131,78 +130,14 @@ class SpritePropertiesLifecycleTest {
     }
 
     @Test
-    void scoreThicknessFlagsInitializeSpriteFlips() {
-        SpriteState state = new SpriteState(12, new ScoreChunk.ChannelData(
-                1, 0, 0, 0, 0, 0,
-                1, 1,
-                0, 0, 10, 20, 30, 40,
-                0, 0, 0x60, 0, 0, 0, 0
-        ));
-
-        assertTrue(state.isFlipH());
-        assertTrue(state.isFlipV());
-    }
-
-    @Test
-    void scoreSyncPreservesScriptPositionAndFlipOverrides() {
-        SpriteRegistry registry = new SpriteRegistry();
-        SpriteProperties props = new SpriteProperties(registry);
-        SpriteState state = registry.getOrCreate(12, new ScoreChunk.ChannelData(
-                1, 0, 0, 0, 0, 0,
-                11, 53,
-                0, 0, 100, 120, 43, 42,
-                0, 0, 0, 0, 0, 0, 0
-        ));
-
-        assertTrue(props.setSpriteProp(12, "locH", Datum.of(140)));
-        assertTrue(props.setSpriteProp(12, "locV", Datum.of(95)));
-        assertTrue(props.setSpriteProp(12, "flipH", Datum.of(1)));
-
-        registry.updateFromScore(12, new ScoreChunk.ChannelData(
-                1, 0, 0, 0, 0, 0,
-                11, 53,
-                0, 0, 500, 510, 43, 42,
-                0, 0, 0, 0, 0, 0, 0
-        ));
-
-        assertEquals(140, state.getLocH());
-        assertEquals(95, state.getLocV());
-        assertTrue(state.isFlipH());
-    }
-
-    @Test
-    void scoreSyncStillUpdatesUnmodifiedPositionAndFlip() {
-        SpriteRegistry registry = new SpriteRegistry();
-        SpriteState state = registry.getOrCreate(12, new ScoreChunk.ChannelData(
-                1, 0, 0, 0, 0, 0,
-                11, 53,
-                0, 0, 100, 120, 43, 42,
-                0, 0, 0, 0, 0, 0, 0
-        ));
-
-        registry.updateFromScore(12, new ScoreChunk.ChannelData(
-                1, 0, 0, 0, 0, 0,
-                11, 53,
-                0, 0, 500, 510, 43, 42,
-                0, 0, 0x20, 0, 0, 0, 0
-        ));
-
-        assertEquals(510, state.getLocH());
-        assertEquals(500, state.getLocV());
-        assertTrue(state.isFlipH());
-    }
-
-    @Test
-    void memberZeroDoesNotPruneSyntheticEventBrokerInstances() {
+    void memberZeroDoesNotPruneAttachedBehaviorInstances() {
         SpriteRegistry registry = new SpriteRegistry();
         SpriteProperties props = new SpriteProperties(registry);
 
         SpriteState state = registry.getOrCreateDynamic(21);
         assertTrue(props.setSpriteProp(21, "member", Datum.CastMemberRef.of(3, 42)));
 
-        Datum.ScriptInstance broker = new Datum.ScriptInstance(99, new LinkedHashMap<>(java.util.Map.of(
-                SpriteEventBrokerSupport.SYNTHETIC_BROKER_FLAG, Datum.TRUE
-        )));
+        Datum.ScriptInstance broker = new Datum.ScriptInstance(99, new LinkedHashMap<>());
         Datum.ScriptInstance behavior = new Datum.ScriptInstance(100, new LinkedHashMap<>());
         state.setScriptInstanceList(List.of(broker, behavior));
 
@@ -214,14 +149,12 @@ class SpritePropertiesLifecycleTest {
     }
 
     @Test
-    void disablingPuppetOnEmptySpriteRetainsSyntheticBrokerButResetsReleasedChannelState() {
+    void disablingPuppetOnEmptySpriteClearsRuntimeBehaviorsAndResetsReleasedChannelState() {
         SpriteRegistry registry = new SpriteRegistry();
         SpriteProperties props = new SpriteProperties(registry);
 
         SpriteState state = registry.getOrCreateDynamic(23);
-        Datum.ScriptInstance broker = new Datum.ScriptInstance(99, new LinkedHashMap<>(java.util.Map.of(
-                SpriteEventBrokerSupport.SYNTHETIC_BROKER_FLAG, Datum.TRUE
-        )));
+        Datum.ScriptInstance broker = new Datum.ScriptInstance(99, new LinkedHashMap<>());
         Datum.ScriptInstance behavior = new Datum.ScriptInstance(100, new LinkedHashMap<>());
         state.setScriptInstanceList(List.of(broker, behavior));
         state.setVisible(true);
@@ -234,13 +167,35 @@ class SpritePropertiesLifecycleTest {
         assertTrue(props.setSpriteProp(23, "member", Datum.ZERO));
         assertTrue(props.setSpriteProp(23, "puppet", Datum.ZERO));
 
-        assertEquals(List.of(broker), state.getScriptInstanceList());
+        assertEquals(List.of(), state.getScriptInstanceList());
         assertFalse(state.isVisible());
         assertEquals(100, state.getBlend());
         assertEquals(0, state.getStretch());
         assertEquals(0, state.getCursor());
         assertEquals(1, state.getWidth());
         assertEquals(1, state.getHeight());
+        assertFalse(state.hasDynamicMember());
+    }
+
+    @Test
+    void disablingPuppetOnEmptyScoreSpriteClearsRuntimeMemberOverride() {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteProperties props = new SpriteProperties(registry);
+
+        SpriteState state = registry.getOrCreate(31, new ScoreChunk.ChannelData(
+                1, 0, 0, 0, 0, 0,
+                4, 88,
+                0, 0, 10, 20, 30, 40,
+                0, 0, 0, 0, 0, 0, 0
+        ));
+
+        assertTrue(props.setSpriteProp(31, "member", Datum.ZERO));
+        assertTrue(state.hasDynamicMember());
+        assertEquals(0, state.getEffectiveCastMember());
+
+        assertTrue(props.setSpriteProp(31, "puppet", Datum.ZERO));
+
+        assertFalse(state.hasDynamicMember());
     }
 
     @Test
@@ -252,6 +207,32 @@ class SpritePropertiesLifecycleTest {
 
         SpriteState state = registry.get(17);
         assertEquals(33, state.getInk());
+    }
+
+    @Test
+    void moveableAndEditableSpritePropertiesRoundTripThroughSpriteState() {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteProperties props = new SpriteProperties(registry);
+
+        assertEquals(0, props.getSpriteProp(17, "moveableSprite").toInt());
+        assertEquals(0, props.getSpriteProp(17, "editable").toInt());
+
+        assertTrue(props.setSpriteProp(17, "moveableSprite", Datum.TRUE));
+        assertTrue(props.setSpriteProp(17, "editable", Datum.TRUE));
+
+        SpriteState state = registry.get(17);
+        assertTrue(state.isMoveableSprite());
+        assertTrue(state.isEditable());
+        assertEquals(1, props.getSpriteProp(17, "moveable").toInt());
+        assertEquals(1, props.getSpriteProp(17, "editableText").toInt());
+
+        assertTrue(props.setSpriteProp(17, "moveable", Datum.FALSE));
+        assertTrue(props.setSpriteProp(17, "editableText", Datum.FALSE));
+
+        assertFalse(state.isMoveableSprite());
+        assertFalse(state.isEditable());
+        assertEquals(0, props.getSpriteProp(17, "moveableSprite").toInt());
+        assertEquals(0, props.getSpriteProp(17, "editable").toInt());
     }
 
     @Test
@@ -313,9 +294,7 @@ class SpritePropertiesLifecycleTest {
         assertTrue(props.setSpriteProp(9, "member",
                 Datum.CastMemberRef.of(7, first.getMemberNumber())));
 
-        Datum.ScriptInstance broker = new Datum.ScriptInstance(77, new LinkedHashMap<>(java.util.Map.of(
-                SpriteEventBrokerSupport.SYNTHETIC_BROKER_FLAG, Datum.TRUE
-        )));
+        Datum.ScriptInstance broker = new Datum.ScriptInstance(77, new LinkedHashMap<>());
         state.setScriptInstanceList(List.of(broker));
 
         state.setWidth(160);

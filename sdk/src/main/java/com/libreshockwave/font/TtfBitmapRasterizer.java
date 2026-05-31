@@ -149,25 +149,68 @@ public class TtfBitmapRasterizer {
 
     private static void parseCmap(byte[] data, int cmapOffset, TtfData ttf) {
         int numSubtables = readU16(data, cmapOffset + 2);
+        Integer firstSupportedSubtable = null;
+        Integer macRomanSubtable = null;
+        boolean parsedUnicode = false;
         for (int i = 0; i < numSubtables; i++) {
             int base = cmapOffset + 4 + i * 8;
             if (base + 8 > data.length) break;
             int platformId = readU16(data, base);
             int encodingId = readU16(data, base + 2);
             int subtableOffset = readI32(data, base + 4);
+            int absoluteOffset = cmapOffset + subtableOffset;
+            int format = readU16(data, absoluteOffset);
 
-            // Prefer platform 3 (Windows), encoding 1 (Unicode BMP)
-            if (platformId == 3 && encodingId == 1) {
-                parseCmapFormat4(data, cmapOffset + subtableOffset, ttf);
-                return;
+            if (firstSupportedSubtable == null && (format == 4 || format == 0)) {
+                firstSupportedSubtable = absoluteOffset;
+            }
+            if (platformId == 1 && encodingId == 0 && format == 0) {
+                macRomanSubtable = absoluteOffset;
+            }
+
+            // Prefer Unicode BMP subtables for decoded text.
+            if ((platformId == 3 && encodingId == 1 || platformId == 0) && format == 4) {
+                parseCmapFormat4(data, absoluteOffset, ttf);
+                parsedUnicode = true;
             }
         }
-        // Fallback: try first subtable
-        if (numSubtables > 0) {
-            int subtableOffset = readI32(data, cmapOffset + 4 + 4);
-            int format = readU16(data, cmapOffset + subtableOffset);
+
+        // Some Director-era TrueType fonts also carry a MacRoman format-0
+        // cmap. Preserve those byte-addressed glyphs only where Unicode did
+        // not already define a mapping.
+        if (macRomanSubtable != null) {
+            parseCmapFormat0MissingOnly(data, macRomanSubtable, ttf);
+        }
+
+        if (!parsedUnicode && firstSupportedSubtable != null && ttf.cmap.isEmpty()) {
+            int format = readU16(data, firstSupportedSubtable);
             if (format == 4) {
-                parseCmapFormat4(data, cmapOffset + subtableOffset, ttf);
+                parseCmapFormat4(data, firstSupportedSubtable, ttf);
+            } else if (format == 0) {
+                parseCmapFormat0(data, firstSupportedSubtable, ttf);
+            }
+        }
+    }
+
+    private static void parseCmapFormat0(byte[] data, int offset, TtfData ttf) {
+        parseCmapFormat0(data, offset, ttf, false);
+    }
+
+    private static void parseCmapFormat0MissingOnly(byte[] data, int offset, TtfData ttf) {
+        parseCmapFormat0(data, offset, ttf, true);
+    }
+
+    private static void parseCmapFormat0(byte[] data, int offset, TtfData ttf, boolean missingOnly) {
+        if (offset + 262 > data.length) return;
+        for (int c = 0; c < 256; c++) {
+            int glyphIndex = data[offset + 6 + c] & 0xFF;
+            if (glyphIndex == 0 || glyphIndex >= ttf.numGlyphs) {
+                continue;
+            }
+            if (missingOnly) {
+                ttf.cmap.putIfAbsent(c, glyphIndex);
+            } else {
+                ttf.cmap.put(c, glyphIndex);
             }
         }
     }
