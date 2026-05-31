@@ -53,6 +53,24 @@ class CastLibManagerFieldAccessTest {
     }
 
     @Test
+    void importFileIntoTextMemberStoresDownloadedText() throws Exception {
+        CastLibManager manager = new CastLibManager(null, (castLibNumber, fileName) -> {});
+        CastLib castLib = new CastLib(8, null, null);
+        installCastLib(manager, castLib);
+
+        CastMember field = castLib.createDynamicMember("text");
+        field.setName("downloaded_widget.props");
+        manager.cacheExternalData("downloaded_widget.props",
+                "[\"c\": [#ink: 33]]".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+        boolean imported = manager.importFileIntoMember(8, field.getMemberNumber(),
+                "http://assets/downloaded_widget.props", Datum.VOID);
+
+        assertTrue(imported);
+        assertEquals("[\"c\": [#ink: 33]]", manager.getFieldValue(field.getMemberNumber(), 8));
+    }
+
+    @Test
     void setFieldValueUpdatesResolvedFieldMemberByEncodedSlot() throws Exception {
         CastLibManager manager = new CastLibManager(null, (castLibNumber, fileName) -> {});
         CastLib castLib = new CastLib(7, null, null);

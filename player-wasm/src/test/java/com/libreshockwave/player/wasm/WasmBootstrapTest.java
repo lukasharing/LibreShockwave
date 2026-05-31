@@ -27,6 +27,16 @@ class WasmBootstrapTest {
     private static final Path LIVE_FUSE_CLIENT_PATH = Path.of("/tmp/fuse_client_14_1_b8.cct");
 
     @Test
+    void initialBuiltinVariableParserKeepsLingoSymbolValuesTyped() {
+        Datum parsed = WasmEntry.parseInitialBuiltinVariableValue("#info");
+
+        assertTrue(parsed instanceof Datum.Symbol);
+        assertEquals("info", parsed.toStr());
+        assertEquals("#not-a-symbol", WasmEntry.parseInitialBuiltinVariableValue("#not-a-symbol").toStr());
+        assertEquals("example.invalid", WasmEntry.parseInitialBuiltinVariableValue("example.invalid").toStr());
+    }
+
+    @Test
     void wasmEntryQueuesGotoNetMovieRequests() throws Exception {
         while (WasmEntry.readNextGotoNetMovie() != 0) {
             // Drain stale requests from previous tests.
@@ -41,6 +51,20 @@ class WasmBootstrapTest {
         assertEquals(expected.length, len);
         assertEquals(url, new String(getStaticByteArray("stringBuffer"), 0, len, StandardCharsets.UTF_8));
         assertEquals(0, WasmEntry.readNextGotoNetMovie());
+    }
+
+    @Test
+    void browserJpegDecodeDeliveryInvalidatesCachedFrame() throws Exception {
+        setStaticBoolean("renderCacheDirty", false);
+        setStaticInt("renderCacheRevision", 17);
+        setStaticByteArray("netBuffer", new byte[] {10, 20, 30, (byte) 255});
+
+        WasmEntry.deliverJpegDecodeResult(123, 1, 1, 4);
+
+        assertTrue(getStaticBoolean("renderCacheDirty"),
+                "async browser JPEG decode must force the next render to repaint stale placeholders");
+        assertTrue(getStaticInt("renderCacheRevision") > 17,
+                "render cache revision must change so SoftwareRenderer does not reuse the old frame");
     }
 
     @Test
@@ -314,6 +338,30 @@ class WasmBootstrapTest {
         Field field = WasmEntry.class.getDeclaredField(fieldName);
         field.setAccessible(true);
         field.set(null, value);
+    }
+
+    private static boolean getStaticBoolean(String fieldName) throws Exception {
+        Field field = WasmEntry.class.getDeclaredField(fieldName);
+        field.setAccessible(true);
+        return field.getBoolean(null);
+    }
+
+    private static void setStaticBoolean(String fieldName, boolean value) throws Exception {
+        Field field = WasmEntry.class.getDeclaredField(fieldName);
+        field.setAccessible(true);
+        field.setBoolean(null, value);
+    }
+
+    private static int getStaticInt(String fieldName) throws Exception {
+        Field field = WasmEntry.class.getDeclaredField(fieldName);
+        field.setAccessible(true);
+        return field.getInt(null);
+    }
+
+    private static void setStaticInt(String fieldName, int value) throws Exception {
+        Field field = WasmEntry.class.getDeclaredField(fieldName);
+        field.setAccessible(true);
+        field.setInt(null, value);
     }
 
     private static WasmPlayer getStaticWasmPlayer() throws Exception {

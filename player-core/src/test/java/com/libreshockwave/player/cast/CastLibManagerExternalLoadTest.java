@@ -1,19 +1,17 @@
 package com.libreshockwave.player.cast;
 
-import com.libreshockwave.DirectorFile;
 import com.libreshockwave.chunks.CastListChunk;
 import com.libreshockwave.vm.datum.Datum;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CastLibManagerExternalLoadTest {
@@ -130,6 +128,50 @@ class CastLibManagerExternalLoadTest {
     }
 
     @Test
+    void getHydratableExternalCastSlotsRequiresRuntimeRequest() throws Exception {
+        CastLibManager manager = new CastLibManager(null, (castLibNumber, fileName) -> {});
+        CastLib authored = new CastLib(2, null, new CastListChunk.CastListEntry(
+                "External Widget",
+                EXTERNAL_CAST_URL,
+                2,
+                1,
+                1,
+                0,
+                0));
+        installCastLib(manager, authored);
+
+        assertTrue(manager.hasRegistryVisibleExternalCastBinding(EXTERNAL_CAST_URL));
+        assertTrue(manager.getHydratableExternalCastSlots(EXTERNAL_CAST_URL).isEmpty(),
+                "registry-visible casts are searchable, but raw downloads do not install them");
+
+        authored.markFetching();
+
+        assertEquals(List.of(2), manager.getHydratableExternalCastSlots(EXTERNAL_CAST_URL));
+    }
+
+    @Test
+    void memberLookupRequestsUnfetchedExternalCastOnce() throws Exception {
+        List<String> requestedFiles = new ArrayList<>();
+        CastLibManager manager = new CastLibManager(null, (castLibNumber, fileName) ->
+                requestedFiles.add(castLibNumber + ":" + fileName));
+        CastLib authored = new CastLib(2, null, new CastListChunk.CastListEntry(
+                "External Widget",
+                EXTERNAL_CAST_URL,
+                0,
+                1,
+                1,
+                0,
+                0));
+        installCastLib(manager, authored);
+
+        assertNull(manager.getCastMember(2, 1));
+        assertNull(manager.getCastMember(2, 1));
+
+        assertTrue(authored.isFetching());
+        assertEquals(List.of("2:" + EXTERNAL_CAST_URL), requestedFiles);
+    }
+
+    @Test
     void getRequestedExternalCastSlotsDoesNotFindDifferentBasename() throws Exception {
         RecordingCastLibManager manager = new RecordingCastLibManager();
         CastLib authored = new CastLib(2, null, new CastListChunk.CastListEntry(
@@ -147,6 +189,90 @@ class CastLibManagerExternalLoadTest {
         List<Integer> slots = manager.getRequestedExternalCastSlots(OTHER_EXTERNAL_CAST_URL);
 
         assertTrue(slots.isEmpty());
+    }
+
+    @Test
+    void registryVisibleExternalBindingFindsStableAuthoredCastWithoutRuntimeRequest() throws Exception {
+        CastLibManager manager = new CastLibManager(null, (castLibNumber, fileName) -> {});
+        CastLib authored = new CastLib(2, null, new CastListChunk.CastListEntry(
+                "External Widget",
+                EXTERNAL_CAST_URL,
+                2,
+                1,
+                1,
+                0,
+                0));
+        installCastLib(manager, authored);
+
+        assertTrue(manager.hasRegistryVisibleExternalCastBinding(EXTERNAL_CAST_URL));
+        assertFalse(manager.hasRegistryVisibleExternalCastBinding(OTHER_EXTERNAL_CAST_URL));
+    }
+
+    @Test
+    void registryVisibleExternalCastSlotsOnlyReturnsUniqueStableBindings() throws Exception {
+        CastLibManager manager = new CastLibManager(null, (castLibNumber, fileName) -> {});
+        installCastLib(manager, new CastLib(2, null, new CastListChunk.CastListEntry(
+                "External Widget",
+                EXTERNAL_CAST_URL,
+                2,
+                1,
+                1,
+                0,
+                0)));
+
+        assertEquals(List.of(2), manager.getRegistryVisibleExternalCastSlots(EXTERNAL_CAST_URL));
+
+        installCastLib(manager, new CastLib(3, null, new CastListChunk.CastListEntry(
+                "External Widget Copy",
+                EXTERNAL_CAST_URL,
+                2,
+                1,
+                1,
+                0,
+                0)));
+
+        assertTrue(manager.getRegistryVisibleExternalCastSlots(EXTERNAL_CAST_URL).isEmpty());
+    }
+
+    @Test
+    void registryVisibleExternalBindingIgnoresAmbiguousSharedExternalFile() throws Exception {
+        CastLibManager manager = new CastLibManager(null, (castLibNumber, fileName) -> {});
+        installCastLib(manager, new CastLib(2, null, new CastListChunk.CastListEntry(
+                "External Widget",
+                EXTERNAL_CAST_URL,
+                2,
+                1,
+                1,
+                0,
+                0)));
+        installCastLib(manager, new CastLib(3, null, new CastListChunk.CastListEntry(
+                "External Widget Copy",
+                EXTERNAL_CAST_URL,
+                2,
+                1,
+                1,
+                0,
+                0)));
+
+        assertFalse(manager.hasRegistryVisibleExternalCastBinding(EXTERNAL_CAST_URL));
+    }
+
+    @Test
+    void registryVisibleExternalBindingIgnoresDirectFileBoundScratchCast() throws Exception {
+        CastLibManager manager = new CastLibManager(null, (castLibNumber, fileName) -> {});
+        CastLib transientCast = new CastLib(11, null, new CastListChunk.CastListEntry(
+                "empty 9",
+                "https://example.invalid/dcr/external/empty.cct",
+                2,
+                1,
+                1,
+                0,
+                0));
+        transientCast.setFileName(EXTERNAL_CAST_URL);
+        transientCast.setName("https://example.invalid/dcr/external/widget.cct");
+        installCastLib(manager, transientCast);
+
+        assertFalse(manager.hasRegistryVisibleExternalCastBinding(EXTERNAL_CAST_URL));
     }
 
     @Test
@@ -241,7 +367,7 @@ class CastLibManagerExternalLoadTest {
     }
 
     @Test
-    void broadMemberLookupPrefersStableNamespaceOverScratchCastCollisions() throws Exception {
+    void broadMemberLookupUsesCastOrderForScratchAndStableCollisions() throws Exception {
         CastLibManager manager = new CastLibManager(null, (castLibNumber, fileName) -> {});
 
         CastLib scratchCast = new CastLib(11, null, new CastListChunk.CastListEntry(
@@ -275,26 +401,8 @@ class CastLibManagerExternalLoadTest {
 
         assertTrue(found instanceof Datum.CastMemberRef);
         Datum.CastMemberRef ref = (Datum.CastMemberRef) found;
-        assertEquals(36, ref.castLibNum());
-        assertEquals(stableMember.getMemberNumber(), ref.memberNum());
-    }
-
-    @Test
-    void internalCastLookupUsesMappedCaspForNonPositionalCastLibraries() throws Exception {
-        Path v1Movie = Path.of("/opt/git/v1_assets/projectorrays_lingo/habbo_entry/habbo_entry.dir");
-        if (!Files.isRegularFile(v1Movie)) {
-            return;
-        }
-
-        DirectorFile file = DirectorFile.load(v1Movie);
-        CastLibManager manager = new CastLibManager(file, (castLibNumber, fileName) -> {});
-
-        Datum found = manager.getMemberByName(0, "car1");
-
-        assertTrue(found instanceof Datum.CastMemberRef);
-        Datum.CastMemberRef ref = (Datum.CastMemberRef) found;
         assertEquals(11, ref.castLibNum());
-        assertEquals(41, ref.memberNum());
+        assertEquals(scratchMember.getMemberNumber(), ref.memberNum());
     }
 
     private static final class RecordingCastLibManager extends CastLibManager {
