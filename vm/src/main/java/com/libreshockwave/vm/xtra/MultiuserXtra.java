@@ -116,9 +116,9 @@ public class MultiuserXtra implements Xtra {
                         + " handler=" + state.callbackHandler);
             }
 
-            // Drain a whole network burst in this movie tick. Room state packets
-            // describe one simulation step; spreading them over frames serializes
-            // movements that the client expects to apply together.
+            // Drain a whole network burst in this movie tick. Network packets
+            // describe one simulation step; spreading them over frames can make
+            // authored keepalives and follow-up responses arrive out of phase.
             for (int processed = 0;
                  !state.messageQueue.isEmpty()
                          && processed < MAX_AUTOMATIC_CALLBACKS_PER_TICK

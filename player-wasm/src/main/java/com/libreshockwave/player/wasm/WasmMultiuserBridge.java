@@ -43,8 +43,12 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
     private final List<PendingRequest> pendingRequests = new ArrayList<>();
     private final Map<Integer, Boolean> connectedMap = new HashMap<>();
     private final Map<Integer, List<NetMessage>> messageQueues = new HashMap<>();
+    // Keep terminal network conditions behind application data already visible
+    // to the Xtra, matching Director's message queue ordering.
+    private final Map<Integer, NetMessage> terminalMessages = new HashMap<>();
     private final Set<Integer> closingInstances = new HashSet<>();
     private final Set<Integer> terminalInstances = new HashSet<>();
+    private final Set<Integer> terminalDeferredForHandler = new HashSet<>();
     private final Map<Integer, MultiuserTransportState> transports = new HashMap<>();
 
     // --- MultiuserNetBridge implementation ---
@@ -60,6 +64,8 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
                 + " mode=" + modeFlag + (modeFlag != 0 ? " content-only" : " smus"));
         closingInstances.remove(instanceId);
         terminalInstances.remove(instanceId);
+        terminalMessages.remove(instanceId);
+        terminalDeferredForHandler.remove(instanceId);
         connectedMap.remove(instanceId);
         messageQueues.remove(instanceId);
         transports.put(instanceId, new MultiuserTransportState(modeFlag));
@@ -72,7 +78,7 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
     @Override
     public void requestSend(int instanceId, String senderID, String subject, Datum content) {
         String contentString = content.toStr();
-        if (terminalInstances.contains(instanceId)) {
+        if (terminalInstances.contains(instanceId) || isTerminalSendBlocked(instanceId)) {
             debug("request send ignored for terminal instance=" + instanceId
                     + " sender=" + senderID + " subject=" + subject
                     + " bytes=" + contentString.length());
@@ -97,6 +103,8 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
         debug("request disconnect instance=" + instanceId);
         closingInstances.add(instanceId);
         terminalInstances.add(instanceId);
+        terminalMessages.remove(instanceId);
+        terminalDeferredForHandler.remove(instanceId);
         messageQueues.remove(instanceId);
         PendingRequest req = new PendingRequest(REQ_DISCONNECT, instanceId);
         pendingRequests.add(req);
@@ -112,7 +120,28 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
     @Override
     public List<NetMessage> pollMessages(int instanceId) {
         List<NetMessage> queue = messageQueues.remove(instanceId);
-        return queue != null ? queue : List.of();
+        if (queue != null && !queue.isEmpty()) {
+            if (terminalMessages.containsKey(instanceId)) {
+                terminalDeferredForHandler.add(instanceId);
+                debug("terminal deferred until queued data drains instance=" + instanceId
+                        + " messages=" + queue.size());
+            }
+            return queue;
+        }
+
+        NetMessage terminal = terminalMessages.remove(instanceId);
+        if (terminal != null) {
+            terminalDeferredForHandler.remove(instanceId);
+            terminalInstances.add(instanceId);
+            connectedMap.remove(instanceId);
+            transports.remove(instanceId);
+            debug("terminal delivered instance=" + instanceId + " error=" + terminal.errorCode()
+                    + " subject=" + terminal.subject());
+            return List.of(terminal);
+        }
+
+        terminalDeferredForHandler.remove(instanceId);
+        return List.of();
     }
 
     @Override
@@ -120,6 +149,8 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
         debug("destroy instance=" + instanceId);
         closingInstances.add(instanceId);
         terminalInstances.add(instanceId);
+        terminalMessages.remove(instanceId);
+        terminalDeferredForHandler.remove(instanceId);
         connectedMap.remove(instanceId);
         messageQueues.remove(instanceId);
         transports.remove(instanceId);
@@ -144,6 +175,8 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
     void notifyConnected(int instanceId) {
         closingInstances.remove(instanceId);
         terminalInstances.remove(instanceId);
+        terminalMessages.remove(instanceId);
+        terminalDeferredForHandler.remove(instanceId);
         connectedMap.put(instanceId, true);
         debug("connected instance=" + instanceId);
         // Director's Multiuser Xtra reports a successful connection with this
@@ -159,16 +192,22 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
         connectedMap.remove(instanceId);
         if (closingInstances.contains(instanceId)) {
             terminalInstances.add(instanceId);
+            terminalMessages.remove(instanceId);
+            terminalDeferredForHandler.remove(instanceId);
             transports.remove(instanceId);
             debug("disconnected ignored for closing instance=" + instanceId
                     + formatCloseDetail(closeCode, wasClean, detail));
             return;
         }
+        if (terminalInstances.contains(instanceId) || terminalMessages.containsKey(instanceId)) {
+            debug("disconnected ignored for terminal instance=" + instanceId
+                    + formatCloseDetail(closeCode, wasClean, detail));
+            return;
+        }
         String diagnostic = formatCloseDetail(closeCode, wasClean, detail);
-        terminalInstances.add(instanceId);
-        transports.remove(instanceId);
         debug("disconnected instance=" + instanceId + diagnostic);
-        queueMessage(instanceId, new NetMessage(-2, "System", "ConnectionProblem", new Datum.Str(diagnostic.trim())));
+        queueTerminalMessage(instanceId,
+                new NetMessage(-2, "System", "ConnectionProblem", new Datum.Str(diagnostic.trim())));
     }
 
     void notifyError(int instanceId, int errorCode) {
@@ -177,16 +216,24 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
 
     void notifyError(int instanceId, int errorCode, String detail) {
         connectedMap.remove(instanceId);
-        terminalInstances.add(instanceId);
-        transports.remove(instanceId);
         if (closingInstances.contains(instanceId)) {
+            terminalInstances.add(instanceId);
+            terminalMessages.remove(instanceId);
+            terminalDeferredForHandler.remove(instanceId);
+            transports.remove(instanceId);
             debug("error ignored for closing instance=" + instanceId + " code=" + errorCode
+                    + formatTextDetail(detail));
+            return;
+        }
+        if (terminalInstances.contains(instanceId) || terminalMessages.containsKey(instanceId)) {
+            debug("error ignored for terminal instance=" + instanceId + " code=" + errorCode
                     + formatTextDetail(detail));
             return;
         }
         String diagnostic = formatTextDetail(detail);
         debug("error instance=" + instanceId + " code=" + errorCode + diagnostic);
-        queueMessage(instanceId, new NetMessage(errorCode, "System", "ConnectionProblem", new Datum.Str(diagnostic.trim())));
+        queueTerminalMessage(instanceId,
+                new NetMessage(errorCode, "System", "ConnectionProblem", new Datum.Str(diagnostic.trim())));
     }
 
     void deliverMessage(int instanceId, int errorCode, String senderID, String subject, String content) {
@@ -217,6 +264,22 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
         debug("queue instance=" + instanceId + " error=" + msg.errorCode()
                 + " subject=" + msg.subject() + " content=" + preview(msg.content() != null ? msg.content().toStr() : null));
         messageQueues.computeIfAbsent(instanceId, k -> new ArrayList<>()).add(msg);
+    }
+
+    private void queueTerminalMessage(int instanceId, NetMessage msg) {
+        debug("queue terminal instance=" + instanceId + " error=" + msg.errorCode()
+                + " subject=" + msg.subject() + " content="
+                + preview(msg.content() != null ? msg.content().toStr() : null));
+        terminalMessages.put(instanceId, msg);
+    }
+
+    private boolean isTerminalSendBlocked(int instanceId) {
+        if (!terminalMessages.containsKey(instanceId)) {
+            return false;
+        }
+        List<NetMessage> queuedMessages = messageQueues.get(instanceId);
+        return !terminalDeferredForHandler.contains(instanceId)
+                && (queuedMessages == null || queuedMessages.isEmpty());
     }
 
     private static void debug(String message) {

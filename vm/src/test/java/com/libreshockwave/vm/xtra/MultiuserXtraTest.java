@@ -38,6 +38,36 @@ class MultiuserXtraTest {
     }
 
     @Test
+    void automaticCallbacksDrainLargeNetworkBurstInOneTick() {
+        FakeBridge bridge = new FakeBridge();
+        AtomicInteger callbacks = new AtomicInteger();
+        AtomicReference<MultiuserXtra> xtraRef = new AtomicReference<>();
+        List<String> subjects = new ArrayList<>();
+
+        MultiuserXtra xtra = new MultiuserXtra(bridge, (target, handlerName, args) -> {
+            callbacks.incrementAndGet();
+            Datum message = xtraRef.get().callHandler(1, "getNetMessage", List.of());
+            subjects.add(((Datum.PropList) message).get("subject", true).toStr());
+        });
+        xtraRef.set(xtra);
+
+        xtra.createInstance(List.of());
+        xtra.callHandler(1, "setNetMessageHandler",
+                List.of(Datum.of("onMessage"), Datum.of("target")));
+        for (int i = 0; i < 32; i++) {
+            bridge.queue.add(new MultiuserNetBridge.NetMessage(
+                    0, "", "msg-" + i, Datum.of("payload-" + i)));
+        }
+
+        xtra.tick();
+
+        assertEquals(32, callbacks.get());
+        assertEquals("msg-0", subjects.get(0));
+        assertEquals("msg-31", subjects.get(31));
+        assertEquals(0, xtra.callHandler(1, "getNumberWaitingNetMessages", List.of()).toInt());
+    }
+
+    @Test
     void explicitCheckNetMessagesCanStillDrainRequestedCount() {
         FakeBridge bridge = new FakeBridge();
         AtomicInteger callbacks = new AtomicInteger();
