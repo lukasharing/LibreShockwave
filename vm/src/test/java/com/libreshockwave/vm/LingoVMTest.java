@@ -419,6 +419,21 @@ class LingoVMTest {
     }
 
     @Test
+    void testGlobalMemberExistsDoesNotUseRegistryOnlyLookup() {
+        LingoVM vm = new LingoVM(null);
+        CastLibProvider.setProvider(new RegistryOnlyCastProvider());
+        try {
+            Datum exists = vm.callHandler("memberExists", List.of(Datum.of("registry_only")));
+            Datum encoded = vm.callHandler("getmemnum", List.of(Datum.of("registry_only")));
+
+            assertEquals(0, exists.toInt());
+            assertEquals((6 << 16) | 12, encoded.toInt());
+        } finally {
+            CastLibProvider.clearProvider();
+        }
+    }
+
+    @Test
     void testReceiveUpdateAndRemoveUpdateAreNotBuiltins() {
         LingoVM vm = new LingoVM(null);
         RecordingUpdateProvider provider = new RecordingUpdateProvider();
@@ -461,6 +476,25 @@ class LingoVMTest {
         assertTrue(stack.contains("replaceChunks(" + formattedArg + ")"));
         assertTrue(stack.contains(longArg));
         assertFalse(stack.contains("..."));
+    }
+
+    @Test
+    void testExceptionCallStackIncludesScriptOriginWhenAvailable() {
+        LingoException exception = new LingoException("boom");
+        exception.setLingoCallStack(List.of(
+                new LingoVM.CallStackFrame(
+                        "openArticle",
+                        "\"Bulletin Class\" (PARENT)",
+                        42,
+                        List.of(),
+                        "scriptId=681 castLib=8 member=17 file=\"hh_bulletin.cct\"")
+        ));
+
+        String stack = exception.formatLingoCallStack();
+        assertNotNull(stack);
+        assertTrue(stack.contains("scriptId=681"));
+        assertTrue(stack.contains("castLib=8"));
+        assertTrue(stack.contains("file=\"hh_bulletin.cct\""));
     }
 
     @Test
@@ -865,6 +899,25 @@ class LingoVMTest {
         @Override
         public boolean isRegistryVisibleMember(int castLibNumber, int memberNumber) {
             return false;
+        }
+    }
+
+    private static final class RegistryOnlyCastProvider extends NoOpCastLibProvider {
+        @Override
+        public Datum getRegistryMemberByName(int castLibNumber, String memberName) {
+            return "registry_only".equalsIgnoreCase(memberName)
+                    ? Datum.CastMemberRef.of(6, 12)
+                    : Datum.VOID;
+        }
+
+        @Override
+        public Datum getMemberByName(int castLibNumber, String memberName) {
+            return Datum.VOID;
+        }
+
+        @Override
+        public boolean memberExists(int castLibNumber, int memberNumber) {
+            return castLibNumber == 6 && memberNumber == 12;
         }
     }
 

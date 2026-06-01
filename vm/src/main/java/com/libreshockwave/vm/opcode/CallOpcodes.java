@@ -402,8 +402,7 @@ public final class CallOpcodes {
             Datum receiver = ctx.getReceiver();
             if (receiver instanceof Datum.ScriptInstance si) {
                 String propName = ctx.resolveName(varRef.rawIndex());
-                Datum value = si.properties().get(propName);
-                return value != null ? value : Datum.VOID;
+                return AncestorChainWalker.getProperty(si, propName);
             }
             return Datum.VOID;
         }
@@ -432,7 +431,7 @@ public final class CallOpcodes {
             Datum receiver = ctx.getReceiver();
             if (receiver instanceof Datum.ScriptInstance si) {
                 String propName = ctx.resolveName(varRef.rawIndex());
-                si.properties().put(propName, value);
+                AncestorChainWalker.setProperty(si, propName, value);
             }
             return;
         }

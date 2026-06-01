@@ -176,7 +176,8 @@ public final class CastLibBuiltins {
             return Datum.of(0);
         }
 
-        int slot = resolveGlobalMemberSlot(provider, args.get(0).toStr());
+        String memberName = args.get(0).toStr();
+        int slot = resolveGlobalMemberSlot(provider, memberName);
         if (slot != 0) {
             return Datum.of(slot);
         }
@@ -198,8 +199,10 @@ public final class CastLibBuiltins {
             return Datum.of(0);
         }
 
-        int slot = resolveGlobalMemberSlot(provider, args.get(0).toStr());
-        if (slot != 0) {
+        String memberName = args.get(0).toStr();
+        Datum ref = provider.getMemberByName(0, memberName);
+        if (ref instanceof Datum.CastMemberRef cmr
+                && provider.memberExists(cmr.castLibNum(), cmr.memberNum())) {
             return Datum.of(1);
         }
 

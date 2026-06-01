@@ -5,6 +5,7 @@ import com.libreshockwave.chunks.ScriptChunk;
 import com.libreshockwave.chunks.ScriptNamesChunk;
 import com.libreshockwave.lingo.Opcode;
 import com.libreshockwave.vm.builtin.BuiltinRegistry;
+import com.libreshockwave.vm.builtin.cast.CastLibProvider;
 import com.libreshockwave.vm.builtin.net.ExternalParamProvider;
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.datum.DatumFormatter;
@@ -328,14 +329,20 @@ public class LingoVM {
             String handlerName,
             String scriptName,
             int bytecodeIndex,
-            List<String> arguments
+            List<String> arguments,
+            String origin
         ) {
         public CallStackFrame(String handlerName, String scriptName, int bytecodeIndex) {
             this(handlerName, scriptName, bytecodeIndex, new ArrayList<>());
         }
 
+        public CallStackFrame(String handlerName, String scriptName, int bytecodeIndex, List<String> arguments) {
+            this(handlerName, scriptName, bytecodeIndex, arguments, "");
+        }
+
         public CallStackFrame {
             arguments = arguments == null ? new ArrayList<>() : new ArrayList<>(arguments);
+            origin = origin == null ? "" : origin;
         }
     }
 
@@ -1103,8 +1110,52 @@ public class LingoVM {
                 scope.getScript().getHandlerName(scope.getHandler()),
                 scope.getScript().getDisplayName(),
                 scope.getBytecodeIndex(),
-                arguments
+                arguments,
+                formatScriptOrigin(scope.getScript())
         );
+    }
+
+    private static String formatScriptOrigin(ScriptChunk script) {
+        if (script == null || script.id() == null) {
+            return "";
+        }
+        int scriptChunkId = script.id().value();
+        StringBuilder origin = new StringBuilder("scriptId=").append(scriptChunkId);
+        CastLibProvider provider = CastLibProvider.getProvider();
+        CastLibProvider.ScriptOrigin resolved = provider != null
+                ? provider.findScriptOrigin(scriptChunkId)
+                : null;
+        if (resolved != null) {
+            appendOriginInt(origin, "castLib", resolved.castLibNumber());
+            appendOriginString(origin, "cast", resolved.castLibName());
+            appendOriginInt(origin, "member", resolved.memberNumber());
+            appendOriginString(origin, "memberName", resolved.memberName());
+            appendOriginString(origin, "file", resolved.fileName());
+            appendOriginString(origin, "authoredFile", resolved.authoredFileName());
+        } else {
+            origin.append(" type=").append(script.getScriptType());
+        }
+        return origin.toString();
+    }
+
+    private static void appendOriginInt(StringBuilder sb, String key, int value) {
+        if (value > 0) {
+            sb.append(' ').append(key).append('=').append(value);
+        }
+    }
+
+    private static void appendOriginString(StringBuilder sb, String key, String value) {
+        if (value == null || value.isBlank()) {
+            return;
+        }
+        sb.append(' ').append(key).append("=\"").append(sanitizeOriginValue(value)).append('"');
+    }
+
+    private static String sanitizeOriginValue(String value) {
+        return value.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\r", "\\r")
+                .replace("\n", "\\n");
     }
 
     public static void appendCallStackFrame(StringBuilder sb, CallStackFrame frame) {
@@ -1114,6 +1165,7 @@ public class LingoVM {
             sb.append(frame.arguments().get(i));
         }
         sb.append(") (").append(frame.scriptName()).append(")")
+          .append(frame.origin().isEmpty() ? "" : " [" + frame.origin() + "]")
           .append(" [bytecode ").append(frame.bytecodeIndex()).append(']');
         sb.append('\n');
     }

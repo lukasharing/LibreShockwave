@@ -6,6 +6,7 @@ import com.libreshockwave.chunks.*;
 import com.libreshockwave.format.ChunkType;
 import com.libreshockwave.id.CastLibId;
 import com.libreshockwave.id.ChunkId;
+import com.libreshockwave.vm.builtin.cast.CastLibProvider;
 import com.libreshockwave.vm.datum.Datum;
 
 import java.nio.charset.StandardCharsets;
@@ -365,6 +366,10 @@ public class CastLib {
         return fileName;
     }
 
+    public String getAuthoredFileName() {
+        return authoredFileName;
+    }
+
     public void setFileName(String fileName) {
         this.fileName = fileName;
     }
@@ -595,6 +600,23 @@ public class CastLib {
         return null;
     }
 
+    /**
+     * Resolve a member by name using the same overwrite semantics as the
+     * authored Resource Manager preIndexMembers loop: when a cast contains
+     * duplicate member names, the later member slot replaces the earlier one.
+     */
+    CastMember getRegistryMemberByName(String name) {
+        if (!isLoaded()) {
+            load();
+        }
+
+        CastMember direct = findLastMemberByNameExact(name);
+        if (direct != null) {
+            return direct;
+        }
+        return null;
+    }
+
     CastMemberChunk findMemberChunkByNameExact(String name) {
         for (NamedMemberChunk match : findMemberChunksByNameExact(name)) {
             if (sameMemberName(effectiveMemberName(match.memberNumber(), match.chunk()), name)) {
@@ -649,6 +671,15 @@ public class CastLib {
         return firstMemberNumber > 0 ? getMember(firstMemberNumber) : null;
     }
 
+    private CastMember findLastMemberByNameExact(String name) {
+        if (name == null || name.isEmpty()) {
+            return null;
+        }
+
+        int lastMemberNumber = findLastMemberNumberByNameExact(name);
+        return lastMemberNumber > 0 ? getMember(lastMemberNumber) : null;
+    }
+
     private int findFirstMemberNumberByNameExact(String name) {
         int firstMemberNumber = Integer.MAX_VALUE;
         for (NamedMemberChunk match : findMemberChunksByNameExact(name)) {
@@ -663,6 +694,22 @@ public class CastLib {
             }
         }
         return firstMemberNumber == Integer.MAX_VALUE ? -1 : firstMemberNumber;
+    }
+
+    private int findLastMemberNumberByNameExact(String name) {
+        int lastMemberNumber = -1;
+        for (NamedMemberChunk match : findMemberChunksByNameExact(name)) {
+            if (sameMemberName(effectiveMemberName(match.memberNumber(), match.chunk()), name)) {
+                lastMemberNumber = Math.max(lastMemberNumber, match.memberNumber());
+            }
+        }
+        for (Map.Entry<Integer, CastMember> entry : members.entrySet()) {
+            CastMember member = entry.getValue();
+            if (sameMemberName(member.getName(), name)) {
+                lastMemberNumber = Math.max(lastMemberNumber, entry.getKey());
+            }
+        }
+        return lastMemberNumber;
     }
 
     private String effectiveMemberName(int memberNumber, CastMemberChunk chunk) {
@@ -734,6 +781,30 @@ public class CastLib {
             load();
         }
         return scripts.get(memberNumber);
+    }
+
+    public CastLibProvider.ScriptOrigin findScriptOrigin(int scriptChunkId) {
+        if (!isLoaded()) {
+            return null;
+        }
+        for (Map.Entry<Integer, ScriptChunk> entry : scripts.entrySet()) {
+            ScriptChunk script = entry.getValue();
+            if (script == null || script.id() == null || script.id().value() != scriptChunkId) {
+                continue;
+            }
+            int memberNumber = entry.getKey();
+            CastMemberChunk chunk = memberChunks.get(memberNumber);
+            String memberName = effectiveMemberName(memberNumber, chunk);
+            return new CastLibProvider.ScriptOrigin(
+                    castLibId.value(),
+                    memberNumber,
+                    scriptChunkId,
+                    name,
+                    memberName,
+                    fileName,
+                    authoredFileName);
+        }
+        return null;
     }
 
     /**

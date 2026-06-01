@@ -446,20 +446,21 @@ public class CastLibManager implements CastLibProvider {
             if (!isRegistryVisibleCast(castLib)) {
                 return Datum.VOID;
             }
-            return getMemberByNameInCast(castLib, memberName);
+            return getRegistryMemberByNameInCast(castLib, memberName);
         }
 
+        Datum lastFound = Datum.VOID;
         for (CastLib castLib : castLibs.values()) {
             CastLib loadedCast = castForMemberLookup(castLib);
             if (!isRegistryVisibleCast(loadedCast)) {
                 continue;
             }
-            Datum found = getMemberByNameInCast(loadedCast, memberName);
+            Datum found = getRegistryMemberByNameInCast(loadedCast, memberName);
             if (!found.isVoid()) {
-                return found;
+                lastFound = found;
             }
         }
-        return Datum.VOID;
+        return lastFound;
     }
 
     private static String unquoteLingoStringLiteral(String value) {
@@ -1074,19 +1075,8 @@ public class CastLibManager implements CastLibProvider {
         boolean loaded = castLib.setExternalData(data, reusableSource);
         if (loaded) {
             clearPendingExternalLoad(castLibNumber);
-            releaseCachedExternalData(data);
         }
         return loaded;
-    }
-
-    private void releaseCachedExternalData(byte[] data) {
-        if (data == null || data.length == 0) {
-            return;
-        }
-        synchronized (externalCastCacheLock) {
-            castDataCache.entrySet().removeIf(entry ->
-                    entry.getValue() == data || java.util.Arrays.equals(entry.getValue(), data));
-        }
     }
 
     private DirectorFile findReusableExternalSource(int targetCastLibNumber, byte[] data) {
@@ -1238,6 +1228,31 @@ public class CastLibManager implements CastLibProvider {
     }
 
     private record MemberNameCandidate(Datum ref) {}
+
+    private static Datum getRegistryMemberByNameInCast(CastLib castLib, String memberName) {
+        MemberNameCandidate candidate = getRegistryMemberByNameCandidate(castLib, memberName);
+        return candidate != null ? candidate.ref() : Datum.VOID;
+    }
+
+    private static MemberNameCandidate getRegistryMemberByNameCandidate(CastLib castLib, String memberName) {
+        if (castLib == null || memberName == null || memberName.isEmpty()) {
+            return null;
+        }
+        if (!castLib.isLoaded()) {
+            CastMember dynamic = castLib.findCachedMemberByNameExact(memberName);
+            if (dynamic != null) {
+                return new MemberNameCandidate(
+                        Datum.CastMemberRef.of(castLib.getNumber(), dynamic.getMemberNumber()));
+            }
+            return null;
+        }
+        CastMember member = castLib.getRegistryMemberByName(memberName);
+        if (member != null) {
+            return new MemberNameCandidate(
+                    Datum.CastMemberRef.of(castLib.getNumber(), member.getMemberNumber()));
+        }
+        return null;
+    }
 
     private static MemberNameCandidate getMemberByNameCandidate(CastLib castLib, String memberName) {
         if (castLib == null || memberName == null || memberName.isEmpty()) {
@@ -1563,6 +1578,24 @@ public class CastLibManager implements CastLibProvider {
         }
         var script = castLib.getScript(memberNumber);
         return script != null ? script.id().value() : -1;
+    }
+
+    @Override
+    public ScriptOrigin findScriptOrigin(int scriptChunkId) {
+        ensureInitialized();
+        if (scriptChunkId <= 0) {
+            return null;
+        }
+        for (CastLib castLib : castLibs.values()) {
+            if (!castLib.isLoaded()) {
+                continue;
+            }
+            ScriptOrigin origin = castLib.findScriptOrigin(scriptChunkId);
+            if (origin != null) {
+                return origin;
+            }
+        }
+        return null;
     }
 
     /**

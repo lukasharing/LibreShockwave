@@ -309,6 +309,25 @@ public interface CastLibProvider {
     }
 
     /**
+     * Resolve a loaded Lscr chunk back to the authored cast/member that owns it.
+     * Used only for diagnostics so crashes can name the cast file that supplied
+     * the running Lingo.
+     */
+    default ScriptOrigin findScriptOrigin(int scriptChunkId) {
+        return null;
+    }
+
+    record ScriptOrigin(
+            int castLibNumber,
+            int memberNumber,
+            int scriptChunkId,
+            String castLibName,
+            String memberName,
+            String fileName,
+            String authoredFileName
+    ) {}
+
+    /**
      * Find a handler by name across all cast libraries.
      * Used by LingoVM to locate handlers in external casts.
      * @param handlerName The handler name to find
