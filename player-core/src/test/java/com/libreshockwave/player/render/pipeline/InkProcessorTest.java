@@ -341,6 +341,31 @@ class InkProcessorTest {
     }
 
     @Test
+    void indexedMatteOnlyRemovesEdgeConnectedPalettePixels() {
+        Bitmap src = new Bitmap(5, 5, 8, new int[] {
+            0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
+            0xFFFFFFFF, 0xFF224466, 0xFF224466, 0xFF224466, 0xFFFFFFFF,
+            0xFFFFFFFF, 0xFF224466, 0xFFFFFFFF, 0xFF224466, 0xFFFFFFFF,
+            0xFFFFFFFF, 0xFF224466, 0xFF224466, 0xFF224466, 0xFFFFFFFF,
+            0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+        });
+        src.setPaletteIndices(new byte[] {
+            0, 0, 0, 0, 0,
+            0, 7, 7, 7, 0,
+            0, 7, 0, 7, 0,
+            0, 7, 7, 7, 0,
+            0, 0, 0, 0, 0
+        });
+
+        Bitmap result = InkProcessor.applyInk(src, InkMode.MATTE, 0, false, null);
+
+        assertEquals(0x00000000, result.getPixel(0, 0));
+        assertEquals(0xFF224466, result.getPixel(1, 1));
+        assertEquals(0xFFFFFFFF, result.getPixel(2, 2));
+        assertEquals(0x00000000, result.getPixel(4, 4));
+    }
+
+    @Test
     void indexedColorRemapUsesOriginalPaletteIndicesAfterMatteMasking() {
         Bitmap raw = new Bitmap(3, 1, 8, new int[] {
             0xFFFFFFFF,

@@ -116,6 +116,50 @@ class BitmapCacheTest {
     }
 
     @Test
+    void implicitIndexedBackgroundTransparentFallsBackToEdgePaletteMatte() {
+        int[] paletteColors = new int[256];
+        paletteColors[0] = 0xFFFFFFFF;
+        paletteColors[1] = 0xFF66CC44;
+        paletteColors[255] = 0xFF000000;
+        Palette palette = new Palette(paletteColors, "indexed-bg");
+
+        Bitmap raw = new Bitmap(3, 3, 8, new int[] {
+                0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
+                0xFFFFFFFF, 0xFF66CC44, 0xFFFFFFFF,
+                0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+        });
+        raw.setImagePalette(palette);
+        raw.setPaletteIndices(new byte[] {
+                0, 0, 0,
+                0, 1, 0,
+                0, 0, 0
+        });
+        CastMember member = new CastMember(1, 10007, MemberType.BITMAP);
+        member.setBitmapDirectly(raw);
+
+        Bitmap processed = new BitmapCache().getProcessedDynamic(
+                member, InkMode.BACKGROUND_TRANSPARENT.code(), 255,
+                0, false, false);
+
+        assertNotNull(processed);
+        assertEquals(0x00000000, processed.getPixel(0, 0),
+                "implicit indexed ink 36 must remove the authored edge matte");
+        assertEquals(0xFF66CC44, processed.getPixel(1, 1),
+                "non-matte pixels must keep their original color");
+    }
+
+    @Test
+    void indexedOnePixelMatteSourceIsFullyTransparent() {
+        Bitmap raw = new Bitmap(1, 1, 8, new int[] {0xFF000000});
+        raw.setPaletteIndices(new byte[] {(byte) 255});
+
+        Bitmap processed = InkProcessor.applyInk(raw, InkMode.MATTE, 0, false, raw.getImagePalette());
+
+        assertEquals(0x00000000, processed.getPixel(0, 0),
+                "a one-pixel matte bitmap is entirely edge-connected and should disappear");
+    }
+
+    @Test
     void backgroundTransparentScriptTextImageKeysItsRenderedBackground() {
         Bitmap raw = new Bitmap(3, 1, 32, new int[] {
                 0xFF6794A7,

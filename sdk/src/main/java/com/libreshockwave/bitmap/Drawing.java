@@ -14,6 +14,20 @@ import java.util.Queue;
 public class Drawing {
     private static final int DEFAULT_RGB_MATTE = 0xFFFFFF;
 
+    public record BackgroundTransparentKey(Integer paletteIndex, Integer rgb) {
+        public static BackgroundTransparentKey paletteIndex(int paletteIndex) {
+            return new BackgroundTransparentKey(paletteIndex & 0xFF, null);
+        }
+
+        public static BackgroundTransparentKey rgb(int rgb) {
+            return new BackgroundTransparentKey(null, rgb & 0xFFFFFF);
+        }
+
+        public boolean usesPaletteIndex() {
+            return paletteIndex != null;
+        }
+    }
+
     /**
      * A border-connected matte inferred from authored bitmap content.
      * Indexed Director art commonly uses palette slot 0 as the matte/background
@@ -37,7 +51,8 @@ public class Drawing {
                                    int srcX, int srcY,
                                    int width, int height,
                                    InkMode ink, int blend) {
-        copyPixels(dest, src, destX, destY, srcX, srcY, width, height, ink, blend, null, null);
+        copyPixels(dest, src, destX, destY, srcX, srcY, width, height,
+                ink, blend, (Bitmap) null, (Integer) null);
     }
 
     /**
@@ -61,7 +76,7 @@ public class Drawing {
                                    int width, int height,
                                    InkMode ink, int blend,
                                    Bitmap mask) {
-        copyPixels(dest, src, destX, destY, srcX, srcY, width, height, ink, blend, mask, null);
+        copyPixels(dest, src, destX, destY, srcX, srcY, width, height, ink, blend, mask, (Integer) null);
     }
 
     public static void copyPixels(Bitmap dest, Bitmap src,
@@ -81,7 +96,33 @@ public class Drawing {
                                    int width, int height,
                                    InkMode ink, int blend,
                                    Bitmap mask,
+                                   BackgroundTransparentKey backgroundKey) {
+        copyPixels(dest, src, destX, destY, srcX, srcY, width, height, ink, blend,
+                mask, backgroundKey, srcX, srcY);
+    }
+
+    public static void copyPixels(Bitmap dest, Bitmap src,
+                                   int destX, int destY,
+                                   int srcX, int srcY,
+                                   int width, int height,
+                                   InkMode ink, int blend,
+                                   Bitmap mask,
                                    Integer backgroundKeyRgb,
+                                   int maskX, int maskY) {
+        BackgroundTransparentKey backgroundKey = backgroundKeyRgb != null
+                ? BackgroundTransparentKey.rgb(backgroundKeyRgb)
+                : null;
+        copyPixels(dest, src, destX, destY, srcX, srcY, width, height, ink, blend,
+                mask, backgroundKey, maskX, maskY);
+    }
+
+    public static void copyPixels(Bitmap dest, Bitmap src,
+                                   int destX, int destY,
+                                   int srcX, int srcY,
+                                   int width, int height,
+                                   InkMode ink, int blend,
+                                   Bitmap mask,
+                                   BackgroundTransparentKey backgroundKey,
                                    int maskX, int maskY) {
         if (width <= 0 || height <= 0) return;
         if (ink == InkMode.MATTE && dest.getBitDepth() <= 8 && src.getBitDepth() > 8
@@ -137,11 +178,39 @@ public class Drawing {
 
                 int srcPixel = effectiveSrc.getPixel(sx, sy);
                 int destPixel = dest.getPixel(dx, dy);
+                if (pixelInk == InkMode.BACKGROUND_TRANSPARENT
+                        && matchesPaletteIndexKey(effectiveSrc, sx, sy, backgroundKey)) {
+                    continue;
+                }
 
-                int resultPixel = applyInk(srcPixel, destPixel, pixelInk, pixelBlend, backgroundKeyRgb);
+                Integer backgroundKeyRgb = null;
+                InkMode inkForApply = pixelInk;
+                if (pixelInk == InkMode.BACKGROUND_TRANSPARENT) {
+                    if (backgroundKey != null && backgroundKey.usesPaletteIndex()) {
+                        inkForApply = pixelBlend < 255 ? InkMode.BLEND : InkMode.COPY;
+                    } else if (backgroundKey != null) {
+                        backgroundKeyRgb = backgroundKey.rgb();
+                    }
+                }
+
+                int resultPixel = applyInk(srcPixel, destPixel, inkForApply, pixelBlend, backgroundKeyRgb);
                 dest.setPixelPreservePaletteIndex(dx, dy, resultPixel);
             }
         }
+    }
+
+    private static boolean matchesPaletteIndexKey(Bitmap src, int x, int y, BackgroundTransparentKey key) {
+        if (src == null || key == null || !key.usesPaletteIndex()) {
+            return false;
+        }
+        byte[] indices = src.getPaletteIndicesUnsafe();
+        if (indices == null || x < 0 || y < 0 || x >= src.getWidth() || y >= src.getHeight()) {
+            return false;
+        }
+        int offset = y * src.getWidth() + x;
+        return offset >= 0
+                && offset < indices.length
+                && (indices[offset] & 0xFF) == (key.paletteIndex() & 0xFF);
     }
 
     private static boolean copyMatteToMaskImage(Bitmap dest, Bitmap src,
@@ -983,9 +1052,11 @@ public class Drawing {
             return null;
         }
 
-        // Avoid treating uniformly filled indexed bitmaps as pure matte.
+        // A one-pixel matte source is still entirely edge-connected. Director's
+        // flood-fill matte therefore removes it; larger uniform sources keep the
+        // conservative path to avoid erasing authored solid fills.
         if (isUniformPaletteIndex(paletteIndices, dominantIndex)) {
-            return null;
+            return w == 1 && h == 1 ? dominantIndex : null;
         }
 
         int opaqueCornerCount = 0;

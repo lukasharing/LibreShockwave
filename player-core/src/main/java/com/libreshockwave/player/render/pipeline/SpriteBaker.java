@@ -32,6 +32,8 @@ public class SpriteBaker {
     private int animationTick;
     private int renderRevision;
     private boolean animatedContentBaked;
+    private Palette frameActivePalette;
+    private Palette retainedActivePalette;
 
     private record ShapeCacheKey(int castFileIdentity, int castMemberId,
                                  int dynamicMemberIdentity, int width, int height,
@@ -55,9 +57,19 @@ public class SpriteBaker {
     public List<RenderSprite> bakeSprites(List<RenderSprite> sprites) {
         animationTick++;
         animatedContentBaked = false;
+        frameActivePalette = resolveFrameActivePalette(sprites);
+        if (frameActivePalette != null) {
+            retainedActivePalette = frameActivePalette;
+        } else if (hasCurrentPaletteSprites(sprites)) {
+            frameActivePalette = retainedActivePalette;
+        }
         List<RenderSprite> result = new ArrayList<>(sprites.size());
-        for (RenderSprite sprite : sprites) {
-            result.add(bake(sprite));
+        try {
+            for (RenderSprite sprite : sprites) {
+                result.add(bake(sprite));
+            }
+        } finally {
+            frameActivePalette = null;
         }
         if (animatedContentBaked) {
             renderRevision++;
@@ -251,6 +263,8 @@ public class SpriteBaker {
                 // Only invalidate cache when palette actually changed
                 bitmapCache.invalidateIfPaletteChanged(sprite.getCastMember(), palInfo.version);
                 paletteOverride = palInfo.palette;
+            } else if (shouldUseFrameActivePalette(sprite.getCastMember())) {
+                paletteOverride = frameActivePalette;
             }
             b = bitmapCache.getProcessed(sprite.getCastMember(), sprite.getInk(),
                     sprite.getBackColor(),
@@ -263,6 +277,54 @@ public class SpriteBaker {
                     sprite.getForeColor(), sprite.hasForeColor(), sprite.hasBackColor());
         }
         return b;
+    }
+
+    private Palette resolveFrameActivePalette(List<RenderSprite> sprites) {
+        if (player == null || player.getBitmapResolver() == null) {
+            return null;
+        }
+
+        Palette moviePalette = player.getBitmapResolver().getMoviePalette();
+        if (moviePalette != null) {
+            return moviePalette;
+        }
+
+        for (RenderSprite sprite : sprites) {
+            if (sprite == null || !sprite.isVisible()
+                    || sprite.getType() != RenderSprite.SpriteType.BITMAP
+                    || sprite.getCastMember() == null) {
+                continue;
+            }
+            Palette palette = player.getBitmapResolver().resolveAuthoredPalette(sprite.getCastMember());
+            if (palette != null) {
+                return palette;
+            }
+        }
+        return null;
+    }
+
+    private boolean shouldUseFrameActivePalette(com.libreshockwave.chunks.CastMemberChunk member) {
+        return frameActivePalette != null
+                && player != null
+                && player.getBitmapResolver() != null
+                && player.getBitmapResolver().usesCurrentPalette(member);
+    }
+
+    private boolean hasCurrentPaletteSprites(List<RenderSprite> sprites) {
+        if (player == null || player.getBitmapResolver() == null) {
+            return false;
+        }
+        for (RenderSprite sprite : sprites) {
+            if (sprite == null || !sprite.isVisible()
+                    || sprite.getType() != RenderSprite.SpriteType.BITMAP
+                    || sprite.getCastMember() == null) {
+                continue;
+            }
+            if (player.getBitmapResolver().usesCurrentPalette(sprite.getCastMember())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

@@ -168,6 +168,35 @@ public final class PaletteResolver {
         return null;
     }
 
+    public Palette resolveDefaultPaletteChunk(int paletteId) {
+        if (paletteId != 0) {
+            return null;
+        }
+        PaletteChunk first = null;
+        for (PaletteChunk pc : palettes) {
+            if (first == null) {
+                first = pc;
+            }
+            if (pc.colors().length >= 256) {
+                return new Palette(pc.colors(), "Default Palette #" + pc.id().value());
+            }
+        }
+        return first != null ? new Palette(first.colors(), "Default Palette #" + first.id().value()) : null;
+    }
+
+    public Palette resolveCompactPaletteChunk(int paletteId) {
+        if (paletteId != 0) {
+            return null;
+        }
+        for (PaletteChunk pc : palettes) {
+            int colorCount = pc.colors().length;
+            if (colorCount > 0 && colorCount <= 16) {
+                return new Palette(pc.colors(), "Compact Palette #" + pc.id().value());
+            }
+        }
+        return null;
+    }
+
     /**
      * Get the minMember offset for a cast library.
      */

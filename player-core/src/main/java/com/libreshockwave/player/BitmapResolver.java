@@ -185,6 +185,71 @@ public class BitmapResolver {
     }
 
     /**
+     * Director bitmap palette id 0 in cast lib 0 means "use the current movie
+     * palette" for indexed art. It is not an authored reference to the first
+     * CLUT in the member's source file.
+     */
+    public boolean usesCurrentPalette(CastMemberChunk member) {
+        BitmapInfo info = parseBitmapInfo(member);
+        return info != null && info.isPaletted()
+                && info.paletteCastLib() == 0
+                && info.paletteId() == 0;
+    }
+
+    /**
+     * Resolve the member's explicit authored palette, if any. This intentionally
+     * returns null for "current palette" bitmaps so the caller can decide which
+     * movie/stage palette is active for the frame being rendered.
+     */
+    public Palette resolveAuthoredPalette(CastMemberChunk member) {
+        BitmapInfo info = parseBitmapInfo(member);
+        if (info == null || !info.isPaletted() || usesCurrentPalette(member)) {
+            return null;
+        }
+
+        if (info.paletteId() < 0) {
+            return Palette.getBuiltIn(info.paletteId());
+        }
+
+        if (info.paletteCastLib() > 0 && castLibManager != null) {
+            Palette palette = castLibManager.resolvePaletteByMember(info.paletteCastLib(), info.paletteId() + 1);
+            if (palette != null) {
+                return palette;
+            }
+        }
+
+        DirectorFile memberFile = member.file();
+        if (memberFile != null) {
+            Palette palette = memberFile.resolvePaletteExact(info.paletteId());
+            if (palette != null) {
+                return palette;
+            }
+        }
+
+        if (file != null && file != memberFile) {
+            Palette palette = file.resolvePaletteExact(info.paletteId());
+            if (palette != null) {
+                return palette;
+            }
+        }
+
+        if (castLibManager != null) {
+            for (CastLib castLib : castLibManager.getCastLibs().values()) {
+                if (!castLib.isLoaded()) continue;
+                DirectorFile src = castLib.getSourceFile();
+                if (src != null && src != memberFile && src != file) {
+                    Palette palette = src.resolvePaletteExact(info.paletteId());
+                    if (palette != null) {
+                        return palette;
+                    }
+                }
+            }
+        }
+
+        return memberFile != null ? memberFile.resolvePalette(info.paletteId()) : null;
+    }
+
+    /**
      * Get the movie's current palette (from score's palette channel).
      * In Director's 8-bit color model, all bitmaps on stage share this palette.
      * Returns null if no palette channel is set (use bitmap's own palette).
@@ -245,5 +310,18 @@ public class BitmapResolver {
             return file.resolvePaletteByMemberNumber(memberNum);
         }
         return null;
+    }
+
+    private static BitmapInfo parseBitmapInfo(CastMemberChunk member) {
+        if (member == null || !member.isBitmap()
+                || member.specificData() == null || member.specificData().length < 10) {
+            return null;
+        }
+        int dirVer = 1200;
+        DirectorFile memberFile = member.file();
+        if (memberFile != null && memberFile.getConfig() != null) {
+            dirVer = memberFile.getConfig().directorVersion();
+        }
+        return BitmapInfo.parse(member.specificData(), dirVer);
     }
 }

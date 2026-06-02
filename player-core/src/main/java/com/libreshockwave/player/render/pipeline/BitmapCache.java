@@ -128,7 +128,7 @@ public class BitmapCache {
 
             Bitmap processed = applyIndexedMatteColorRemapIfNeeded(
                     raw,
-                    InkProcessor.applyInk(raw, ink, backColor, useAlpha, palette),
+                    applySpriteInk(raw, ink, backColor, hasBackColor, useAlpha, palette, false),
                     ink, foreColor, backColor, hasForeColor, hasBackColor, palette);
             cache.put(key, processed);
             return processed;
@@ -172,7 +172,8 @@ public class BitmapCache {
             boolean useAlpha = bmp.getBitDepth() == 32 && bmp.isNativeAlpha();
             return applyIndexedMatteColorRemapIfNeeded(
                     bmp,
-                    InkProcessor.applyInk(bmp, ink, backColor, useAlpha, bmp.getImagePalette()),
+                    applySpriteInk(bmp, ink, backColor, hasBackColor,
+                            useAlpha, bmp.getImagePalette(), false),
                     ink, foreColor, backColor, hasForeColor, hasBackColor, bmp.getImagePalette());
         }
         return applyIndexedMatteColorRemapIfNeeded(
@@ -212,7 +213,7 @@ public class BitmapCache {
             boolean hasNativeAlpha = inkSource.getBitDepth() == 32 && inkSource.isNativeAlpha();
             processed = applyIndexedMatteColorRemapIfNeeded(
                     bmp,
-                    InkProcessor.applyInk(inkSource, ink, backColor,
+                    applySpriteInk(inkSource, ink, backColor, hasBackColor,
                             hasNativeAlpha, inkSource.getImagePalette(), true),
                     ink, foreColor, backColor, hasForeColor, hasBackColor, bmp.getImagePalette());
         } else {
@@ -230,6 +231,41 @@ public class BitmapCache {
             return raw;
         }
         return raw.copyWithNonNativeAlphaOpaque();
+    }
+
+    private static Bitmap applySpriteInk(Bitmap raw, int ink, int backColor, boolean hasBackColor,
+                                         boolean useAlpha, Palette palette, boolean skipGraduatedAlpha) {
+        Bitmap processed = InkProcessor.applyInk(raw, ink, backColor, useAlpha, palette, skipGraduatedAlpha);
+        if (shouldUseImplicitIndexedBackground(raw, processed, ink, hasBackColor)) {
+            Bitmap indexed = InkProcessor.applyImplicitIndexedBackgroundTransparent(raw);
+            if (introducesTransparency(raw, indexed)) {
+                return indexed;
+            }
+        }
+        return processed;
+    }
+
+    private static boolean shouldUseImplicitIndexedBackground(Bitmap raw, Bitmap processed,
+                                                              int ink, boolean hasBackColor) {
+        return InkMode.fromCode(ink) == InkMode.BACKGROUND_TRANSPARENT
+                && !hasBackColor
+                && raw != null
+                && !raw.isScriptModified()
+                && raw.getPaletteIndicesUnsafe() != null
+                && !introducesTransparency(raw, processed);
+    }
+
+    private static boolean introducesTransparency(Bitmap before, Bitmap after) {
+        if (before == null || after == null) {
+            return false;
+        }
+        int count = Math.min(before.getPixels().length, after.getPixels().length);
+        for (int i = 0; i < count; i++) {
+            if ((before.getPixels()[i] >>> 24) != 0 && (after.getPixels()[i] >>> 24) == 0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

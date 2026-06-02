@@ -562,8 +562,8 @@ public class DirectorFile {
                 return Optional.empty();
             }
 
-            // Use palette override if provided, otherwise resolve from embedded reference
-            Palette palette = paletteOverride != null ? paletteOverride : resolvePalette(info.paletteId());
+            // Use palette override if provided, otherwise resolve from the authored CLUT reference.
+            Palette palette = paletteOverride != null ? paletteOverride : resolveBitmapPalette(info);
 
             // Decode bitmap with pitch info for accurate scan width
             boolean bigEndian = endian == ByteOrder.BIG_ENDIAN;
@@ -582,6 +582,25 @@ public class DirectorFile {
         } catch (Exception e) {
             return Optional.empty();
         }
+    }
+
+    private Palette resolveBitmapPalette(BitmapInfo info) {
+        if (info == null) {
+            return resolvePalette(0);
+        }
+        if (info.paletteCastLib() == 0) {
+            if (info.bitDepth() == 8) {
+                Palette compactClut = getPaletteResolver().resolveCompactPaletteChunk(info.paletteId());
+                if (compactClut != null) {
+                    return compactClut;
+                }
+            }
+            Palette defaultClut = getPaletteResolver().resolveDefaultPaletteChunk(info.paletteId());
+            if (defaultClut != null) {
+                return defaultClut;
+            }
+        }
+        return resolvePalette(info.paletteId());
     }
 
     /**

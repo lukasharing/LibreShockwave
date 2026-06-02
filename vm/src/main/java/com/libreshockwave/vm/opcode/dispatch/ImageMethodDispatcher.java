@@ -32,6 +32,13 @@ public final class ImageMethodDispatcher {
             return;
         }
         bmp.clearTextRenderMetadata();
+        notifyImageMutationPreservingTextMetadata(bmp);
+    }
+
+    private static void notifyImageMutationPreservingTextMetadata(Bitmap bmp) {
+        if (bmp == null) {
+            return;
+        }
         bmp.markScriptModified();
         if (imageMutationCallback != null) {
             imageMutationCallback.run();
@@ -59,8 +66,9 @@ public final class ImageMethodDispatcher {
                 yield Datum.VOID;
             }
             case "copypixels" -> {
+                bmp.clearTextRenderMetadata();
                 Datum result = copyPixels(bmp, args);
-                notifyImageMutation(bmp);
+                notifyImageMutationPreservingTextMetadata(bmp);
                 yield result;
             }
             case "setalpha" -> {
@@ -687,6 +695,7 @@ public final class ImageMethodDispatcher {
         int blend = 255;
         int colorRemap = -1;   // #color param: remap BLACK (foreground) pixels to this color
         int bgColorRemap = -1; // #bgColor param: remap WHITE (background) pixels to this color
+        Integer bgColorPaletteIndexKey = null;
         Bitmap mask = null;    // #maskImage param: matte mask for transparency
         MaskOffset maskOffset = new MaskOffset(0, 0);
         ResolvedPalette copyPaletteRef = null; // #paletteRef param: decode/copy source through this palette
@@ -721,6 +730,9 @@ public final class ImageMethodDispatcher {
             if (!bgColorDatum.isVoid()) {
                 Bitmap resolveTarget = (bgColorDatum instanceof Datum.PaletteIndexColor && src.getImagePalette() != null) ? src : dest;
                 bgColorRemap = Datum.datumToArgb(bgColorDatum, resolveTarget) & 0xFFFFFF;
+                if (bgColorDatum instanceof Datum.PaletteIndexColor pic) {
+                    bgColorPaletteIndexKey = pic.index() & 0xFF;
+                }
             }
             // Check for #maskImage property (matte mask for transparency)
             Datum maskDatum = getPropIgnoreCase(pl, "maskImage", "maskimage", "MaskImage");
@@ -742,8 +754,12 @@ public final class ImageMethodDispatcher {
         int srcH = srcRect.bottom() - srcRect.top();
         int destW = destRect.right() - destRect.left();
         int destH = destRect.bottom() - destRect.top();
+        boolean useIndexedBackgroundKey = ink == Palette.InkMode.BACKGROUND_TRANSPARENT
+                && bgColorPaletteIndexKey != null
+                && src.getPaletteIndicesUnsafe() != null;
+        int colorizeBgColorRemap = useIndexedBackgroundKey ? -1 : bgColorRemap;
         if (dest.getImagePalette() == null && shouldCarryPaletteMetadata(dest, src, ink, blend,
-                mask, colorRemap, bgColorRemap)) {
+                mask, colorRemap, colorizeBgColorRemap)) {
             dest.copyPaletteReferenceFrom(src);
         }
         // Apply #color/#bgColor remapping only for grayscale source bitmaps.
@@ -754,12 +770,15 @@ public final class ImageMethodDispatcher {
         Bitmap effectiveSrc = src;
         int effectiveSrcX = srcRect.left();
         int effectiveSrcY = srcRect.top();
+        int sourceTextRenderBgColor = src.isTextRenderedImage()
+                ? src.getTextRenderBackgroundColor()
+                : Integer.MIN_VALUE;
         boolean remapToAlphaMask = false;
         boolean grayscaleColorized = false;
         boolean darkenBgTintCandidate = ink == Palette.InkMode.DARKEN
-                && bgColorRemap >= 0
+                && colorizeBgColorRemap >= 0
                 && colorRemap < 0;
-        if ((colorRemap >= 0 || bgColorRemap >= 0)
+        if ((colorRemap >= 0 || colorizeBgColorRemap >= 0)
                 && (!src.hasNativeMatteAlpha() || darkenBgTintCandidate)) {
             // Sample source pixels to check if they're grayscale (safe to remap)
             boolean isGrayscale = isMostlyGrayscale(src, srcRect);
@@ -768,24 +787,37 @@ public final class ImageMethodDispatcher {
                 int fgR = colorRemap >= 0 ? (colorRemap >> 16) & 0xFF : 0;
                 int fgG = colorRemap >= 0 ? (colorRemap >> 8) & 0xFF : 0;
                 int fgB = colorRemap >= 0 ? colorRemap & 0xFF : 0;
-                int bgR = bgColorRemap >= 0 ? (bgColorRemap >> 16) & 0xFF : 255;
-                int bgG = bgColorRemap >= 0 ? (bgColorRemap >> 8) & 0xFF : 255;
-                int bgB = bgColorRemap >= 0 ? bgColorRemap & 0xFF : 255;
-                boolean transparentBackground = colorRemap >= 0 && bgColorRemap < 0;
+                int bgR = colorizeBgColorRemap >= 0 ? (colorizeBgColorRemap >> 16) & 0xFF : 255;
+                int bgG = colorizeBgColorRemap >= 0 ? (colorizeBgColorRemap >> 8) & 0xFF : 255;
+                int bgB = colorizeBgColorRemap >= 0 ? colorizeBgColorRemap & 0xFF : 255;
+                boolean transparentBackground = colorRemap >= 0 && colorizeBgColorRemap < 0;
                 boolean darkenBgTint = darkenBgTintCandidate;
                 boolean indexedDarkenShade = usesIndexedShadeForDarken(src, mask);
                 byte[] darkenShadeIndices = indexedDarkenShade ? src.getPaletteIndicesUnsafe() : null;
 
                 effectiveSrc = new Bitmap(srcW, srcH, src.getBitDepth());
+                byte[] sourcePaletteIndices = src.getPaletteIndicesUnsafe();
+                byte[] effectivePaletteIndices = sourcePaletteIndices != null
+                        && sourcePaletteIndices.length >= src.getWidth() * src.getHeight()
+                        ? new byte[srcW * srcH]
+                        : null;
                 for (int y = 0; y < srcH; y++) {
                     for (int x = 0; x < srcW; x++) {
-                        int pixel = src.getPixel(srcRect.left() + x, srcRect.top() + y);
+                        int sourceX = srcRect.left() + x;
+                        int sourceY = srcRect.top() + y;
+                        int pixel = src.getPixel(sourceX, sourceY);
                         int alpha = (pixel >>> 24);
                         int r = (pixel >> 16) & 0xFF;
                         int g = (pixel >> 8) & 0xFF;
                         int b = pixel & 0xFF;
-                        int gray = shadeForDarken(src, srcRect.left() + x, srcRect.top() + y, r, g, b,
+                        int gray = shadeForDarken(src, sourceX, sourceY, r, g, b,
                                 indexedDarkenShade, darkenShadeIndices);
+                        if (effectivePaletteIndices != null
+                                && sourceX >= 0 && sourceX < src.getWidth()
+                                && sourceY >= 0 && sourceY < src.getHeight()) {
+                            effectivePaletteIndices[y * srcW + x] =
+                                    sourcePaletteIndices[sourceY * src.getWidth() + sourceX];
+                        }
                         if (transparentBackground) {
                             int maskAlpha = (255 - gray) * alpha / 255;
                             int outR = colorRemap >= 0 ? fgR : 0;
@@ -806,6 +838,9 @@ public final class ImageMethodDispatcher {
                         }
                     }
                 }
+                if (effectivePaletteIndices != null) {
+                    effectiveSrc.setPaletteIndices(effectivePaletteIndices);
+                }
                 effectiveSrcX = 0;
                 effectiveSrcY = 0;
                 remapToAlphaMask = transparentBackground;
@@ -815,10 +850,13 @@ public final class ImageMethodDispatcher {
 
         Datum.Rect effectiveSrcRect = new Datum.Rect(effectiveSrcX, effectiveSrcY,
                 effectiveSrcX + srcW, effectiveSrcY + srcH);
-        Integer backgroundKeyRgb = ink == Palette.InkMode.BACKGROUND_TRANSPARENT
-                ? Integer.valueOf(resolveBackgroundTransparentKey(
-                        effectiveSrc, effectiveSrcRect, bgColorRemap, grayscaleColorized))
-                : null;
+        Drawing.BackgroundTransparentKey backgroundKey = null;
+        if (ink == Palette.InkMode.BACKGROUND_TRANSPARENT) {
+            backgroundKey = useIndexedBackgroundKey
+                    ? Drawing.BackgroundTransparentKey.paletteIndex(bgColorPaletteIndexKey)
+                    : Drawing.BackgroundTransparentKey.rgb(resolveBackgroundTransparentKey(
+                            effectiveSrc, effectiveSrcRect, bgColorRemap, grayscaleColorized));
+        }
 
         if (ink == Palette.InkMode.BACKGROUND_TRANSPARENT
                 && effectiveSrc.hasNativeMatteAlpha()
@@ -842,13 +880,13 @@ public final class ImageMethodDispatcher {
         if (effectiveInk == Palette.InkMode.BACKGROUND_TRANSPARENT
                 && src.hasNativeMatteAlpha()
                 && !hasOpaqueBackgroundKeyBorder(effectiveSrc, effectiveSrcX, effectiveSrcY, srcW, srcH,
-                        backgroundKeyRgb)) {
+                        backgroundKeyRgb(backgroundKey))) {
             effectiveInk = Palette.InkMode.COPY;
         }
         if (effectiveInk == Palette.InkMode.DARKEN) {
             if (!grayscaleColorized) {
                 effectiveSrc = multiplyBitmapColorForDarken(effectiveSrc,
-                        bgColorRemap >= 0 ? bgColorRemap : 0xFFFFFF,
+                        colorizeBgColorRemap >= 0 ? colorizeBgColorRemap : 0xFFFFFF,
                         usesIndexedShadeForDarken(effectiveSrc, mask));
                 effectiveSrcX = 0;
                 effectiveSrcY = 0;
@@ -864,24 +902,26 @@ public final class ImageMethodDispatcher {
         if (srcW == destW && srcH == destH) {
             // No scaling needed - direct copy
             boolean preservePaletteIndices = canPreservePaletteIndices(dest, effectiveSrc,
-                    effectiveInk, blend, mask, colorRemap, bgColorRemap);
+                    effectiveInk, blend, mask, colorRemap, colorizeBgColorRemap);
             if (!preservePaletteIndices) {
                 clearPaletteIndicesBeforeNonIndexedCopy(dest);
             }
             clearFullTextRerenderBeforeBackgroundTransparentCopy(dest, effectiveSrc,
                     destRect.left(), destRect.top(), effectiveSrcX, effectiveSrcY,
-                    srcW, srcH, ink, blend, mask, backgroundKeyRgb);
+                    srcW, srcH, ink, blend, mask, backgroundKey);
             Drawing.copyPixels(dest, effectiveSrc,
                     destRect.left(), destRect.top(),
                     effectiveSrcX, effectiveSrcY,
-                    srcW, srcH, effectiveInk, blend, mask, backgroundKeyRgb,
+                    srcW, srcH, effectiveInk, blend, mask, backgroundKey,
                     srcRect.left() - maskOffset.x(), srcRect.top() - maskOffset.y());
+            propagateTextRenderMetadata(dest, effectiveSrc, sourceTextRenderBgColor,
+                    destRect.left(), destRect.top(), srcW, srcH);
             if (preservePaletteIndices) {
                 preservePaletteIndicesOnCopy(dest, effectiveSrc,
                         destRect.left(), destRect.top(),
                         effectiveSrcX, effectiveSrcY,
                         srcW, srcH, srcW, srcH,
-                        effectiveInk, blend, mask, colorRemap, bgColorRemap, backgroundKeyRgb);
+                        effectiveInk, blend, mask, colorRemap, colorizeBgColorRemap, backgroundKey);
             }
         } else {
             // Scaling needed - create scaled intermediate, applying mask at source coordinates
@@ -920,22 +960,24 @@ public final class ImageMethodDispatcher {
             }
             // Mask already applied during scaling, so pass null to Drawing
             boolean preservePaletteIndices = canPreservePaletteIndices(dest, scaled,
-                    effectiveInk, blend, null, colorRemap, bgColorRemap);
+                    effectiveInk, blend, null, colorRemap, colorizeBgColorRemap);
             if (!preservePaletteIndices) {
                 clearPaletteIndicesBeforeNonIndexedCopy(dest);
             }
             clearFullTextRerenderBeforeBackgroundTransparentCopy(dest, scaled,
                     destRect.left(), destRect.top(), 0, 0,
-                    destW, destH, ink, blend, null, backgroundKeyRgb);
+                    destW, destH, ink, blend, null, backgroundKey);
             Drawing.copyPixels(dest, scaled,
                     destRect.left(), destRect.top(),
-                    0, 0, destW, destH, effectiveInk, blend, null, backgroundKeyRgb);
+                    0, 0, destW, destH, effectiveInk, blend, null, backgroundKey);
+            propagateTextRenderMetadata(dest, scaled, sourceTextRenderBgColor,
+                    destRect.left(), destRect.top(), destW, destH);
             if (preservePaletteIndices) {
                 preservePaletteIndicesOnCopy(dest, scaled,
                         destRect.left(), destRect.top(),
                         0, 0,
                         destW, destH, destW, destH,
-                        effectiveInk, blend, null, colorRemap, bgColorRemap, backgroundKeyRgb);
+                        effectiveInk, blend, null, colorRemap, colorizeBgColorRemap, backgroundKey);
             }
         }
 
@@ -967,7 +1009,7 @@ public final class ImageMethodDispatcher {
             int width, int height,
             Palette.InkMode ink, int blend,
             Bitmap mask,
-            Integer backgroundKeyRgb) {
+            Drawing.BackgroundTransparentKey backgroundKey) {
         if (dest == null || src == null
                 || ink != Palette.InkMode.BACKGROUND_TRANSPARENT
                 || blend < 255
@@ -980,21 +1022,56 @@ public final class ImageMethodDispatcher {
         if (backgroundRgb < 0) {
             return;
         }
+        Integer backgroundKeyRgb = backgroundKeyRgb(backgroundKey);
+        if (backgroundKey != null && backgroundKey.usesPaletteIndex()) {
+            return;
+        }
         if (backgroundKeyRgb != null && (backgroundKeyRgb & 0xFFFFFF) != backgroundRgb) {
             return;
         }
 
-        if (destX != 0 || destY != 0
-                || width != dest.getWidth() || height != dest.getHeight()
+        if (!copyCoversDestination(dest, destX, destY, width, height)
                 || srcX != 0 || srcY != 0
                 || width != src.getWidth() || height != src.getHeight()) {
             return;
         }
-        if (!opaqueCornersMatch(dest, 0, 0, width, height, backgroundRgb)) {
+        if (!opaqueCornersMatch(dest, 0, 0, dest.getWidth(), dest.getHeight(), backgroundRgb)) {
             return;
         }
 
-        dest.fillRect(0, 0, width, height, 0xFF000000 | backgroundRgb);
+        dest.fillRect(0, 0, dest.getWidth(), dest.getHeight(), 0xFF000000 | backgroundRgb);
+    }
+
+    private static boolean copyCoversDestination(Bitmap dest, int destX, int destY, int width, int height) {
+        return dest != null
+                && destX <= 0
+                && destY <= 0
+                && destX + width >= dest.getWidth()
+                && destY + height >= dest.getHeight();
+    }
+
+    private static void propagateTextRenderMetadata(Bitmap dest, Bitmap src,
+                                                    int sourceTextRenderBgColor,
+                                                    int destX, int destY,
+                                                    int width, int height) {
+        if (dest == null || src == null
+                || width <= 0 || height <= 0
+                || destX >= dest.getWidth() || destY >= dest.getHeight()
+                || destX + width <= 0 || destY + height <= 0) {
+            return;
+        }
+        if (src.isTextRenderedImage()) {
+            markPropagatedTextRenderMetadata(dest, src.getTextRenderBackgroundColor());
+        } else if (sourceTextRenderBgColor != Integer.MIN_VALUE) {
+            markPropagatedTextRenderMetadata(dest, sourceTextRenderBgColor);
+        }
+    }
+
+    private static void markPropagatedTextRenderMetadata(Bitmap dest, int backgroundColor) {
+        if ((backgroundColor & 0xFFFFFF) != 0xFFFFFF) {
+            return;
+        }
+        dest.markTextRenderedImage(backgroundColor);
     }
 
     private static int textRenderBackgroundRgb(Bitmap src) {
@@ -1211,7 +1288,7 @@ public final class ImageMethodDispatcher {
                                                      Palette.InkMode ink, int blend,
                                                      Bitmap mask,
                                                      int colorRemap, int bgColorRemap,
-                                                     Integer backgroundKeyRgb) {
+                                                     Drawing.BackgroundTransparentKey backgroundKey) {
         if (!canPreservePaletteIndices(dest, src, ink, blend, mask, colorRemap, bgColorRemap)) {
             return;
         }
@@ -1245,7 +1322,7 @@ public final class ImageMethodDispatcher {
                     continue;
                 }
                 int srcPixel = src.getPixel(sx, sy);
-                if (shouldSkipPaletteIndexPreserve(srcPixel, ink, backgroundKeyRgb)) {
+                if (shouldSkipPaletteIndexPreserve(src, sx, sy, srcPixel, ink, backgroundKey)) {
                     continue;
                 }
                 destIndices[dy * dest.getWidth() + dx] = srcIndices[sy * src.getWidth() + sx];
@@ -1262,17 +1339,34 @@ public final class ImageMethodDispatcher {
 
     }
 
-    private static boolean shouldSkipPaletteIndexPreserve(int srcPixel, Palette.InkMode ink,
-                                                          Integer backgroundKeyRgb) {
+    private static boolean shouldSkipPaletteIndexPreserve(Bitmap src, int sx, int sy,
+                                                          int srcPixel, Palette.InkMode ink,
+                                                          Drawing.BackgroundTransparentKey backgroundKey) {
         int alpha = (srcPixel >>> 24) & 0xFF;
         if (alpha == 0) {
             return true;
         }
         if (ink == Palette.InkMode.BACKGROUND_TRANSPARENT) {
+            if (backgroundKey != null && backgroundKey.usesPaletteIndex()) {
+                return matchesBackgroundPaletteIndex(src, sx, sy, backgroundKey.paletteIndex());
+            }
+            Integer backgroundKeyRgb = backgroundKeyRgb(backgroundKey);
             int keyRgb = backgroundKeyRgb != null ? backgroundKeyRgb : 0xFFFFFF;
             return (srcPixel & 0xFFFFFF) == keyRgb;
         }
         return false;
+    }
+
+    private static boolean matchesBackgroundPaletteIndex(Bitmap src, int sx, int sy, int paletteIndex) {
+        if (src == null || sx < 0 || sy < 0 || sx >= src.getWidth() || sy >= src.getHeight()) {
+            return false;
+        }
+        byte[] indices = src.getPaletteIndicesUnsafe();
+        if (indices == null) {
+            return false;
+        }
+        int offset = sy * src.getWidth() + sx;
+        return offset >= 0 && offset < indices.length && (indices[offset] & 0xFF) == (paletteIndex & 0xFF);
     }
 
     private static boolean canPreservePaletteIndices(Bitmap dest, Bitmap src,
@@ -1532,6 +1626,13 @@ public final class ImageMethodDispatcher {
 
     private static int byteToBlendAlpha(Datum blendDatum) {
         return Math.max(0, Math.min(255, blendDatum.toInt()));
+    }
+
+    private static Integer backgroundKeyRgb(Drawing.BackgroundTransparentKey backgroundKey) {
+        if (backgroundKey == null || backgroundKey.usesPaletteIndex()) {
+            return null;
+        }
+        return backgroundKey.rgb();
     }
 
     private static boolean hasOpaqueBackgroundKeyBorder(Bitmap src, int srcX, int srcY,

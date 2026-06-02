@@ -350,6 +350,20 @@ public final class InkProcessor {
         return newDerivedBitmap(src, result);
     }
 
+    static Bitmap applyImplicitIndexedBackgroundTransparent(Bitmap src) {
+        if (src == null || src.getPaletteIndicesUnsafe() == null) {
+            return src;
+        }
+        Drawing.FloodFillMatte matte = Drawing.resolveFloodFillMatte(src);
+        if (matte == null) {
+            return src;
+        }
+        if (matte.usesPaletteIndex()) {
+            return applyIndexedMatte(src, matte.mattePaletteIndex());
+        }
+        return applyMatte(src, matte.matteColorRgb(), matte.tolerance());
+    }
+
     static Bitmap applyMask(Bitmap src) {
         int w = src.getWidth();
         int h = src.getHeight();
@@ -429,17 +443,62 @@ public final class InkProcessor {
         if (paletteIndices == null || paletteIndices.length != src.getWidth() * src.getHeight()) {
             return src;
         }
+        int w = src.getWidth();
+        int h = src.getHeight();
         int[] pixels = src.getPixels();
-        int[] result = new int[pixels.length];
+        int pixelCount = w * h;
+        boolean[] transparent = new boolean[pixelCount];
+        Queue<Integer> queue = new ArrayDeque<>();
         int matteIndex = mattePaletteIndex & 0xFF;
-        for (int i = 0; i < pixels.length; i++) {
-            if ((paletteIndices[i] & 0xFF) == matteIndex || ((pixels[i] >>> 24) & 0xFF) == 0) {
+
+        for (int x = 0; x < w; x++) {
+            seedIndexedMatte(paletteIndices, pixels, transparent, queue, x, 0, w, matteIndex);
+            seedIndexedMatte(paletteIndices, pixels, transparent, queue, x, h - 1, w, matteIndex);
+        }
+        for (int y = 1; y < h - 1; y++) {
+            seedIndexedMatte(paletteIndices, pixels, transparent, queue, 0, y, w, matteIndex);
+            seedIndexedMatte(paletteIndices, pixels, transparent, queue, w - 1, y, w, matteIndex);
+        }
+
+        while (!queue.isEmpty()) {
+            int idx = queue.poll();
+            int px = idx % w;
+            int py = idx / w;
+            if (px > 0)     seedIndexedMatte(paletteIndices, pixels, transparent, queue, px - 1, py, w, matteIndex);
+            if (px < w - 1) seedIndexedMatte(paletteIndices, pixels, transparent, queue, px + 1, py, w, matteIndex);
+            if (py > 0)     seedIndexedMatte(paletteIndices, pixels, transparent, queue, px, py - 1, w, matteIndex);
+            if (py < h - 1) seedIndexedMatte(paletteIndices, pixels, transparent, queue, px, py + 1, w, matteIndex);
+        }
+
+        int[] result = new int[pixelCount];
+        int limit = Math.min(pixels.length, pixelCount);
+        for (int i = 0; i < limit; i++) {
+            if (transparent[i] || ((pixels[i] >>> 24) & 0xFF) == 0) {
                 result[i] = 0x00000000;
             } else {
                 result[i] = pixels[i];
             }
         }
         return newDerivedBitmap(src, result);
+    }
+
+    private static void seedIndexedMatte(byte[] paletteIndices, int[] pixels, boolean[] transparent,
+                                         Queue<Integer> queue, int x, int y, int w, int matteIndex) {
+        int idx = y * w + x;
+        if (idx < 0 || idx >= transparent.length || idx >= pixels.length || idx >= paletteIndices.length) {
+            return;
+        }
+        if (!transparent[idx] && isTransparentOrIndexedMatte(paletteIndices, pixels, idx, matteIndex)) {
+            transparent[idx] = true;
+            queue.add(idx);
+        }
+    }
+
+    private static boolean isTransparentOrIndexedMatte(byte[] paletteIndices, int[] pixels, int idx, int matteIndex) {
+        if (((pixels[idx] >>> 24) & 0xFF) == 0) {
+            return true;
+        }
+        return (paletteIndices[idx] & 0xFF) == matteIndex;
     }
 
     private static void seedMatte(int[] pixels, boolean[] transparent, Queue<Integer> queue,

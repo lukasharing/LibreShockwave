@@ -303,7 +303,11 @@ public class Bitmap {
                 }
                 int index = paletteIndices[i] & 0xFF;
                 if (index >= max) {
-                    continue;
+                    if (max > 0 && max <= 16) {
+                        index = (index >> 4) & 0x0F;
+                    } else {
+                        continue;
+                    }
                 }
                 int newRgb = newPalette.getColor(index) & 0xFFFFFF;
                 if ((pixels[i] & 0xFFFFFF) != newRgb) {
