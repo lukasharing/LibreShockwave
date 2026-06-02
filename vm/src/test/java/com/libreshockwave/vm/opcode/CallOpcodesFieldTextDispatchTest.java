@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -47,6 +48,61 @@ class CallOpcodesFieldTextDispatchTest {
                 List.of());
 
         assertEquals(2, result.toInt());
+    }
+
+    @Test
+    void propertyVarRefReadsFromAncestorChain() {
+        Map<String, Datum> ancestorProps = new LinkedHashMap<>();
+        ancestorProps.put("#0", Datum.of("reyLukas"));
+        Datum.ScriptInstance ancestor = new Datum.ScriptInstance(2, ancestorProps);
+
+        Map<String, Datum> childProps = new LinkedHashMap<>();
+        childProps.put(Datum.PROP_ANCESTOR, ancestor);
+        Datum.ScriptInstance child = new Datum.ScriptInstance(1, childProps);
+
+        ExecutionContext ctx = createContext(0, 0, child);
+
+        Datum result = invokeResolveVarRef(ctx, new Datum.VarRef(VarType.PROPERTY, 0));
+
+        assertEquals("reyLukas", result.toStr());
+    }
+
+    @Test
+    void propertyVarRefWritesBackToAncestorOwner() {
+        Map<String, Datum> ancestorProps = new LinkedHashMap<>();
+        ancestorProps.put("#0", Datum.EMPTY_STRING);
+        Datum.ScriptInstance ancestor = new Datum.ScriptInstance(2, ancestorProps);
+
+        Map<String, Datum> childProps = new LinkedHashMap<>();
+        childProps.put(Datum.PROP_ANCESTOR, ancestor);
+        Datum.ScriptInstance child = new Datum.ScriptInstance(1, childProps);
+
+        ExecutionContext ctx = createContext(0, 0, child);
+
+        invokeSetVarRef(ctx, new Datum.VarRef(VarType.PROPERTY, 0), Datum.of("Visible name"));
+
+        assertEquals("Visible name", ancestor.properties().get("#0").toStr());
+        assertEquals(false, child.properties().containsKey("#0"));
+    }
+
+    @Test
+    void stringContextPropertyVarsUseAncestorChain() {
+        Map<String, Datum> ancestorProps = new LinkedHashMap<>();
+        ancestorProps.put("#0", Datum.of("room user"));
+        Datum.ScriptInstance ancestor = new Datum.ScriptInstance(2, ancestorProps);
+
+        Map<String, Datum> childProps = new LinkedHashMap<>();
+        childProps.put(Datum.PROP_ANCESTOR, ancestor);
+        Datum.ScriptInstance child = new Datum.ScriptInstance(1, childProps);
+
+        ExecutionContext ctx = createContext(0, 0, child);
+
+        assertEquals("room user", invokeGetContextVar(ctx, 0x3, Datum.of(0), null).toStr());
+
+        invokeSetContextVar(ctx, 0x3, Datum.of(0), null, Datum.of("infostand user"));
+
+        assertEquals("infostand user", ancestor.properties().get("#0").toStr());
+        assertEquals(false, child.properties().containsKey("#0"));
     }
 
     @Test
@@ -127,6 +183,56 @@ class CallOpcodesFieldTextDispatchTest {
         }
     }
 
+    private static void invokeSetContextVar(ExecutionContext ctx, int varType, Datum idDatum,
+                                            Datum castIdDatum, Datum value) {
+        try {
+            Method method = StringOpcodes.class.getDeclaredMethod(
+                    "setContextVar",
+                    ExecutionContext.class,
+                    int.class,
+                    Datum.class,
+                    Datum.class,
+                    Datum.class);
+            method.setAccessible(true);
+            method.invoke(null, ctx, varType, idDatum, castIdDatum, value);
+        } catch (NoSuchMethodException | IllegalAccessException e) {
+            throw new AssertionError(e);
+        } catch (InvocationTargetException e) {
+            throw unwrap(e);
+        }
+    }
+
+    private static Datum invokeResolveVarRef(ExecutionContext ctx, Datum.VarRef varRef) {
+        try {
+            Method method = CallOpcodes.class.getDeclaredMethod(
+                    "resolveVarRef",
+                    ExecutionContext.class,
+                    Datum.VarRef.class);
+            method.setAccessible(true);
+            return (Datum) method.invoke(null, ctx, varRef);
+        } catch (NoSuchMethodException | IllegalAccessException e) {
+            throw new AssertionError(e);
+        } catch (InvocationTargetException e) {
+            throw unwrap(e);
+        }
+    }
+
+    private static void invokeSetVarRef(ExecutionContext ctx, Datum.VarRef varRef, Datum value) {
+        try {
+            Method method = CallOpcodes.class.getDeclaredMethod(
+                    "setVarRef",
+                    ExecutionContext.class,
+                    Datum.VarRef.class,
+                    Datum.class);
+            method.setAccessible(true);
+            method.invoke(null, ctx, varRef, value);
+        } catch (NoSuchMethodException | IllegalAccessException e) {
+            throw new AssertionError(e);
+        } catch (InvocationTargetException e) {
+            throw unwrap(e);
+        }
+    }
+
     private static String invokeGetStringChunk(String str, String chunkType, int start, int end) {
         try {
             Method method = CallOpcodes.class.getDeclaredMethod(
@@ -173,6 +279,10 @@ class CallOpcodesFieldTextDispatchTest {
     }
 
     private static ExecutionContext createContext(int argument, int localCount) {
+        return createContext(argument, localCount, Datum.VOID);
+    }
+
+    private static ExecutionContext createContext(int argument, int localCount, Datum receiver) {
         ScriptChunk.Handler.Instruction instruction = new ScriptChunk.Handler.Instruction(
                 0,
                 Opcode.EXT_CALL,
@@ -201,14 +311,14 @@ class CallOpcodesFieldTextDispatchTest {
                 List.of(),
                 List.of(),
                 new byte[0]);
-        Scope scope = new Scope(script, handler, List.of(), Datum.VOID);
+        Scope scope = new Scope(script, handler, List.of(), receiver);
         BuiltinRegistry builtins = new BuiltinRegistry();
         return new ExecutionContext(
                 scope,
                 instruction,
                 builtins,
                 null,
-                (scriptChunk, targetHandler, args, receiver) -> Datum.VOID,
+                (scriptChunk, targetHandler, args, handlerReceiver) -> Datum.VOID,
                 name -> null,
                 new ExecutionContext.GlobalAccessor() {
                     @Override

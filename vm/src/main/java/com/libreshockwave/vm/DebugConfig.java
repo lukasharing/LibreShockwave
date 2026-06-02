@@ -10,6 +10,7 @@ public final class DebugConfig {
     private static boolean debugPlaybackEnabled = false;
     private static boolean pauseOnScriptErrorEnabled = false;
     private static boolean pauseOnAuthoredMajorEnabled = false;
+    private static boolean propertyTraceEnabled = false;
 
     private DebugConfig() {}
 
@@ -19,6 +20,14 @@ public final class DebugConfig {
 
     public static void setDebugPlaybackEnabled(boolean enabled) {
         debugPlaybackEnabled = enabled;
+    }
+
+    public static boolean isPropertyTraceEnabled() {
+        return propertyTraceEnabled;
+    }
+
+    public static void setPropertyTraceEnabled(boolean enabled) {
+        propertyTraceEnabled = enabled;
     }
 
     public static boolean isPauseOnScriptErrorEnabled() {

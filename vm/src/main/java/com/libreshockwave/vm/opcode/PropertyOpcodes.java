@@ -44,8 +44,10 @@ public final class PropertyOpcodes {
     private static boolean getProp(ExecutionContext ctx) {
         String propName = ctx.resolveName(ctx.getArgument());
         if (ctx.getReceiver() instanceof Datum.ScriptInstance si) {
-            // Walk the ancestor chain to find the property
-            Datum value = AncestorChainWalker.getProperty(si, propName);
+            // Unqualified parent-script properties are scoped to the script
+            // whose bytecode is executing, not always the final child object.
+            Datum.ScriptInstance root = lexicalPropertyRoot(ctx, si);
+            Datum value = AncestorChainWalker.getProperty(root, propName);
             ctx.push(value);
         } else {
             ctx.push(Datum.VOID);
@@ -57,8 +59,9 @@ public final class PropertyOpcodes {
         String propName = ctx.resolveName(ctx.getArgument());
         Datum value = ctx.pop();
         if (ctx.getReceiver() instanceof Datum.ScriptInstance si) {
-            traceScriptInstanceOpcodeWrite("SET_PROP", si, propName, value);
-            AncestorChainWalker.setProperty(si, propName, value);
+            Datum.ScriptInstance root = lexicalPropertyRoot(ctx, si);
+            traceScriptInstanceOpcodeWrite("SET_PROP", si, root, propName, value);
+            AncestorChainWalker.setProperty(root, propName, value);
             ctx.tracePropertySet(propName, value);
         }
         return true;
@@ -351,17 +354,29 @@ public final class PropertyOpcodes {
         return true;
     }
 
+    private static Datum.ScriptInstance lexicalPropertyRoot(ExecutionContext ctx, Datum.ScriptInstance receiver) {
+        Datum.ScriptInstance owner = AncestorChainWalker.findScriptOwner(receiver, ctx.getScript());
+        return owner != null ? owner : receiver;
+    }
+
     private static void traceScriptInstanceOpcodeWrite(String opcode, Datum.ScriptInstance receiver,
+                                                       Datum.ScriptInstance root,
                                                        String propName, Datum value) {
-        if (!DebugConfig.isDebugPlaybackEnabled()) {
+        if (!DebugConfig.isDebugPlaybackEnabled() || !DebugConfig.isPropertyTraceEnabled()) {
             return;
         }
-        Datum.ScriptInstance owner = AncestorChainWalker.findOwner(receiver, propName);
+        Datum.ScriptInstance owner = AncestorChainWalker.findOwner(root, propName);
         System.out.println("[TRACE] " + opcode
                 + " receiver=" + describeInstance(receiver)
-                + " owner=" + describeInstance(owner != null ? owner : receiver)
+                + " root=" + describeInstance(root)
+                + " owner=" + describeInstance(owner != null ? owner : root)
                 + " prop=#" + propName
                 + " value=" + DatumFormatter.formatBrief(value));
+    }
+
+    private static void traceScriptInstanceOpcodeWrite(String opcode, Datum.ScriptInstance receiver,
+                                                       String propName, Datum value) {
+        traceScriptInstanceOpcodeWrite(opcode, receiver, receiver, propName, value);
     }
 
     private static String describeInstance(Datum.ScriptInstance instance) {

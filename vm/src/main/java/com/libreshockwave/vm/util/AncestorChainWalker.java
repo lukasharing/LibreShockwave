@@ -223,6 +223,44 @@ public final class AncestorChainWalker {
     }
 
     /**
+     * Find the object in an ancestor chain that owns the script currently executing.
+     *
+     * <p>Director parent scripts keep their property storage per script instance.
+     * A handler found on an ancestor still receives the original child as {@code me},
+     * but unqualified property bytecode in that handler is scoped to the script
+     * that supplied the handler. Start property lookup from that matching ancestor
+     * so duplicate property names on child classes do not shadow parent handlers.</p>
+     */
+    public static Datum.ScriptInstance findScriptOwner(Datum.ScriptInstance instance, ScriptChunk script) {
+        if (instance == null || script == null || script.id() == null) {
+            return null;
+        }
+
+        int scriptChunkId = script.id().value();
+        CastLibProvider provider = CastLibProvider.getProvider();
+        Datum.ScriptInstance current = instance;
+        for (int i = 0; i < MAX_ANCESTOR_DEPTH; i++) {
+            Datum scriptRefDatum = current.properties().get(Datum.PROP_SCRIPT_REF);
+            if (scriptRefDatum instanceof Datum.ScriptRef ref && provider != null) {
+                int ownerScriptChunkId = provider.getScriptChunkId(ref.castLibNum(), ref.memberNum());
+                if (ownerScriptChunkId == scriptChunkId) {
+                    return current;
+                }
+            } else if (current.scriptId() == scriptChunkId) {
+                return current;
+            }
+
+            Datum ancestor = current.properties().get(Datum.PROP_ANCESTOR);
+            if (ancestor instanceof Datum.ScriptInstance ancestorInstance) {
+                current = ancestorInstance;
+            } else {
+                break;
+            }
+        }
+        return null;
+    }
+
+    /**
      * Set a property on a script instance, walking the ancestor chain to find the owner.
      * If the property exists on the current instance or an ancestor, sets it there.
      * If not found anywhere, adds to the current instance.

@@ -362,7 +362,7 @@ public final class ScriptInstanceMethodDispatcher {
 
     private static void traceInstancePropertyWrite(String op, Datum.ScriptInstance receiver,
                                                    String propName, Datum value) {
-        if (!DebugConfig.isDebugPlaybackEnabled()) {
+        if (!DebugConfig.isDebugPlaybackEnabled() || !DebugConfig.isPropertyTraceEnabled()) {
             return;
         }
         Datum.ScriptInstance owner = AncestorChainWalker.findOwner(receiver, propName);
@@ -378,7 +378,7 @@ public final class ScriptInstanceMethodDispatcher {
                                                          String propName,
                                                          Datum subKey,
                                                          Datum value) {
-        if (!DebugConfig.isDebugPlaybackEnabled()) {
+        if (!DebugConfig.isDebugPlaybackEnabled() || !DebugConfig.isPropertyTraceEnabled()) {
             return;
         }
         System.out.println("[TRACE] ScriptInstance.setProp[nested]"
