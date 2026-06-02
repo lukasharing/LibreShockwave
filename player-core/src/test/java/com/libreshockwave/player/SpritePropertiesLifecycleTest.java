@@ -1,6 +1,7 @@
 package com.libreshockwave.player;
 
 import com.libreshockwave.bitmap.Bitmap;
+import com.libreshockwave.cast.MemberType;
 import com.libreshockwave.chunks.ScoreChunk;
 import com.libreshockwave.player.cast.CastLib;
 import com.libreshockwave.player.cast.CastLibManager;
@@ -73,6 +74,32 @@ class SpritePropertiesLifecycleTest {
     }
 
     @Test
+    void colorAndBgColorAssignDirectorColorValues() {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteProperties props = new SpriteProperties(registry);
+
+        assertTrue(props.setSpriteProp(17, "color", new Datum.Color(0x12, 0x34, 0x56)));
+        assertTrue(props.setSpriteProp(17, "bgColor", new Datum.Color(0xAB, 0xCD, 0xEF)));
+
+        SpriteState state = registry.get(17);
+        assertEquals(0x123456, state.getForeColor());
+        assertEquals(0xABCDEF, state.getBackColor());
+    }
+
+    @Test
+    void paletteIndexSpriteColorsKeepRawPaletteIndex() {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteProperties props = new SpriteProperties(registry);
+
+        assertTrue(props.setSpriteProp(17, "color", new Datum.PaletteIndexColor(17)));
+        assertTrue(props.setSpriteProp(17, "bgColor", new Datum.PaletteIndexColor(42)));
+
+        SpriteState state = registry.get(17);
+        assertEquals(17, state.getForeColor());
+        assertEquals(42, state.getBackColor());
+    }
+
+    @Test
     void memberZeroResetsReleasedSpriteTransformState() {
         SpriteRegistry registry = new SpriteRegistry();
         SpriteProperties props = new SpriteProperties(registry);
@@ -130,6 +157,30 @@ class SpritePropertiesLifecycleTest {
     }
 
     @Test
+    void unpuppetingAfterMemberZeroKeepsReleasedScoreSpriteHidden() {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteProperties props = new SpriteProperties(registry);
+
+        SpriteState state = registry.getOrCreate(31, new ScoreChunk.ChannelData(
+                1, 0, 0, 0, 0, 0,
+                4, 88,
+                0, 0, 10, 20, 30, 40,
+                0, 0, 0, 0, 0, 0, 0
+        ));
+
+        assertTrue(props.setSpriteProp(31, "member", Datum.ZERO));
+        assertTrue(props.setSpriteProp(31, "visible", Datum.ZERO));
+        assertTrue(props.setSpriteProp(31, "puppet", Datum.ZERO));
+
+        assertFalse(state.isVisible(),
+                "releaseSprite sets member(0) before unpuppeting; this must not resurrect the score sprite");
+        assertTrue(state.hasDynamicMember(),
+                "released score-backed channels need the explicit member(0) override to suppress the score member");
+        assertEquals(0, state.getEffectiveCastMember(),
+                "released empty channels must not fall back to the previous score member");
+    }
+
+    @Test
     void memberZeroDoesNotPruneAttachedBehaviorInstances() {
         SpriteRegistry registry = new SpriteRegistry();
         SpriteProperties props = new SpriteProperties(registry);
@@ -175,6 +226,65 @@ class SpritePropertiesLifecycleTest {
         assertEquals(1, state.getWidth());
         assertEquals(1, state.getHeight());
         assertFalse(state.hasDynamicMember());
+    }
+
+    @Test
+    void disablingPuppetOnDynamicMemberSpriteClearsStaleRoomMember() {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteProperties props = new SpriteProperties(registry);
+
+        SpriteState state = registry.getOrCreateDynamic(47);
+        Datum.ScriptInstance behavior = new Datum.ScriptInstance(100, new LinkedHashMap<>());
+        state.setScriptInstanceList(List.of(behavior));
+        state.setVisible(true);
+        state.setWidth(88);
+        state.setHeight(44);
+
+        assertTrue(props.setSpriteProp(47, "member", Datum.CastMemberRef.of(12, 345)));
+        assertTrue(state.hasDynamicMember());
+        assertEquals(345, state.getEffectiveCastMember());
+
+        assertTrue(props.setSpriteProp(47, "puppet", Datum.ZERO));
+
+        assertFalse(state.isPuppet());
+        assertFalse(state.hasDynamicMember());
+        assertFalse(state.isVisible());
+        assertEquals(List.of(), state.getScriptInstanceList());
+        assertEquals(1, state.getWidth());
+        assertEquals(1, state.getHeight());
+    }
+
+    @Test
+    void disablingPuppetOnScoreBackedDynamicMemberSpriteFallsBackToScoreMember() {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteProperties props = new SpriteProperties(registry);
+
+        SpriteState state = registry.getOrCreate(31, new ScoreChunk.ChannelData(
+                1, 0, 0, 0, 0, 0,
+                4, 88,
+                0, 0, 10, 20, 30, 40,
+                0, 0, 0, 0, 0, 0, 0
+        ));
+
+        Datum.ScriptInstance behavior = new Datum.ScriptInstance(100, new LinkedHashMap<>());
+        state.setScriptInstanceList(List.of(behavior));
+
+        assertTrue(props.setSpriteProp(31, "member", Datum.CastMemberRef.of(12, 345)));
+        assertTrue(state.hasDynamicMember());
+        assertEquals(345, state.getEffectiveCastMember());
+        state.setWidth(120);
+        state.setHeight(90);
+
+        assertTrue(props.setSpriteProp(31, "puppet", Datum.ZERO));
+
+        assertFalse(state.isPuppet());
+        assertFalse(state.hasDynamicMember());
+        assertEquals(4, state.getEffectiveCastLib());
+        assertEquals(88, state.getEffectiveCastMember());
+        assertTrue(state.isVisible());
+        assertEquals(40, state.getWidth());
+        assertEquals(30, state.getHeight());
+        assertEquals(List.of(behavior), state.getScriptInstanceList());
     }
 
     @Test
@@ -571,10 +681,51 @@ class SpritePropertiesLifecycleTest {
         assertEquals(new Datum.Point(123, 45), props.getSpriteProp(7, "loc"));
     }
 
+    @Test
+    void spriteImageUsesResolvedMemberImage() {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteProperties props = new SpriteProperties(registry);
+
+        CastMember member = new CastMember(7, 42, MemberType.BITMAP);
+        Bitmap bitmap = new Bitmap(3, 2, 32);
+        bitmap.fill(0xFF123456);
+        assertTrue(member.setProp("image", new Datum.ImageRef(bitmap)));
+
+        props.setCastLibManager(new ResolvedOnlyCastLibManager(member));
+        assertTrue(props.setSpriteProp(5, "member", Datum.CastMemberRef.of(7, 42)));
+
+        Datum image = props.getSpriteProp(5, "image");
+
+        assertTrue(image instanceof Datum.ImageRef);
+        assertEquals(0xFF123456, ((Datum.ImageRef) image).bitmap().getPixel(0, 0));
+    }
+
     @SuppressWarnings("unchecked")
     private static void injectCastLib(CastLibManager castLibManager, CastLib castLib) throws Exception {
         Field castLibsField = CastLibManager.class.getDeclaredField("castLibs");
         castLibsField.setAccessible(true);
         ((Map<Integer, CastLib>) castLibsField.get(castLibManager)).put(castLib.getNumber(), castLib);
+    }
+
+    private static final class ResolvedOnlyCastLibManager extends CastLibManager {
+        private final CastMember member;
+
+        private ResolvedOnlyCastLibManager(CastMember member) {
+            super(null, (castLib, fileName) -> {});
+            this.member = member;
+        }
+
+        @Override
+        public CastMember getDynamicMember(int castLibNumber, int memberNumber) {
+            return null;
+        }
+
+        @Override
+        public CastMember resolveMember(int castLibNumber, int memberNumber) {
+            return castLibNumber == member.getCastLibId().value()
+                    && memberNumber == member.getMemberNumber()
+                    ? member
+                    : null;
+        }
     }
 }

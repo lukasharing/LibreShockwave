@@ -5,6 +5,7 @@ import com.libreshockwave.cast.BitmapInfo;
 import com.libreshockwave.player.cast.CastLib;
 import com.libreshockwave.cast.MemberType;
 import com.libreshockwave.chunks.CastMemberChunk;
+import com.libreshockwave.chunks.ScoreChunk;
 import com.libreshockwave.id.InkMode;
 import com.libreshockwave.player.cast.CastLibManager;
 import com.libreshockwave.player.cast.CastMember;
@@ -116,7 +117,7 @@ public class SpriteProperties implements SpritePropertyProvider {
                 if (castLibManager != null) {
                     int cl = sprite.getEffectiveCastLib();
                     int cm = sprite.getEffectiveCastMember();
-                    CastMember member = castLibManager.getDynamicMember(cl, cm);
+                    CastMember member = castLibManager.resolveMember(cl, cm);
                     if (member != null) {
                         yield member.getProp("image");
                     }
@@ -275,9 +276,10 @@ public class SpriteProperties implements SpritePropertyProvider {
                 return true;
             }
             case "puppet" -> {
-                sprite.setPuppet(value.isTruthy());
-                if (!sprite.isPuppet() && sprite.getEffectiveCastMember() <= 0) {
-                    resetReleasedEmptyChannel(sprite);
+                boolean enabled = value.isTruthy();
+                sprite.setPuppet(enabled);
+                if (!enabled) {
+                    releasePuppetedSprite(sprite);
                 }
                 return true;
             }
@@ -316,7 +318,7 @@ public class SpriteProperties implements SpritePropertyProvider {
                 if (castLibManager != null) {
                     int cl = sprite.getEffectiveCastLib();
                     int cm = sprite.getEffectiveCastMember();
-                    CastMember member = castLibManager.getDynamicMember(cl, cm);
+                    CastMember member = castLibManager.resolveMember(cl, cm);
                     if (member != null) {
                         return member.setProp("image", value);
                     }
@@ -342,13 +344,13 @@ public class SpriteProperties implements SpritePropertyProvider {
             }
             case "forecolor" -> {
                 if (!value.isVoid()) {
-                    sprite.setForeColor(value.toInt());
+                    sprite.setForeColor(coerceColorValue(value));
                 }
                 return true;
             }
             case "backcolor" -> {
                 if (!value.isVoid()) {
-                    sprite.setBackColor(value.toInt());
+                    sprite.setBackColor(coerceColorValue(value));
                 }
                 return true;
             }
@@ -378,11 +380,15 @@ public class SpriteProperties implements SpritePropertyProvider {
                 return true;
             }
             case "color" -> {
-                setColorValue(value, sprite::setForeColor);
+                if (!value.isVoid()) {
+                    sprite.setForeColor(coerceColorValue(value));
+                }
                 return true;
             }
             case "bgcolor" -> {
-                setColorValue(value, sprite::setBackColor);
+                if (!value.isVoid()) {
+                    sprite.setBackColor(coerceColorValue(value));
+                }
                 return true;
             }
             case "rotation" -> {
@@ -468,14 +474,14 @@ public class SpriteProperties implements SpritePropertyProvider {
         return assignMember(sprite, value, true);
     }
 
-    private static void setColorValue(Datum value, java.util.function.IntConsumer setter) {
-        if (!value.isVoid()) {
-            if (value instanceof Datum.Color c) {
-                setter.accept((c.r() << 16) | (c.g() << 8) | c.b());
-            } else {
-                setter.accept(value.toInt());
-            }
+    private static int coerceColorValue(Datum value) {
+        if (value instanceof Datum.Color c) {
+            return (c.r() << 16) | (c.g() << 8) | c.b();
         }
+        if (value instanceof Datum.PaletteIndexColor p) {
+            return p.index() & 0xFF;
+        }
+        return value.toInt();
     }
 
     private static void applyEmptyMemberOverride(SpriteState sprite) {
@@ -494,6 +500,46 @@ public class SpriteProperties implements SpritePropertyProvider {
         sprite.resetReleasedSpriteTransforms();
         sprite.clearDynamicMember();
         LifecycleDiagnostics.logReleasedEmptyChannel("spriteReleasedEmptyChannel", sprite);
+    }
+
+    private static void keepReleasedScoreBackedChannelEmpty(SpriteState sprite) {
+        sprite.setScriptInstanceList(java.util.List.of());
+        sprite.setVisible(false);
+        sprite.setCursor(0);
+        sprite.setBlend(100);
+        sprite.setStretch(0);
+        sprite.resetReleasedChannelGeometry();
+        sprite.resetReleasedSpriteTransforms();
+        sprite.setDynamicMember(0, 0);
+        LifecycleDiagnostics.logReleasedEmptyChannel("spriteReleasedEmptyChannel", sprite);
+    }
+
+    private static void releasePuppetedSprite(SpriteState sprite) {
+        if (sprite.hasDynamicMember()) {
+            if (sprite.getEffectiveCastMember() <= 0) {
+                if (sprite.isDynamic()) {
+                    resetReleasedEmptyChannel(sprite);
+                } else {
+                    ScoreChunk.ChannelData scoreData = sprite.getInitialData();
+                    if (sprite.isVisible() && scoreData != null) {
+                        sprite.rebindToScorePreservingScriptInstances(scoreData);
+                    } else {
+                        keepReleasedScoreBackedChannelEmpty(sprite);
+                    }
+                }
+                return;
+            }
+            ScoreChunk.ChannelData scoreData = sprite.getInitialData();
+            if (!sprite.isDynamic() && scoreData != null) {
+                sprite.rebindToScorePreservingScriptInstances(scoreData);
+                return;
+            }
+            sprite.clearDynamicMember();
+            sprite.resetReleasedSpriteTransforms();
+        }
+        if (sprite.isDynamic()) {
+            resetReleasedEmptyChannel(sprite);
+        }
     }
 
     private boolean assignMember(SpriteState sprite, Datum value, boolean viaSetMemberMethod) {
