@@ -2,6 +2,7 @@ package com.libreshockwave.vm.opcode;
 
 import com.libreshockwave.vm.builtin.cast.CastLibProvider;
 import com.libreshockwave.vm.builtin.movie.MoviePropertyProvider;
+import com.libreshockwave.vm.builtin.sprite.SpritePropertyProvider;
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.support.NoOpCastLibProvider;
 import org.junit.jupiter.api.AfterEach;
@@ -20,6 +21,7 @@ class PropertyOpcodesTest {
     void tearDown() {
         CastLibProvider.clearProvider();
         MoviePropertyProvider.clearProvider();
+        SpritePropertyProvider.clearProvider();
     }
 
     @Test
@@ -137,6 +139,23 @@ class PropertyOpcodesTest {
     }
 
     @Test
+    void numericConversionPropertiesCoerceBeforeSpriteProviderLookup() throws Exception {
+        StubSpriteProvider provider = new StubSpriteProvider();
+        provider.props.put("42:bgcolor", Datum.of(0x6794A7));
+        provider.props.put("2147418139:string", Datum.of("sprite-string"));
+        provider.props.put("3:integer", Datum.of(99));
+        SpritePropertyProvider.setProvider(provider);
+
+        assertEquals("2147418139", getObjectProperty(Datum.of(2147418139), "string").toStr());
+        assertEquals(3, getObjectProperty(Datum.of(3), "integer").toInt());
+        assertEquals(3.0, getObjectProperty(Datum.of(3), "float").toDouble());
+        assertEquals(4, getObjectProperty(Datum.of(3.5), "integer").toInt());
+        assertEquals(-1, getObjectProperty(Datum.of(-0.5), "integer").toInt());
+        assertEquals("3.5", getObjectProperty(Datum.of(3.5), "string").toStr());
+        assertEquals(0x6794A7, getObjectProperty(Datum.of(42), "bgColor").toInt());
+    }
+
+    @Test
     void theBuiltinPrefersReceiverPropertyForSingleArgument() {
         Datum.PropList roomData = new Datum.PropList();
         roomData.add("type", Datum.symbol("private"), true);
@@ -211,6 +230,21 @@ class PropertyOpcodesTest {
         @Override
         public boolean setMovieProp(String propName, Datum value) {
             setProps.put(propName.toLowerCase(), value);
+            return true;
+        }
+    }
+
+    private static final class StubSpriteProvider implements SpritePropertyProvider {
+        private final Map<String, Datum> props = new HashMap<>();
+
+        @Override
+        public Datum getSpriteProp(int spriteNum, String propName) {
+            return props.getOrDefault(spriteNum + ":" + propName.toLowerCase(), Datum.VOID);
+        }
+
+        @Override
+        public boolean setSpriteProp(int spriteNum, String propName, Datum value) {
+            props.put(spriteNum + ":" + propName.toLowerCase(), value);
             return true;
         }
     }

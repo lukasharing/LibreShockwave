@@ -171,12 +171,26 @@ public final class PropertyOpcodes {
             }
             case Datum.SoundChannel sc -> SoundChannelMethodDispatcher.getProperty(sc, propName);
             case Datum.Int intVal -> {
+                Datum numericProp = getNumericProp(intVal, propName);
+                if (!numericProp.isVoid()) {
+                    yield numericProp;
+                }
                 // Director: property access on integers routes to sprite properties.
                 // e.g., 42.bgColor == sprite(42).bgColor. Window system stores pSprite
                 // as an integer channel number, then does pSprite.bgColor = tColor.
                 SpritePropertyProvider spriteProvider = SpritePropertyProvider.getProvider();
                 if (spriteProvider != null && !"ilk".equalsIgnoreCase(propName)) {
                     yield spriteProvider.getSpriteProp(intVal.value(), propName);
+                }
+                if ("ilk".equalsIgnoreCase(propName)) {
+                    yield Datum.symbol(TypeBuiltins.getIlkType(obj));
+                }
+                yield Datum.VOID;
+            }
+            case Datum.Float floatVal -> {
+                Datum numericProp = getNumericProp(floatVal, propName);
+                if (!numericProp.isVoid()) {
+                    yield numericProp;
                 }
                 if ("ilk".equalsIgnoreCase(propName)) {
                     yield Datum.symbol(TypeBuiltins.getIlkType(obj));
@@ -211,6 +225,19 @@ public final class PropertyOpcodes {
                 yield Datum.VOID;
             }
         };
+    }
+
+    private static Datum getNumericProp(Datum number, String propName) {
+        if ("integer".equalsIgnoreCase(propName)) {
+            return Datum.of(Datum.directorInteger(number.toDouble()));
+        }
+        if ("float".equalsIgnoreCase(propName)) {
+            return Datum.of(number.toDouble());
+        }
+        if ("string".equalsIgnoreCase(propName)) {
+            return Datum.of(number.toStr());
+        }
+        return Datum.VOID;
     }
 
     private static Datum getPointProp(Datum.Point point, String propName) {
