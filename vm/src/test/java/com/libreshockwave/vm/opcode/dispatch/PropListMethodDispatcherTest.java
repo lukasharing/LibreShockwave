@@ -144,6 +144,38 @@ class PropListMethodDispatcherTest {
     }
 
     @Test
+    void getOnePreservesStringKeyForDeletePropRoundTrip() {
+        Datum.PropList propList = new Datum.PropList();
+        Datum value = Datum.of("window-element");
+        propList.add("move.button", value, false);
+
+        Datum key = PropListMethodDispatcher.dispatch(
+                propList, "getOne", List.of(value));
+        assertTrue(key instanceof Datum.Str);
+        assertEquals("move.button", key.toStr());
+
+        PropListMethodDispatcher.dispatch(propList, "deleteProp", List.of(key));
+
+        assertEquals(0, propList.size());
+    }
+
+    @Test
+    void getOnePreservesSymbolKeyForDeletePropRoundTrip() {
+        Datum.PropList propList = new Datum.PropList();
+        Datum value = Datum.of("thread-object");
+        propList.add("room_interface", value, true);
+
+        Datum key = PropListMethodDispatcher.dispatch(
+                propList, "getOne", List.of(value));
+        assertTrue(key instanceof Datum.Symbol);
+        assertEquals("room_interface", key.toKeyName());
+
+        PropListMethodDispatcher.dispatch(propList, "deleteProp", List.of(key));
+
+        assertEquals(0, propList.size());
+    }
+
+    @Test
     void setAPropAndGetPropAtPreservePointKeys() {
         Datum.PropList propList = new Datum.PropList();
         Datum.Point point = new Datum.Point(147, 69);

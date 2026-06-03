@@ -98,12 +98,12 @@ public final class PropListMethodDispatcher {
             }
             case "getone" -> {
                 // getOne(propList, value) - find the property NAME where the value matches
-                // Returns the key (as symbol) or 0 if not found
+                // Returns the original key token or 0 if not found.
                 if (args.isEmpty()) yield Datum.ZERO;
                 Datum searchValue = args.get(0);
                 for (Datum.PropEntry entry : propList.entries()) {
                     if (entry.value().lingoEquals(searchValue)) {
-                        yield Datum.symbol(entry.key());
+                        yield entry.keyDatum().deepCopy();
                     }
                 }
                 yield Datum.ZERO;
