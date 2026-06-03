@@ -1107,10 +1107,19 @@ public sealed interface Datum {
     }
 
     // Type coercion
+    public static int directorInteger(double value) {
+        if (!Double.isFinite(value)) {
+            return 0;
+        }
+        return value >= 0
+                ? (int) Math.floor(value + 0.5d)
+                : (int) Math.ceil(value - 0.5d);
+    }
+
     default int toInt() {
         return switch (this) {
             case Int i -> i.value();
-            case Float f -> (int) f.value();
+            case Float f -> directorInteger(f.value());
             case Str s -> {
                 try {
                     yield Integer.parseInt(s.value().trim());

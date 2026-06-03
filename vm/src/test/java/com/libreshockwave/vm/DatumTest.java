@@ -46,8 +46,12 @@ class DatumTest {
         assertEquals(3.14159, pi.toDouble(), 0.00001);
         assertEquals(-2.5, negative.toDouble(), 0.00001);
 
-        // Int conversion truncates
+        // Director-style integer conversion rounds to nearest.
         assertEquals(3, pi.toInt());
+        assertEquals(4, Datum.of(3.7).toInt());
+        assertEquals(4, Datum.of(3.5).toInt());
+        assertEquals(-3, negative.toInt());
+        assertEquals(-1, Datum.of(-0.5).toInt());
     }
 
     @Test

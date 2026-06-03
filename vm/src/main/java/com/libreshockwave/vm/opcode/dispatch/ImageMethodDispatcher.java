@@ -792,9 +792,6 @@ public final class ImageMethodDispatcher {
                 int bgB = colorizeBgColorRemap >= 0 ? colorizeBgColorRemap & 0xFF : 255;
                 boolean transparentBackground = colorRemap >= 0 && colorizeBgColorRemap < 0;
                 boolean darkenBgTint = darkenBgTintCandidate;
-                boolean indexedDarkenShade = usesIndexedShadeForDarken(src, mask);
-                byte[] darkenShadeIndices = indexedDarkenShade ? src.getPaletteIndicesUnsafe() : null;
-
                 effectiveSrc = new Bitmap(srcW, srcH, src.getBitDepth());
                 byte[] sourcePaletteIndices = src.getPaletteIndicesUnsafe();
                 byte[] effectivePaletteIndices = sourcePaletteIndices != null
@@ -810,8 +807,7 @@ public final class ImageMethodDispatcher {
                         int r = (pixel >> 16) & 0xFF;
                         int g = (pixel >> 8) & 0xFF;
                         int b = pixel & 0xFF;
-                        int gray = shadeForDarken(src, sourceX, sourceY, r, g, b,
-                                indexedDarkenShade, darkenShadeIndices);
+                        int gray = r;
                         if (effectivePaletteIndices != null
                                 && sourceX >= 0 && sourceX < src.getWidth()
                                 && sourceY >= 0 && sourceY < src.getHeight()) {
@@ -825,9 +821,9 @@ public final class ImageMethodDispatcher {
                             int outB = colorRemap >= 0 ? fgB : 0;
                             effectiveSrc.setPixel(x, y, (maskAlpha << 24) | (outR << 16) | (outG << 8) | outB);
                         } else if (darkenBgTint) {
-                            int nr = gray * bgR / 256;
-                            int ng = gray * bgG / 256;
-                            int nb = gray * bgB / 256;
+                            int nr = multiplyDarkenChannel(gray, bgR, true);
+                            int ng = multiplyDarkenChannel(gray, bgG, true);
+                            int nb = multiplyDarkenChannel(gray, bgB, true);
                             effectiveSrc.setPixel(x, y, (alpha << 24) | (nr << 16) | (ng << 8) | nb);
                         } else {
                             float t = gray / 255.0f;
@@ -886,8 +882,7 @@ public final class ImageMethodDispatcher {
         if (effectiveInk == Palette.InkMode.DARKEN) {
             if (!grayscaleColorized) {
                 effectiveSrc = multiplyBitmapColorForDarken(effectiveSrc,
-                        colorizeBgColorRemap >= 0 ? colorizeBgColorRemap : 0xFFFFFF,
-                        usesIndexedShadeForDarken(effectiveSrc, mask));
+                        colorizeBgColorRemap >= 0 ? colorizeBgColorRemap : 0xFFFFFF);
                 effectiveSrcX = 0;
                 effectiveSrcY = 0;
             }
@@ -1769,9 +1764,9 @@ public final class ImageMethodDispatcher {
         return DEFAULT_INVERSE_TEXT_MASK_RGB;
     }
 
-    private static Bitmap multiplyBitmapColorForDarken(Bitmap src, int tintRgb, boolean indexedShade) {
+    private static Bitmap multiplyBitmapColorForDarken(Bitmap src, int tintRgb) {
         if (src.getPaletteIndicesUnsafe() != null && src.getBitDepth() <= 8) {
-            return multiplyIndexedBitmapColorForDarken(src, tintRgb, indexedShade);
+            return multiplyIndexedBitmapColorForDarken(src, tintRgb);
         }
         return multiplyBitmapColor(src, tintRgb);
     }
@@ -1804,7 +1799,7 @@ public final class ImageMethodDispatcher {
         return tinted;
     }
 
-    private static Bitmap multiplyIndexedBitmapColorForDarken(Bitmap src, int tintRgb, boolean indexedShade) {
+    private static Bitmap multiplyIndexedBitmapColorForDarken(Bitmap src, int tintRgb) {
         if (tintRgb == 0xFFFFFF) {
             return src;
         }
@@ -1815,7 +1810,6 @@ public final class ImageMethodDispatcher {
 
         Bitmap tinted = new Bitmap(src.getWidth(), src.getHeight(), src.getBitDepth());
         tinted.copyPaletteMetadataFrom(src);
-        byte[] darkenShadeIndices = indexedShade ? src.getPaletteIndicesUnsafe() : null;
 
         for (int y = 0; y < src.getHeight(); y++) {
             for (int x = 0; x < src.getWidth(); x++) {
@@ -1831,17 +1825,9 @@ public final class ImageMethodDispatcher {
                 int r;
                 int g;
                 int b;
-                boolean customPaletteColorShade = !indexedShade && src.getImagePalette() != null;
-                if (!customPaletteColorShade) {
-                    int shade = shadeForDarken(src, x, y, srcR, srcG, srcB, indexedShade, darkenShadeIndices);
-                    r = multiplyDarkenChannel(shade, tintR, indexedShade);
-                    g = multiplyDarkenChannel(shade, tintG, indexedShade);
-                    b = multiplyDarkenChannel(shade, tintB, indexedShade);
-                } else {
-                    r = multiplyDarkenChannel(srcR, tintR, true);
-                    g = multiplyDarkenChannel(srcG, tintG, true);
-                    b = multiplyDarkenChannel(srcB, tintB, true);
-                }
+                r = multiplyDarkenChannel(srcR, tintR, true);
+                g = multiplyDarkenChannel(srcG, tintG, true);
+                b = multiplyDarkenChannel(srcB, tintB, true);
                 tinted.setPixel(x, y, (alpha << 24) | (r << 16) | (g << 8) | b);
             }
         }
@@ -1850,42 +1836,6 @@ public final class ImageMethodDispatcher {
 
     private static int multiplyDarkenChannel(int source, int tint, boolean preserveFullTint) {
         return preserveFullTint && tint == 0xFF ? source : source * tint / 256;
-    }
-
-    private static boolean usesIndexedShadeForDarken(Bitmap src, Bitmap mask) {
-        if (src == null || src.getPaletteIndicesUnsafe() == null || src.getBitDepth() > 8) {
-            return false;
-        }
-        if (isIndexShadePalette(src)) {
-            return true;
-        }
-        // Custom-palette indexed images, such as carpet_polar_small, carry real
-        // color shades. Their palette index order is not a grayscale ramp.
-        return false;
-    }
-
-    private static boolean isIndexShadePalette(Bitmap src) {
-        if (src.getImagePalette() == null) {
-            return false;
-        }
-        String name = src.getImagePalette().getName();
-        return "Grayscale".equalsIgnoreCase(name)
-                || "System - Mac".equalsIgnoreCase(name)
-                || "System Mac".equalsIgnoreCase(name);
-    }
-
-    private static int shadeForDarken(Bitmap src, int x, int y, int r, int g, int b,
-                                      boolean indexedShade, byte[] indices) {
-        if (indexedShade
-                && indices != null
-                && x >= 0 && x < src.getWidth()
-                && y >= 0 && y < src.getHeight()) {
-            int offset = y * src.getWidth() + x;
-            if (offset >= 0 && offset < indices.length) {
-                return 255 - (indices[offset] & 0xFF);
-            }
-        }
-        return r;
     }
 
     /**

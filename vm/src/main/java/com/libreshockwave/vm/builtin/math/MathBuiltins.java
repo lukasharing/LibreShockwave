@@ -87,14 +87,14 @@ public final class MathBuiltins {
                 return Datum.of(Integer.parseInt(trimmed));
             } catch (NumberFormatException e) {
                 try {
-                    return Datum.of((int) Math.round(Double.parseDouble(trimmed)));
+                    return Datum.of(Datum.directorInteger(Double.parseDouble(trimmed)));
                 } catch (NumberFormatException e2) {
                     return Datum.VOID;
                 }
             }
         }
 
-        return Datum.of((int) Math.round(arg.toDouble()));
+        return Datum.of(Datum.directorInteger(arg.toDouble()));
     }
 
     private static Datum bitAnd(LingoVM vm, List<Datum> args) {
