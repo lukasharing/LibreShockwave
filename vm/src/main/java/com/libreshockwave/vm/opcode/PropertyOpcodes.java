@@ -270,11 +270,11 @@ public final class PropertyOpcodes {
 
     private static Datum getPropListProp(Datum.PropList pl, String propName) {
         if ("count".equalsIgnoreCase(propName) || "length".equalsIgnoreCase(propName)) return Datum.of(pl.size());
-        // Check symbolic PropList properties first (e.g. [#ilk:#struct] in
-        // authored structs), then fall back to built-in object properties.
+        // Director treats list.ilk / the ilk of list as the built-in type query.
+        // Stored #ilk properties remain accessible through bracket/getaProp.
+        if ("ilk".equalsIgnoreCase(propName)) return Datum.symbol("propList");
         Datum value = pl.get(propName, true);
         if (value != null) return value;
-        if ("ilk".equalsIgnoreCase(propName)) return Datum.symbol("propList");
         return Datum.VOID;
     }
 
@@ -919,6 +919,8 @@ public final class PropertyOpcodes {
     private static Datum getChainedObjProp(Datum obj, String propName) {
         return switch (obj) {
             case Datum.PropList pl -> {
+                if ("count".equalsIgnoreCase(propName) || "length".equalsIgnoreCase(propName)) yield Datum.of(pl.size());
+                if ("ilk".equalsIgnoreCase(propName)) yield Datum.symbol("propList");
                 Datum found = pl.get(propName);
                 yield found != null ? found : Datum.VOID;
             }

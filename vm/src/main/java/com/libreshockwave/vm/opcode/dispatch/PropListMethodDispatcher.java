@@ -30,6 +30,13 @@ public final class PropListMethodDispatcher {
         }
 
         return switch (methodName.toLowerCase()) {
+            case "ilk" -> {
+                if (args.isEmpty()) yield Datum.symbol("propList");
+                String checkName = args.get(0).toKeyName();
+                yield "propList".equalsIgnoreCase(checkName) || "list".equalsIgnoreCase(checkName)
+                        ? Datum.TRUE
+                        : Datum.FALSE;
+            }
             case "getprop", "getpropref", "getaprop", "getproperty" -> {
                 if (args.isEmpty()) yield Datum.VOID;
                 Datum value = propList.getAPropOrDefault(args.get(0), Datum.VOID);

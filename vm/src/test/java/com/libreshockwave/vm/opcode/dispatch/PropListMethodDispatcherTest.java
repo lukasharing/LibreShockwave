@@ -57,6 +57,42 @@ class PropListMethodDispatcherTest {
     }
 
     @Test
+    void ilkMethodReturnsPropListTypeWhenStoredIlkExists() {
+        Datum.PropList propList = new Datum.PropList();
+        propList.add("ilk", Datum.symbol("struct"), true);
+
+        Datum result = PropListMethodDispatcher.dispatch(propList, "ilk", List.of());
+
+        assertEquals("propList", result.toKeyName());
+    }
+
+    @Test
+    void ilkMethodMatchesPropListAndListTypes() {
+        Datum.PropList propList = new Datum.PropList();
+
+        assertEquals(Datum.TRUE, PropListMethodDispatcher.dispatch(
+                propList, "ilk", List.of(Datum.symbol("propList"))));
+        assertEquals(Datum.TRUE, PropListMethodDispatcher.dispatch(
+                propList, "ilk", List.of(Datum.symbol("list"))));
+        assertEquals(Datum.FALSE, PropListMethodDispatcher.dispatch(
+                propList, "ilk", List.of(Datum.symbol("struct"))));
+    }
+
+    @Test
+    void getAtAndGetAPropStillReadStoredIlkProperty() {
+        Datum.PropList propList = new Datum.PropList();
+        propList.add("ilk", Datum.symbol("struct"), true);
+
+        Datum getAtResult = PropListMethodDispatcher.dispatch(
+                propList, "getAt", List.of(Datum.symbol("ilk")));
+        Datum getAPropResult = PropListMethodDispatcher.dispatch(
+                propList, "getAProp", List.of(Datum.symbol("ilk")));
+
+        assertEquals("struct", getAtResult.toKeyName());
+        assertEquals("struct", getAPropResult.toKeyName());
+    }
+
+    @Test
     void getAtIntegerKeepsPositionalBehaviorWithStringNumericKey() {
         Datum.PropList propList = new Datum.PropList();
         propList.add("2", Datum.of("string-key"), false);

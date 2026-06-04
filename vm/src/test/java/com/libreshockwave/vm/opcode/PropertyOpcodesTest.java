@@ -139,6 +139,19 @@ class PropertyOpcodesTest {
     }
 
     @Test
+    void propListIlkPropertyReturnsBuiltinTypeWhenStoredIlkExists() throws Exception {
+        Datum.PropList structLike = new Datum.PropList();
+        structLike.add("ilk", Datum.symbol("struct"), true);
+
+        assertEquals("propList", getObjectProperty(structLike, "ilk").toKeyName());
+        assertEquals("propList", getChainedObjProp(structLike, "ilk").toKeyName());
+        assertEquals("propList", PropertyOpcodes.resolveTheBuiltin(
+                "ilk",
+                new Datum.ArgList(List.of(structLike)),
+                null).toKeyName());
+    }
+
+    @Test
     void numericConversionPropertiesCoerceBeforeSpriteProviderLookup() throws Exception {
         StubSpriteProvider provider = new StubSpriteProvider();
         provider.props.put("42:bgcolor", Datum.of(0x6794A7));
@@ -197,6 +210,13 @@ class PropertyOpcodesTest {
                 "getObjectProperty", Datum.class, String.class, ExecutionContext.class);
         method.setAccessible(true);
         return (Datum) method.invoke(null, value, propName, null);
+    }
+
+    private static Datum getChainedObjProp(Datum value, String propName) throws Exception {
+        Method method = PropertyOpcodes.class.getDeclaredMethod(
+                "getChainedObjProp", Datum.class, String.class);
+        method.setAccessible(true);
+        return (Datum) method.invoke(null, value, propName);
     }
 
     private static void setPlayerProp(String propName, Datum value) throws Exception {
