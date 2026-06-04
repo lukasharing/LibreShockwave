@@ -328,6 +328,12 @@ public final class ScriptInstanceMethodDispatcher {
             return Datum.VOID;
         }
         if (container instanceof Datum.PropList pl) {
+            if (subKey instanceof Datum.Int || subKey instanceof Datum.Float) {
+                int index = subKey.toInt() - 1;
+                if (index >= 0 && index < pl.size()) {
+                    return pl.getValue(index);
+                }
+            }
             return pl.getAPropOrDefault(subKey, Datum.VOID);
         }
         // Cannot get sub-property from non-list/proplist

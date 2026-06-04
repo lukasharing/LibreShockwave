@@ -200,6 +200,22 @@ class ScriptInstanceMethodDispatcherTest {
     }
 
     @Test
+    void nestedPropLookupUsesNumericIndexWhenInRange() {
+        Datum.PropList task = new Datum.PropList();
+        task.put(Datum.symbol("uniqueid"), Datum.of("Timeout uid:1:100"));
+        Datum.PropList itemList = new Datum.PropList();
+        itemList.put(Datum.of("pwdhide100"), task);
+        Datum.ScriptInstance instance = new Datum.ScriptInstance(77, new LinkedHashMap<>());
+        instance.properties().put("pItemList", itemList);
+
+        Datum result = ScriptInstanceMethodDispatcher.dispatch(
+                null, instance, "getProp", List.of(Datum.symbol("pItemList"), Datum.of(1)));
+
+        assertTrue(result instanceof Datum.PropList);
+        assertEquals("Timeout uid:1:100", ((Datum.PropList) result).get(Datum.symbol("uniqueid")).toStr());
+    }
+
+    @Test
     void nestedPropSetCreatesNumericPropertyKeyWhenIndexIsOutOfRange() {
         Datum.PropList props = new Datum.PropList();
         Datum.ScriptInstance instance = new Datum.ScriptInstance(77, new LinkedHashMap<>());
