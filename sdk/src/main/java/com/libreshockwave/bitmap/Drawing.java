@@ -125,7 +125,8 @@ public class Drawing {
                                    BackgroundTransparentKey backgroundKey,
                                    int maskX, int maskY) {
         if (width <= 0 || height <= 0) return;
-        if (ink == InkMode.MATTE && dest.getBitDepth() <= 8 && src.getBitDepth() > 8
+        if (ink == InkMode.MATTE && !src.hasNativeMatteAlpha()
+                && dest.getBitDepth() <= 8 && src.getBitDepth() > 8
                 && copyMatteToMaskImage(dest, src, destX, destY, srcX, srcY, width, height)) {
             return;
         }
@@ -137,7 +138,7 @@ public class Drawing {
         Bitmap effectiveSrc = src;
         int effectiveSrcX = srcX;
         int effectiveSrcY = srcY;
-        if (ink == InkMode.MATTE) {
+        if (ink == InkMode.MATTE && !src.hasNativeMatteAlpha()) {
             effectiveSrc = applyMatteToRegion(src, 0, 0, src.getWidth(), src.getHeight());
             effectiveSrcX = srcX;
             effectiveSrcY = srcY;
@@ -1057,6 +1058,13 @@ public class Drawing {
         // conservative path to avoid erasing authored solid fills.
         if (isUniformPaletteIndex(paletteIndices, dominantIndex)) {
             return w == 1 && h == 1 ? dominantIndex : null;
+        }
+
+        if (dominantIndex != 0) {
+            int dominantRgb = resolvePaletteIndexRgb(pixels, paletteIndices, dominantIndex);
+            if (dominantRgb != 0x000000 && dominantRgb != DEFAULT_RGB_MATTE) {
+                return null;
+            }
         }
 
         int opaqueCornerCount = 0;

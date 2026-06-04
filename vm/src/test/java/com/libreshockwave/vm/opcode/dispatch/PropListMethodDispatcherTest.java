@@ -176,6 +176,23 @@ class PropListMethodDispatcherTest {
     }
 
     @Test
+    void getPosAndDeleteOneOperateOnPropertyListValues() {
+        Datum.PropList propList = new Datum.PropList();
+        Datum moveButton = Datum.of("move-button-element");
+        propList.add("name", Datum.of("label"), true);
+        propList.add("move.button", moveButton, false);
+
+        Datum position = PropListMethodDispatcher.dispatch(
+                propList, "getPos", List.of(moveButton));
+        assertEquals(2, position.toInt());
+
+        PropListMethodDispatcher.dispatch(propList, "deleteOne", List.of(moveButton));
+
+        assertEquals(1, propList.size());
+        assertEquals("name", propList.getKeyDatum(0).toKeyName());
+    }
+
+    @Test
     void setAPropAndGetPropAtPreservePointKeys() {
         Datum.PropList propList = new Datum.PropList();
         Datum.Point point = new Datum.Point(147, 69);

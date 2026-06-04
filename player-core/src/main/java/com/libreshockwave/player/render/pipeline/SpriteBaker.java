@@ -6,11 +6,11 @@ import com.libreshockwave.bitmap.Drawing;
 import com.libreshockwave.bitmap.Palette;
 import com.libreshockwave.cast.ShapeInfo;
 import com.libreshockwave.player.Player;
-import com.libreshockwave.player.cast.CastLib;
 import com.libreshockwave.player.cast.CastLibManager;
 import com.libreshockwave.id.InkMode;
 import com.libreshockwave.player.cast.CastMember;
 import com.libreshockwave.chunks.ScoreChunk;
+import com.libreshockwave.player.sprite.SpriteColorSource;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -33,7 +33,6 @@ public class SpriteBaker {
     private int renderRevision;
     private boolean animatedContentBaked;
     private Palette frameActivePalette;
-    private Palette retainedActivePalette;
 
     private record ShapeCacheKey(int castFileIdentity, int castMemberId,
                                  int dynamicMemberIdentity, int width, int height,
@@ -58,11 +57,6 @@ public class SpriteBaker {
         animationTick++;
         animatedContentBaked = false;
         frameActivePalette = resolveFrameActivePalette(sprites);
-        if (frameActivePalette != null) {
-            retainedActivePalette = frameActivePalette;
-        } else if (hasCurrentPaletteSprites(sprites)) {
-            frameActivePalette = retainedActivePalette;
-        }
         List<RenderSprite> result = new ArrayList<>(sprites.size());
         try {
             for (RenderSprite sprite : sprites) {
@@ -248,7 +242,9 @@ public class SpriteBaker {
                         liveMember,
                         sprite.getInk(),
                         sprite.getBackColor(),
+                        sprite.getBackColorSource(),
                         sprite.getForeColor(),
+                        sprite.getForeColorSource(),
                         sprite.hasForeColor(),
                         sprite.hasBackColor(),
                         shouldNeutralizeOpaqueWhiteForScriptCanvas(sprite, liveBmp));
@@ -268,13 +264,16 @@ public class SpriteBaker {
             }
             b = bitmapCache.getProcessed(sprite.getCastMember(), sprite.getInk(),
                     sprite.getBackColor(),
-                    sprite.getForeColor(), sprite.hasForeColor(), sprite.hasBackColor(),
+                    sprite.getBackColorSource(),
+                    sprite.getForeColor(), sprite.getForeColorSource(),
+                    sprite.hasForeColor(), sprite.hasBackColor(),
                     player, paletteOverride);
         }
         if (b == null && sprite.getDynamicMember() != null) {
             b = bitmapCache.getProcessedDynamic(sprite.getDynamicMember(),
-                    sprite.getInk(), sprite.getBackColor(),
-                    sprite.getForeColor(), sprite.hasForeColor(), sprite.hasBackColor());
+                    sprite.getInk(), sprite.getBackColor(), sprite.getBackColorSource(),
+                    sprite.getForeColor(), sprite.getForeColorSource(),
+                    sprite.hasForeColor(), sprite.hasBackColor());
         }
         return b;
     }
@@ -284,11 +283,29 @@ public class SpriteBaker {
             return null;
         }
 
-        Palette moviePalette = player.getBitmapResolver().getMoviePalette();
-        if (moviePalette != null) {
-            return moviePalette;
+        Palette current = com.libreshockwave.vm.datum.Datum.isPuppetPaletteActive()
+                ? com.libreshockwave.vm.datum.Datum.getPuppetPalette()
+                : player.getBitmapResolver().getMoviePalette();
+        if (com.libreshockwave.vm.datum.Datum.isPuppetPaletteActive()) {
+            return current;
         }
 
+        if (current != null && !isSystemPalette(current)) {
+            return current;
+        }
+
+        Palette authoredFramePalette = resolveFirstVisibleAuthoredPalette(sprites);
+        if (authoredFramePalette != null) {
+            return authoredFramePalette;
+        }
+
+        return current;
+    }
+
+    private Palette resolveFirstVisibleAuthoredPalette(List<RenderSprite> sprites) {
+        if (sprites == null) {
+            return null;
+        }
         for (RenderSprite sprite : sprites) {
             if (sprite == null || !sprite.isVisible()
                     || sprite.getType() != RenderSprite.SpriteType.BITMAP
@@ -296,11 +313,21 @@ public class SpriteBaker {
                 continue;
             }
             Palette palette = player.getBitmapResolver().resolveAuthoredPalette(sprite.getCastMember());
-            if (palette != null) {
-                return palette;
+            if (palette == null || isSystemPalette(palette)) {
+                continue;
             }
+            return palette;
         }
         return null;
+    }
+
+    private static boolean isSystemPalette(Palette palette) {
+        if (palette == null || palette.getName() == null) {
+            return false;
+        }
+        String name = palette.getName();
+        return "System - Mac".equalsIgnoreCase(name)
+                || "System - Windows".equalsIgnoreCase(name);
     }
 
     private boolean shouldUseFrameActivePalette(com.libreshockwave.chunks.CastMemberChunk member) {
@@ -308,23 +335,6 @@ public class SpriteBaker {
                 && player != null
                 && player.getBitmapResolver() != null
                 && player.getBitmapResolver().usesCurrentPalette(member);
-    }
-
-    private boolean hasCurrentPaletteSprites(List<RenderSprite> sprites) {
-        if (player == null || player.getBitmapResolver() == null) {
-            return false;
-        }
-        for (RenderSprite sprite : sprites) {
-            if (sprite == null || !sprite.isVisible()
-                    || sprite.getType() != RenderSprite.SpriteType.BITMAP
-                    || sprite.getCastMember() == null) {
-                continue;
-            }
-            if (player.getBitmapResolver().usesCurrentPalette(sprite.getCastMember())) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**
@@ -474,7 +484,7 @@ public class SpriteBaker {
         // Apply ink processing
         if (InkProcessor.shouldProcessInk(sprite.getInk())) {
             textImage = InkProcessor.applyInk(textImage, sprite.getInk(),
-                    sprite.getBackColor(), false, null);
+                    sprite.getBackColor(), sprite.getBackColorSource(), false, false, null, false);
         }
 
         return textImage;
@@ -487,7 +497,7 @@ public class SpriteBaker {
         if (member.hasExplicitTextBgColor()) {
             return member.getTextBgColor();
         }
-        return resolvePaletteColor(sprite.getBackColor());
+        return resolvePaletteColor(sprite.getBackColor(), sprite.getBackColorSource());
     }
 
     /**
@@ -549,7 +559,7 @@ public class SpriteBaker {
         if (runColorR >= 0) {
             textColor = 0xFF000000 | (runColorR << 16) | (runColorG << 8) | runColorB;
         } else {
-            textColor = resolvePaletteColor(sprite.getForeColor());
+            textColor = resolvePaletteColor(sprite.getForeColor(), sprite.getForeColorSource());
         }
         int bgColor = sprite.getInkMode() == InkMode.BACKGROUND_TRANSPARENT
                 ? 0x00000000
@@ -587,11 +597,11 @@ public class SpriteBaker {
         if (styledText.colorR() >= 0) {
             textColor = styledText.textColorARGB();
         } else {
-            textColor = resolvePaletteColor(sprite.getForeColor());
+            textColor = resolvePaletteColor(sprite.getForeColor(), sprite.getForeColorSource());
         }
         int bgColor = sprite.getInkMode() == InkMode.BACKGROUND_TRANSPARENT
                 ? 0x00000000
-                : resolvePaletteColor(sprite.getBackColor());
+                : resolvePaletteColor(sprite.getBackColor(), sprite.getBackColorSource());
 
         var renderer = CastMember.getTextRendererStatic();
         if (renderer == null) return null;
@@ -607,7 +617,11 @@ public class SpriteBaker {
      * Values 0-255 are palette indices looked up through the default palette.
      */
     private int resolvePaletteColor(int color) {
-        if (color > 255) {
+        return resolvePaletteColor(color, SpriteColorSource.forLegacyScoreColor(color));
+    }
+
+    private int resolvePaletteColor(int color, SpriteColorSource source) {
+        if (source == SpriteColorSource.RGB || color > 255) {
             // Already packed RGB (script-set)
             return 0xFF000000 | (color & 0xFFFFFF);
         }
@@ -615,11 +629,13 @@ public class SpriteBaker {
         Palette palette = player != null && player.getFile() != null
                 ? player.getFile().resolvePalette(-1) : null;
         if (palette != null) {
-            return 0xFF000000 | (palette.getColor(color) & 0xFFFFFF);
+            int index = source == SpriteColorSource.PALETTE_INDEX
+                    ? color & 0xFF
+                    : 255 - (color & 0xFF);
+            return 0xFF000000 | (palette.getColor(index) & 0xFFFFFF);
         }
-        // Fallback: Director grayscale ramp (0=white, 255=black)
-        int gray = 255 - color;
-        return 0xFF000000 | (gray << 16) | (gray << 8) | gray;
+        int rgb = InkProcessor.resolveSpriteColor(color, source, null);
+        return 0xFF000000 | rgb;
     }
 
     /**
@@ -682,7 +698,9 @@ public class SpriteBaker {
 
             // Decode the sub-sprite's bitmap via the cache
             Bitmap subBitmap = bitmapCache.getProcessed(subMember, data.ink(),
-                    data.resolvedBackColor(), player, null);
+                    data.resolvedBackColor(), SpriteColorSource.forScoreColor(data.isBackColorRGB()),
+                    data.resolvedForeColor(), SpriteColorSource.forScoreColor(data.isForeColorRGB()),
+                    false, false, player, null);
             if (subBitmap == null || subBitmap.getPixels() == null) continue;
 
             // Sub-sprite stage position minus its registration point
@@ -714,7 +732,7 @@ public class SpriteBaker {
         // useAlpha=false so 32-bit bitmaps get color-keyed (white→transparent).
         if (InkProcessor.shouldProcessInk(sprite.getInk())) {
             result = InkProcessor.applyInk(result, sprite.getInk(),
-                    sprite.getBackColor(), false, null);
+                    sprite.getBackColor(), sprite.getBackColorSource(), false, false, null, false);
         }
 
         return result;
@@ -796,7 +814,7 @@ public class SpriteBaker {
         // should be fully transparent (white pixels removed).
         if (InkProcessor.shouldProcessInk(sprite.getInk())) {
             shape = InkProcessor.applyInk(shape, sprite.getInk(),
-                    sprite.getBackColor(), false, null);
+                    sprite.getBackColor(), sprite.getBackColorSource(), false, false, null, false);
         }
 
         if (shapeCache.size() > 256) {

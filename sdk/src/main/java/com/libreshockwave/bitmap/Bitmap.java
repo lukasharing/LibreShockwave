@@ -26,6 +26,7 @@ public class Bitmap {
     private boolean hasAnchorPoint;
     private int anchorX;
     private int anchorY;
+    private String debugOwnerName;
 
     public Bitmap(int width, int height, int bitDepth) {
         this.width = width;
@@ -431,6 +432,14 @@ public class Bitmap {
         this.anchorY = 0;
     }
 
+    public void setDebugOwnerName(String debugOwnerName) {
+        this.debugOwnerName = debugOwnerName;
+    }
+
+    public String getDebugOwnerName() {
+        return debugOwnerName;
+    }
+
     public void copyPaletteMetadataFrom(Bitmap other) {
         if (other == null) {
             this.imagePalette = null;
@@ -439,6 +448,7 @@ public class Bitmap {
             this.mutationRevision = 0;
             clearTextRenderMetadata();
             clearPaletteRefMetadata();
+            this.debugOwnerName = null;
             return;
         }
         this.imagePalette = other.imagePalette;
@@ -456,6 +466,7 @@ public class Bitmap {
         this.hasAnchorPoint = other.hasAnchorPoint;
         this.anchorX = other.anchorX;
         this.anchorY = other.anchorY;
+        this.debugOwnerName = other.debugOwnerName;
     }
 
     /**

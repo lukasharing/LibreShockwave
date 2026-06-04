@@ -4,6 +4,7 @@ import com.libreshockwave.bitmap.Bitmap;
 import com.libreshockwave.bitmap.Drawing;
 import com.libreshockwave.bitmap.Palette;
 import com.libreshockwave.id.InkMode;
+import com.libreshockwave.player.sprite.SpriteColorSource;
 
 import java.util.ArrayDeque;
 import java.util.Queue;
@@ -54,6 +55,19 @@ public final class InkProcessor {
         return applyInk(src, InkMode.fromCode(ink), backColor, useAlpha, palette, skipGraduatedAlpha);
     }
 
+    public static Bitmap applyInk(Bitmap src, int ink, int backColor, boolean hasBackColor,
+                                   boolean useAlpha, Palette palette, boolean skipGraduatedAlpha) {
+        return applyInk(src, ink, backColor, SpriteColorSource.forLegacyExplicitColor(backColor),
+                hasBackColor, useAlpha, palette, skipGraduatedAlpha);
+    }
+
+    public static Bitmap applyInk(Bitmap src, int ink, int backColor, SpriteColorSource backColorSource,
+                                   boolean hasBackColor, boolean useAlpha, Palette palette,
+                                   boolean skipGraduatedAlpha) {
+        return applyInk(src, InkMode.fromCode(ink), backColor, hasBackColor, useAlpha,
+                palette, skipGraduatedAlpha, backColorSource);
+    }
+
     /**
      * Apply ink-based transparency to a bitmap.
      *
@@ -71,6 +85,26 @@ public final class InkProcessor {
 
     public static Bitmap applyInk(Bitmap src, InkMode ink, int backColor,
                                    boolean useAlpha, Palette palette, boolean skipGraduatedAlpha) {
+        return applyInk(src, ink, backColor, false, useAlpha, palette, skipGraduatedAlpha);
+    }
+
+    public static Bitmap applyInk(Bitmap src, InkMode ink, int backColor, boolean hasBackColor,
+                                   boolean useAlpha, Palette palette, boolean skipGraduatedAlpha) {
+        return applyInk(src, ink, backColor, hasBackColor, useAlpha, palette,
+                skipGraduatedAlpha, SpriteColorSource.forLegacyExplicitColor(backColor));
+    }
+
+    public static Bitmap applyInk(Bitmap src, InkMode ink, int backColor,
+                                   SpriteColorSource backColorSource,
+                                   boolean hasBackColor, boolean useAlpha, Palette palette,
+                                   boolean skipGraduatedAlpha) {
+        return applyInk(src, ink, backColor, hasBackColor, useAlpha, palette,
+                skipGraduatedAlpha, backColorSource);
+    }
+
+    private static Bitmap applyInk(Bitmap src, InkMode ink, int backColor, boolean hasBackColor,
+                                   boolean useAlpha, Palette palette, boolean skipGraduatedAlpha,
+                                   SpriteColorSource backColorSource) {
         if (src == null || src.getWidth() == 0 || src.getHeight() == 0) {
             return src;
         }
@@ -84,11 +118,12 @@ public final class InkProcessor {
             // the same RGB color for both matte and visible pixels; when palette
             // index metadata is present, the index decides which edge-connected
             // pixels are transparent. RGB-only assets keep the legacy RGB matte.
-            Drawing.FloodFillMatte matteSpec = resolveMatteSpec(src, ink, backColor, useAlpha, palette);
+            Drawing.FloodFillMatte matteSpec = resolveMatteSpec(src, ink, backColor,
+                    backColorSource, hasBackColor, useAlpha, palette);
             if (matteSpec == null) {
                 return src;
             }
-            if (matteSpec.usesPaletteIndex() && usesIndexedMatte(src)) {
+            if (matteSpec.usesPaletteIndex() && usesIndexedMatte(src, matteSpec)) {
                 return applyIndexedMatte(src, matteSpec.mattePaletteIndex());
             }
             return applyMatte(src, matteSpec.matteColorRgb(), matteSpec.tolerance());
@@ -102,7 +137,7 @@ public final class InkProcessor {
             // Inks 1-6: color-key transparency on white (background color).
             // Director's Transparent ink makes white/background pixels transparent.
             // For 1-bit bitmaps, palette index 0 = white = background = transparent.
-            int bgColor = resolveBackColor(src, ink, backColor, useAlpha, palette);
+            int bgColor = resolveBackColor(src, ink, backColor, backColorSource, useAlpha, palette);
             if (bgColor < 0) {
                 return src;
             }
@@ -119,7 +154,7 @@ public final class InkProcessor {
                 // not first key out white background content.
                 masked = src;
             } else if (src.getBitDepth() >= 16) {
-                matteColor = resolveMatteColor(src, ink, backColor, useAlpha, palette);
+                matteColor = resolveMatteColor(src, ink, backColor, backColorSource, useAlpha, palette);
                 if (matteColor >= 0) {
                     masked = applyBackgroundTransparent(src, matteColor, skipGraduatedAlpha);
                 } else {
@@ -127,7 +162,7 @@ public final class InkProcessor {
                     masked = src;
                 }
             } else {
-                matteColor = resolveMatteColor(src, ink, backColor, useAlpha, palette);
+                matteColor = resolveMatteColor(src, ink, backColor, backColorSource, useAlpha, palette);
                 if (matteColor >= 0) {
                     masked = applyMatte(src, matteColor);
                 } else {
@@ -140,7 +175,7 @@ public final class InkProcessor {
             // then composites with standard alpha blend — NOT per-channel MIN like Darkest (39).
             // Always resolve tint with useAlpha=false so the bgColor is never skipped.
             if (ink == InkMode.DARKEN) {
-                int tintRgb = resolveBackColor(src, ink, backColor, false, palette);
+                int tintRgb = resolveBackColor(src, ink, backColor, backColorSource, false, palette);
                 if (tintRgb >= 0 && tintRgb != 0xFFFFFF) {
                     masked = multiplyColor(masked, tintRgb);
                 }
@@ -160,7 +195,7 @@ public final class InkProcessor {
             return src;
         } else if (ink == InkMode.NOT_GHOST || ink == InkMode.BACKGROUND_TRANSPARENT) {
             // Background transparent / not-ghost / etc: color-key
-            int bgColor = resolveBackColor(src, ink, backColor, useAlpha, palette);
+            int bgColor = resolveBackColor(src, ink, backColor, backColorSource, useAlpha, palette);
             if (bgColor < 0) {
                 return src; // 32-bit with useAlpha — skip processing
             }
@@ -183,31 +218,130 @@ public final class InkProcessor {
      */
     static int resolveMatteColor(Bitmap src, InkMode ink, int backColor,
                                   boolean useAlpha, Palette palette) {
-        Drawing.FloodFillMatte matteSpec = resolveMatteSpec(src, ink, backColor, useAlpha, palette);
+        return resolveMatteColor(src, ink, backColor, SpriteColorSource.forLegacyScoreColor(backColor),
+                useAlpha, palette);
+    }
+
+    static int resolveMatteColor(Bitmap src, InkMode ink, int backColor,
+                                  SpriteColorSource backColorSource, boolean useAlpha, Palette palette) {
+        Drawing.FloodFillMatte matteSpec = resolveMatteSpec(src, ink, backColor,
+                backColorSource, false, useAlpha, palette);
         return matteSpec != null ? matteSpec.matteColorRgb() : -1;
     }
 
     private static Drawing.FloodFillMatte resolveMatteSpec(Bitmap src, InkMode ink, int backColor,
-                                              boolean useAlpha, Palette palette) {
-        // Native 32-bit alpha drives matte directly; no white-border extraction.
-        if (src.hasNativeMatteAlpha() && useAlpha) {
+                                              SpriteColorSource backColorSource,
+                                              boolean hasBackColor, boolean useAlpha, Palette palette) {
+        // Director decides this from member metadata: 32-bit + useAlpha means
+        // the native alpha channel owns transparency, even if every alpha byte
+        // in that channel is currently opaque.
+        if (hasEffectiveNativeAlpha(src, useAlpha)) {
             return null;
+        }
+        if (hasBackColor && !src.isScriptModified()) {
+            Drawing.FloodFillMatte explicitMatte = resolveExplicitMatteSpec(src, backColor, backColorSource, palette);
+            if (explicitMatte != null && matteAppearsOnOpaqueEdge(src, explicitMatte)) {
+                return explicitMatte;
+            }
         }
         if (src.getBitDepth() == 32 && !src.isScriptModified()) {
             return new Drawing.FloodFillMatte(0xFFFFFF, 0);
         }
         if (src.isScriptModified()) {
+            Drawing.FloodFillMatte inferred = Drawing.resolveFloodFillMatte(src);
+            if (inferred != null
+                    && inferred.usesPaletteIndex()
+                    && hasOpaqueNonMattePaletteIndex(src, inferred.mattePaletteIndex())) {
+                return inferred;
+            }
             return new Drawing.FloodFillMatte(0xFFFFFF, 0);
         }
         return Drawing.resolveFloodFillMatte(src);
     }
 
-    private static boolean usesIndexedMatte(Bitmap src) {
+    private static Drawing.FloodFillMatte resolveExplicitMatteSpec(Bitmap src, int backColor,
+                                                                   SpriteColorSource backColorSource,
+                                                                   Palette palette) {
+        if (backColorSource == SpriteColorSource.RGB || backColor > 255) {
+            return new Drawing.FloodFillMatte(backColor & 0xFFFFFF, 0);
+        }
+        byte[] indices = src.getPaletteIndicesUnsafe();
+        if (indices != null && indices.length >= src.getWidth() * src.getHeight()) {
+            int paletteIndex = resolveSpritePaletteIndex(backColor, backColorSource);
+            int rgb = resolvePaletteIndexColor(paletteIndex, palette);
+            return new Drawing.FloodFillMatte(paletteIndex, rgb, 0);
+        }
+        return new Drawing.FloodFillMatte(resolveSpriteColor(backColor, backColorSource, palette), 0);
+    }
+
+    private static boolean matteAppearsOnOpaqueEdge(Bitmap src, Drawing.FloodFillMatte matte) {
+        if (src == null || matte == null) {
+            return false;
+        }
+        int w = src.getWidth();
+        int h = src.getHeight();
+        if (w <= 0 || h <= 0 || src.getPixels() == null) {
+            return false;
+        }
+
+        byte[] indices = src.getPaletteIndicesUnsafe();
+        boolean indexed = matte.usesPaletteIndex()
+                && indices != null
+                && indices.length >= w * h;
+        for (int x = 0; x < w; x++) {
+            if (matchesOpaqueMatte(src, indices, indexed, x, 0, matte)) return true;
+            if (matchesOpaqueMatte(src, indices, indexed, x, h - 1, matte)) return true;
+        }
+        for (int y = 1; y < h - 1; y++) {
+            if (matchesOpaqueMatte(src, indices, indexed, 0, y, matte)) return true;
+            if (matchesOpaqueMatte(src, indices, indexed, w - 1, y, matte)) return true;
+        }
+        return false;
+    }
+
+    private static boolean matchesOpaqueMatte(Bitmap src, byte[] indices, boolean indexed,
+                                              int x, int y, Drawing.FloodFillMatte matte) {
+        int index = y * src.getWidth() + x;
+        int pixel = src.getPixels()[index];
+        if ((pixel >>> 24) == 0) {
+            return false;
+        }
+        if (indexed) {
+            return (indices[index] & 0xFF) == matte.mattePaletteIndex();
+        }
+        return (pixel & 0xFFFFFF) == matte.matteColorRgb();
+    }
+
+    static int resolvePaletteIndexColor(int paletteIndex, Palette palette) {
+        int index = paletteIndex & 0xFF;
+        if (palette != null && index >= 0 && index < palette.size()) {
+            return palette.getColor(index) & 0xFFFFFF;
+        }
+        int gray = 255 - index;
+        return (gray << 16) | (gray << 8) | gray;
+    }
+
+    static int resolveSpriteColor(int color, SpriteColorSource source, Palette palette) {
+        SpriteColorSource effectiveSource = source != null ? source : SpriteColorSource.forLegacyScoreColor(color);
+        if (effectiveSource == SpriteColorSource.RGB || color > 255) {
+            return color & 0xFFFFFF;
+        }
+        return resolvePaletteIndexColor(resolveSpritePaletteIndex(color, effectiveSource), palette);
+    }
+
+    private static int resolveSpritePaletteIndex(int color, SpriteColorSource source) {
+        int value = color & 0xFF;
+        if (source == SpriteColorSource.PALETTE_INDEX) {
+            return value;
+        }
+        return 255 - value;
+    }
+
+    private static boolean usesIndexedMatte(Bitmap src, Drawing.FloodFillMatte matte) {
         byte[] indices = src.getPaletteIndicesUnsafe();
         if (indices == null || indices.length < src.getWidth() * src.getHeight()) {
             return false;
         }
-        Drawing.FloodFillMatte matte = Drawing.resolveFloodFillMatte(src);
         if (matte == null || !matte.usesPaletteIndex()) {
             return false;
         }
@@ -237,17 +371,17 @@ public final class InkProcessor {
      */
     static int resolveBackColor(Bitmap src, InkMode ink, int backColor,
                                  boolean useAlpha, Palette palette) {
+        return resolveBackColor(src, ink, backColor, SpriteColorSource.forLegacyScoreColor(backColor),
+                useAlpha, palette);
+    }
+
+    static int resolveBackColor(Bitmap src, InkMode ink, int backColor,
+                                 SpriteColorSource backColorSource,
+                                 boolean useAlpha, Palette palette) {
         int bitDepth = src.getBitDepth();
 
-        // Native 32-bit alpha usually defines transparency when the sprite uses
-        // alpha. Some Director assets still carry an opaque background-color
-        // rim in BACKGROUND_TRANSPARENT ink; key that border color as well so
-        // stale matte pixels do not render as white seams.
-        if (src.hasNativeMatteAlpha() && useAlpha) {
-            int alphaBackColor = resolveBackColorIgnoringAlpha(src, backColor, palette);
-            if (ink == InkMode.BACKGROUND_TRANSPARENT && hasOpaqueBorderColor(src, alphaBackColor)) {
-                return alphaBackColor;
-            }
+        boolean effectiveNativeAlpha = hasEffectiveNativeAlpha(src, useAlpha);
+        if (effectiveNativeAlpha) {
             return -1;
         }
 
@@ -259,57 +393,24 @@ public final class InkProcessor {
         }
 
         // Packed RGB value
-        if (backColor > 255) {
+        if (backColorSource == SpriteColorSource.RGB || backColor > 255) {
             return backColor & 0xFFFFFF;
         }
 
         // 32-bit without alpha and non-Copy inks historically key against white.
         // Using authored-content heuristics here can erase real black outlines and
         // other UI pixels that Director preserves.
-        if (bitDepth == 32 && !useAlpha && ink != InkMode.COPY) {
+        if (bitDepth == 32 && !effectiveNativeAlpha && ink != InkMode.COPY) {
             return 0xFFFFFF;
         }
 
-        // Resolve palette index through the actual palette.
-        // Director backColor is a palette index — the RGB depends on which palette
-        // is active. Using the bitmap's own palette ensures the resolved RGB matches
-        // the decoded pixel data for correct color-key transparency.
-        if (palette != null && backColor >= 0 && backColor < palette.size()) {
-            return palette.getColor(backColor) & 0xFFFFFF;
-        }
-
-        // Fallback: Director grayscale ramp (0 = white, 255 = black)
-        int gray = 255 - backColor;
-        return (gray << 16) | (gray << 8) | gray;
+        return resolveSpriteColor(backColor, backColorSource, palette);
     }
 
-    private static int resolveBackColorIgnoringAlpha(Bitmap src, int backColor, Palette palette) {
-        if (backColor > 255) {
-            return backColor & 0xFFFFFF;
-        }
-        if (palette != null && backColor >= 0 && backColor < palette.size()) {
-            return palette.getColor(backColor) & 0xFFFFFF;
-        }
-        int gray = 255 - backColor;
-        return (gray << 16) | (gray << 8) | gray;
-    }
-
-    private static boolean hasOpaqueBorderColor(Bitmap src, int colorRgb) {
-        int w = src.getWidth();
-        int h = src.getHeight();
-        for (int x = 0; x < w; x++) {
-            if (isOpaqueColor(src.getPixel(x, 0), colorRgb)) return true;
-            if (isOpaqueColor(src.getPixel(x, h - 1), colorRgb)) return true;
-        }
-        for (int y = 1; y < h - 1; y++) {
-            if (isOpaqueColor(src.getPixel(0, y), colorRgb)) return true;
-            if (isOpaqueColor(src.getPixel(w - 1, y), colorRgb)) return true;
-        }
-        return false;
-    }
-
-    private static boolean isOpaqueColor(int argb, int colorRgb) {
-        return ((argb >>> 24) & 0xFF) == 0xFF && (argb & 0xFFFFFF) == colorRgb;
+    static boolean hasEffectiveNativeAlpha(Bitmap src, boolean useAlpha) {
+        return src != null
+                && useAlpha
+                && src.hasNativeMatteAlpha();
     }
 
     /**
@@ -341,9 +442,7 @@ public final class InkProcessor {
                 continue;
             }
 
-            // Director uses exact-match keying here. Anti-aliased near-colors remain
-            // visible, but existing source alpha must survive; ink 36 supplies a
-            // color key, not an alpha reset.
+            // Director uses exact-match keying here. Anti-aliased near-colors remain visible.
             result[i] = pixel;
         }
 

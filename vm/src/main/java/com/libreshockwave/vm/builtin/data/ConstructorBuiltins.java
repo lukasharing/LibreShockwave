@@ -195,6 +195,9 @@ public final class ConstructorBuiltins {
     }
 
     private static Datum color(LingoVM vm, List<Datum> args) {
+        if (args.size() == 1) {
+            return new Datum.PaletteIndexColor(args.get(0).toInt() & 0xFF);
+        }
         int r = args.size() > 0 ? args.get(0).toInt() : 0;
         int g = args.size() > 1 ? args.get(1).toInt() : 0;
         int b = args.size() > 2 ? args.get(2).toInt() : 0;
@@ -211,7 +214,7 @@ public final class ConstructorBuiltins {
             return new Datum.PaletteIndexColor(0);
         }
         Datum index = args.get(0);
-        return new Datum.PaletteIndexColor((index != null ? index : Datum.VOID).toInt() & 0xFF);
+        return new Datum.PaletteIndexColor((index != null ? index : Datum.VOID).toInt());
     }
 
     /**

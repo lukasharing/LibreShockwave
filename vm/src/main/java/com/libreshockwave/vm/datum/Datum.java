@@ -53,6 +53,10 @@ public sealed interface Datum {
         return PaletteHolder.puppetActive;
     }
 
+    static Palette getPuppetPalette() {
+        return PaletteHolder.puppetActive ? PaletteHolder.palette : null;
+    }
+
     /**
      * Get the active palette for color resolution.
      * Falls back to System Mac palette if none is set.

@@ -307,7 +307,7 @@ public class BitmapResolver {
             }
         }
         if (file != null) {
-            return file.resolvePaletteByMemberNumber(memberNum);
+            return file.resolvePaletteByMemberNumberExact(memberNum);
         }
         return null;
     }

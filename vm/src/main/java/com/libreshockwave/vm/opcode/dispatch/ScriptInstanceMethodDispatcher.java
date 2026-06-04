@@ -39,7 +39,7 @@ public final class ScriptInstanceMethodDispatcher {
         }
 
         MemberRegistryMethodDispatcher.DispatchResult registryResult =
-                MemberRegistryMethodDispatcher.dispatch(instance, methodName, args);
+                MemberRegistryMethodDispatcher.dispatchNormalized(instance, method, args);
         if (registryResult.handled()) {
             return registryResult.value();
         }
@@ -185,7 +185,7 @@ public final class ScriptInstanceMethodDispatcher {
         // SECOND: For registry-owner script instances, prefill stable entries
         // before their authored handlers run. This mirrors Director's member
         // registry semantics without forcing movie-specific reindex hooks.
-        MemberRegistryMethodDispatcher.prefill(instance, methodName, args);
+        MemberRegistryMethodDispatcher.prefillNormalized(instance, method, args);
 
         // THIRD: Check for Lingo handlers in the script (and ancestor chain)
         // This is for non-built-in methods like create(), dump(), etc.
@@ -203,12 +203,12 @@ public final class ScriptInstanceMethodDispatcher {
                     location = provider.findHandlerInScript(current.scriptId(), methodName);
                 }
 
-                if (location != null && location.script() != null && location.handler() != null) {
-                    if (location.script() instanceof ScriptChunk script
-                            && location.handler() instanceof ScriptChunk.Handler handler) {
-                        return safeExecuteHandler(ctx, script, handler, args, instance);
+                    if (location != null && location.script() != null && location.handler() != null) {
+                        if (location.script() instanceof ScriptChunk script
+                                && location.handler() instanceof ScriptChunk.Handler handler) {
+                            return safeExecuteHandler(ctx, script, handler, args, instance);
+                        }
                     }
-                }
 
                 Datum ancestor = current.properties().get(Datum.PROP_ANCESTOR);
                 if (ancestor instanceof Datum.ScriptInstance ancestorInstance) {
@@ -439,10 +439,7 @@ public final class ScriptInstanceMethodDispatcher {
     private static Datum safeExecuteHandler(ExecutionContext ctx, ScriptChunk script,
                                              ScriptChunk.Handler handler, List<Datum> args, Datum receiver) {
         try {
-            traceInfoStandNameCall(script, handler, args, receiver);
-            Datum result = ctx.executeHandler(script, handler, args, receiver);
-            traceGetInfoResult(script, handler, receiver, result);
-            return result;
+            return ctx.executeHandler(script, handler, args, receiver);
         } catch (LingoException e) {
             if (DebugConfig.isDebugPlaybackEnabled()) {
                 System.err.println(e.getMessage());
@@ -453,50 +450,4 @@ public final class ScriptInstanceMethodDispatcher {
         }
     }
 
-    private static void traceGetInfoResult(ScriptChunk script, ScriptChunk.Handler handler,
-                                           Datum receiver, Datum result) {
-        if (!DebugConfig.isDebugPlaybackEnabled()
-                || !(result instanceof Datum.PropList props)
-                || !"getinfo".equals(LingoVM.normalizeLookupName(script.getHandlerName(handler)))) {
-            return;
-        }
-        Datum objectClass = props.getOrDefault("class", Datum.VOID);
-        Datum name = props.getOrDefault("name", Datum.VOID);
-        Datum custom = props.getOrDefault("custom", Datum.VOID);
-        Datum title = props.getOrDefault("title", Datum.VOID);
-        if (objectClass.isVoid() && name.isVoid() && custom.isVoid() && title.isVoid()) {
-            return;
-        }
-        System.out.println("[OBJECT_INFO] getInfo script=" + script.getDisplayName()
-                + " receiver=" + describeDatumReceiver(receiver)
-                + " class=" + DatumFormatter.formatBrief(objectClass)
-                + " name=" + DatumFormatter.formatBrief(name)
-                + " title=" + DatumFormatter.formatBrief(title)
-                + " custom=" + DatumFormatter.formatBrief(custom)
-                + " props=" + DatumFormatter.formatExpanded(props));
-    }
-
-    private static void traceInfoStandNameCall(ScriptChunk script, ScriptChunk.Handler handler,
-                                               List<Datum> args, Datum receiver) {
-        if (!DebugConfig.isDebugPlaybackEnabled()) {
-            return;
-        }
-        String handlerName = LingoVM.normalizeLookupName(script.getHandlerName(handler));
-        if (!"showobjectinfo".equals(handlerName)
-                && !"updateinfostandname".equals(handlerName)
-                && !"renderobjectdisplayname".equals(handlerName)) {
-            return;
-        }
-        System.out.println("[OBJECT_INFO] script=" + script.getDisplayName()
-                + " handler=#" + script.getHandlerName(handler)
-                + " receiver=" + describeDatumReceiver(receiver)
-                + " args=" + formatArgs(args));
-    }
-
-    private static String describeDatumReceiver(Datum receiver) {
-        if (receiver instanceof Datum.ScriptInstance instance) {
-            return describeInstance(instance);
-        }
-        return DatumFormatter.formatBrief(receiver);
-    }
 }

@@ -1,16 +1,23 @@
 package com.libreshockwave.player.cast;
 
+import com.libreshockwave.bitmap.Bitmap;
 import com.libreshockwave.bitmap.Palette;
 import com.libreshockwave.cast.MemberType;
 import com.libreshockwave.chunks.CastMemberChunk;
 import com.libreshockwave.id.ChunkId;
+import com.libreshockwave.vm.LingoVM;
+import com.libreshockwave.vm.builtin.cast.CastLibProvider;
 import com.libreshockwave.vm.datum.Datum;
+import com.libreshockwave.vm.opcode.dispatch.ImageMethodDispatcher;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
+import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -45,12 +52,12 @@ class CastLibManagerPaletteTest {
 
         Palette resolvedByMember = manager.getMemberPalette(1, duplicatePaletteMember.getMemberNumber());
         assertNotNull(resolvedByMember);
-        assertSame(sourcePalette, resolvedByMember);
+        assertNotSame(sourcePalette, resolvedByMember);
         assertEquals(0x112233, resolvedByMember.getColor(0));
 
         Palette resolvedByName = manager.resolvePaletteByName("interface palette_messengerDuplicate");
         assertNotNull(resolvedByName);
-        assertSame(sourcePalette, resolvedByName);
+        assertSame(resolvedByMember, resolvedByName);
     }
 
     @Test
@@ -99,11 +106,11 @@ class CastLibManagerPaletteTest {
                 "duplicate",
                 java.util.List.of(targetSlot));
 
-        assertEquals(targetSlot.toInt(), duplicateResult.toInt());
+        assertEquals(Datum.CastMemberRef.of(3, duplicatePaletteMember.getMemberNumber()), duplicateResult);
 
         Palette resolvedByMember = manager.getMemberPalette(3, duplicatePaletteMember.getMemberNumber());
         assertNotNull(resolvedByMember);
-        assertSame(sourcePalette, resolvedByMember);
+        assertNotSame(sourcePalette, resolvedByMember);
         assertEquals(0x010203, resolvedByMember.getColor(0));
     }
 
@@ -132,8 +139,75 @@ class CastLibManagerPaletteTest {
 
         Palette resolvedByMember = manager.getMemberPalette(1, duplicatePaletteMember.getMemberNumber());
         assertNotNull(resolvedByMember);
-        assertSame(sourcePalette, resolvedByMember);
+        assertNotSame(sourcePalette, resolvedByMember);
         assertEquals(0xD4DDE1, resolvedByMember.getColor(0));
+    }
+
+    @Test
+    void memberDuplicateWithoutTargetCreatesIndependentBitmapThatCanRemapPaletteRef() throws Exception {
+        CastLibManager manager = new CastLibManager(null, null);
+        CastLib castLib = new CastLib(1, null, null);
+        installCastLib(manager, castLib);
+
+        Palette defaultPalette = new Palette(new int[]{0xFFFFFF, 0xE7F700}, "default");
+        Palette parkPalette = new Palette(new int[]{0xFFFFFF, 0x996600}, "park");
+
+        CastMember paletteMember = castLib.createDynamicMember("palette");
+        paletteMember.setPaletteData(parkPalette);
+
+        Bitmap sourceBitmap = new Bitmap(1, 1, 8);
+        sourceBitmap.setImagePalette(defaultPalette);
+        sourceBitmap.setPixelPaletteIndex(0, 0, 1, 0xFFE7F700);
+
+        CastMember sourceMember = castLib.createDynamicMember("bitmap");
+        sourceMember.setBitmapDirectly(sourceBitmap);
+
+        Datum duplicated = manager.callMemberMethod(
+                1, sourceMember.getMemberNumber(), "duplicate", List.of());
+        Datum.CastMemberRef duplicateRef = assertInstanceOf(Datum.CastMemberRef.class, duplicated);
+        CastMember duplicateMember = castLib.getMember(duplicateRef.memberNum());
+        assertNotNull(duplicateMember);
+
+        Bitmap duplicateBitmap = duplicateMember.getBitmap();
+        assertNotNull(duplicateBitmap);
+        assertArrayEquals(new byte[]{1}, duplicateBitmap.getPaletteIndices());
+
+        CastLibProvider.setProvider(manager);
+        try {
+            Datum image = duplicateMember.getProp("image");
+            ImageMethodDispatcher.setProperty(
+                    assertInstanceOf(Datum.ImageRef.class, image),
+                    "paletteRef",
+                    Datum.CastMemberRef.of(1, paletteMember.getMemberNumber()));
+        } finally {
+            CastLibProvider.clearProvider();
+        }
+
+        assertEquals(0xFF996600, duplicateBitmap.getPixel(0, 0),
+                "member.duplicate().image must keep index provenance so paletteRef can recolor it");
+        assertEquals(0xFFE7F700, sourceMember.getBitmap().getPixel(0, 0),
+                "the duplicated member image must be independent from the source member image");
+    }
+
+    @Test
+    void puppetPaletteIntegerResolvesPaletteMemberNumber() throws Exception {
+        CastLibManager manager = new CastLibManager(null, null);
+        CastLib castLib = new CastLib(1, null, null);
+        installCastLib(manager, castLib);
+
+        CastMember paletteMember = castLib.createDynamicMember("palette");
+        Palette palette = new Palette(new int[]{0x112233, 0x445566}, "Director Palette");
+        paletteMember.setPaletteData(palette);
+
+        CastLibProvider.setProvider(manager);
+        Datum.setPuppetPalette(null);
+        try {
+            new LingoVM(null).callHandler("puppetPalette", List.of(Datum.of(paletteMember.getMemberNumber())));
+            assertSame(palette, Datum.getPuppetPalette());
+        } finally {
+            Datum.setPuppetPalette(null);
+            CastLibProvider.clearProvider();
+        }
     }
 
     @Test

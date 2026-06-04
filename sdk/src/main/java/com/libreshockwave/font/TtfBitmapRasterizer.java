@@ -20,15 +20,57 @@ public class TtfBitmapRasterizer {
      * @return BitmapFont, or null if parsing fails
      */
     public static BitmapFont rasterize(byte[] ttfBytes, int targetSize, String fontName) {
+        return rasterize(ttfBytes, targetSize, targetSize, fontName);
+    }
+
+    /**
+     * Rasterize a TTF font at one pixel size while preserving the Director
+     * nominal size used by text layout decisions.
+     */
+    public static BitmapFont rasterize(byte[] ttfBytes, int targetSize, int reportedFontSize, String fontName) {
+        return rasterize(ttfBytes, targetSize, reportedFontSize, fontName, 1.0f);
+    }
+
+    /**
+     * Rasterize a TTF font with an explicit X scale. Normal Director field
+     * layout should use the unscaled overload; boxType clipping is handled by
+     * the destination rectangle, not by condensing glyphs.
+     */
+    public static BitmapFont rasterize(byte[] ttfBytes, int targetSize, int reportedFontSize,
+                                       String fontName, float horizontalScale) {
+        return rasterize(ttfBytes, targetSize, reportedFontSize, fontName, horizontalScale, true);
+    }
+
+    /**
+     * Rasterize a TTF generated from an embedded PFR subset. A missing glyph in
+     * that subset stays with the embedded font instead of triggering a system
+     * font substitution.
+     */
+    public static BitmapFont rasterizeEmbeddedPfr(byte[] ttfBytes, int targetSize,
+                                                  int reportedFontSize, String fontName) {
+        return rasterize(ttfBytes, targetSize, reportedFontSize, fontName, 1.0f, false);
+    }
+
+    private static BitmapFont rasterize(byte[] ttfBytes, int targetSize, int reportedFontSize,
+                                        String fontName, float horizontalScale,
+                                        boolean missingGlyphFallbackAllowed) {
         if (ttfBytes == null || ttfBytes.length < 12 || targetSize <= 0) return null;
 
         try {
             TtfData ttf = parseTtf(ttfBytes);
             if (ttf == null) return null;
-            return buildBitmapFont(ttf, targetSize, fontName);
+            return buildBitmapFont(ttf, targetSize, Math.max(1, reportedFontSize), fontName,
+                    sanitizeHorizontalScale(horizontalScale), missingGlyphFallbackAllowed);
         } catch (Exception e) {
             return null;
         }
+    }
+
+    private static float sanitizeHorizontalScale(float scale) {
+        if (!Float.isFinite(scale) || scale <= 0.0f) {
+            return 1.0f;
+        }
+        return Math.max(0.1f, Math.min(4.0f, Math.abs(scale)));
     }
 
     // --- TTF parsing ---
@@ -43,6 +85,7 @@ public class TtfBitmapRasterizer {
         int[] locaOffsets; // glyph offsets into glyf table
         byte[] glyfTable;
         int numGlyphs;
+        Map<Long, Integer> glyphKerning = new HashMap<>(); // glyph pair -> font-unit adjustment
     }
 
     static class TtfGlyph {
@@ -119,6 +162,13 @@ public class TtfBitmapRasterizer {
         if (cmap == null) return null;
         parseCmap(data, cmap[0], ttf);
 
+        // Parse optional horizontal kerning table. Director only applies this
+        // when member kerning settings allow it; parsing does not enable it.
+        int[] kern = tables.get("kern");
+        if (kern != null) {
+            parseKern(data, kern[0], kern[1], ttf);
+        }
+
         // Parse loca
         int[] loca = tables.get("loca");
         if (loca == null) return null;
@@ -190,6 +240,48 @@ public class TtfBitmapRasterizer {
                 parseCmapFormat0(data, firstSupportedSubtable, ttf);
             }
         }
+    }
+
+    private static void parseKern(byte[] data, int offset, int length, TtfData ttf) {
+        if (offset < 0 || length <= 4 || offset + 4 > data.length) return;
+        int end = Math.min(data.length, offset + length);
+        int nTables = readU16(data, offset + 2);
+        int pos = offset + 4;
+
+        for (int i = 0; i < nTables && pos + 6 <= end; i++) {
+            int subtableStart = pos;
+            int subtableLength = readU16(data, pos + 2);
+            int coverage = readU16(data, pos + 4);
+            int format = (coverage >> 8) & 0xFF;
+            boolean horizontal = (coverage & 0x0001) != 0;
+            if (subtableLength <= 0 || subtableStart + subtableLength > end) {
+                break;
+            }
+
+            if (format == 0 && horizontal) {
+                parseKernFormat0(data, subtableStart + 6, subtableStart + subtableLength, ttf);
+            }
+            pos = subtableStart + subtableLength;
+        }
+    }
+
+    private static void parseKernFormat0(byte[] data, int offset, int end, TtfData ttf) {
+        if (offset + 8 > end) return;
+        int nPairs = readU16(data, offset);
+        int pos = offset + 8; // skip searchRange, entrySelector, rangeShift
+        for (int i = 0; i < nPairs && pos + 6 <= end; i++) {
+            int leftGlyph = readU16(data, pos);
+            int rightGlyph = readU16(data, pos + 2);
+            int value = readI16(data, pos + 4);
+            if (value != 0) {
+                ttf.glyphKerning.put(glyphPairKey(leftGlyph, rightGlyph), value);
+            }
+            pos += 6;
+        }
+    }
+
+    private static long glyphPairKey(int leftGlyph, int rightGlyph) {
+        return ((long) leftGlyph << 32) ^ (rightGlyph & 0xFFFFFFFFL);
     }
 
     private static void parseCmapFormat0(byte[] data, int offset, TtfData ttf) {
@@ -353,25 +445,28 @@ public class TtfBitmapRasterizer {
 
     // --- BitmapFont construction ---
 
-    private static BitmapFont buildBitmapFont(TtfData ttf, int targetSize, String fontName) {
-        float scale = (float) targetSize / ttf.unitsPerEm;
+    private static BitmapFont buildBitmapFont(TtfData ttf, int targetSize, int reportedFontSize,
+                                              String fontName, float horizontalScale,
+                                              boolean missingGlyphFallbackAllowed) {
+        float scaleY = (float) targetSize / ttf.unitsPerEm;
+        float scaleX = scaleY * horizontalScale;
 
         // Calculate cell dimensions
         int maxAdvPx = 0;
         int maxGlyphWidthPx = 0;
         for (var entry : ttf.cmap.entrySet()) {
             int gIdx = entry.getValue();
-            int advPx = Math.round(ttf.advanceWidths[gIdx] * scale);
+            int advPx = Math.round(ttf.advanceWidths[gIdx] * scaleX);
             maxAdvPx = Math.max(maxAdvPx, advPx);
             TtfGlyph glyph = parseGlyph(ttf, gIdx);
             if (glyph != null) {
-                int glyphWidthPx = Math.max(1, Math.round((glyph.xMax - glyph.xMin) * scale) + 1);
+                int glyphWidthPx = Math.max(1, Math.round((glyph.xMax - glyph.xMin) * scaleX) + 1);
                 maxGlyphWidthPx = Math.max(maxGlyphWidthPx, glyphWidthPx);
             }
         }
 
-        int ascPx = Math.round(Math.abs(ttf.ascender) * scale);
-        int descPx = Math.round(Math.abs(ttf.descender) * scale);
+        int ascPx = Math.round(Math.abs(ttf.ascender) * scaleY);
+        int descPx = Math.round(Math.abs(ttf.descender) * scaleY);
         int metricsLineHeight = ascPx + descPx; // matches AWT FontMetrics.getHeight()
         int cellHeight = metricsLineHeight + 1; // +1 for cell storage (avoid clipping)
         int cellWidth = Math.max(Math.max(maxAdvPx, maxGlyphWidthPx), 1);
@@ -381,29 +476,35 @@ public class TtfBitmapRasterizer {
 
         int[] argb = new int[bitmapWidth * bitmapHeight];
         int[] charWidths = new int[BitmapFont.NUM_CHARS];
+        int[] charAdvanceFixed = new int[BitmapFont.NUM_CHARS];
         int[] charOffsetsX = new int[BitmapFont.NUM_CHARS];
-        for (int i = 0; i < BitmapFont.NUM_CHARS; i++) charWidths[i] = cellWidth;
+        for (int i = 0; i < BitmapFont.NUM_CHARS; i++) {
+            charWidths[i] = cellWidth;
+            charAdvanceFixed[i] = cellWidth << 6;
+        }
 
         Map<Integer, int[]> overflowGlyphs = new HashMap<>();
         Map<Integer, Integer> overflowWidths = new HashMap<>();
+        Map<Integer, Integer> overflowAdvanceFixed = new HashMap<>();
         Map<Integer, Integer> overflowOffsetsX = new HashMap<>();
+        Map<Long, Integer> kerningFixed = buildKerningFixed(ttf, scaleX);
 
         // Rasterize each mapped character
         for (var entry : ttf.cmap.entrySet()) {
             int charCode = entry.getKey();
             int glyphIndex = entry.getValue();
 
-            int advancePx = Math.max(1, Math.round(ttf.advanceWidths[glyphIndex] * scale));
+            int advanceFixed = Math.max(1, Math.round(ttf.advanceWidths[glyphIndex] * scaleX * 64.0f));
+            int advancePx = Math.max(1, BitmapFont.roundFixedToPixel(advanceFixed));
             TtfGlyph glyph = parseGlyph(ttf, glyphIndex);
             int glyphOffsetX = 0;
             int glyphDrawOffsetX = 0;
             if (glyph != null) {
-                glyphDrawOffsetX = Math.round(ttf.lsbArray[glyphIndex] * scale);
-                glyphOffsetX = -Math.round(glyph.xMin * scale);
+                glyphDrawOffsetX = Math.round(ttf.lsbArray[glyphIndex] * scaleX);
+                glyphOffsetX = -Math.round(glyph.xMin * scaleX);
             }
 
             if (charCode < BitmapFont.NUM_CHARS) {
-                charWidths[charCode] = advancePx;
                 charOffsetsX[charCode] = glyphDrawOffsetX;
 
                 if (glyph != null && !glyph.contours.isEmpty()) {
@@ -413,18 +514,31 @@ public class TtfBitmapRasterizer {
                     int cellY = row * cellHeight;
 
                     rasterizeContours(glyph.contours, argb, bitmapWidth, bitmapHeight,
-                            cellX + glyphOffsetX, cellY, cellWidth, cellHeight, scale, ascPx);
+                            cellX + glyphOffsetX, cellY, cellWidth, cellHeight,
+                            scaleX, scaleY, ascPx);
+                    int inkRight = findRightmostInk(argb, bitmapWidth, cellX, cellY, cellWidth, cellHeight);
+                    advancePx = applyCondensedTrailingGuard(
+                            charCode, horizontalScale, advancePx, glyphDrawOffsetX, inkRight);
+                    advanceFixed = Math.max(advanceFixed, advancePx << 6);
                 }
+                charWidths[charCode] = advancePx;
+                charAdvanceFixed[charCode] = advanceFixed;
             } else {
-                overflowWidths.put(charCode, advancePx);
                 overflowOffsetsX.put(charCode, glyphDrawOffsetX);
 
                 if (glyph != null && !glyph.contours.isEmpty()) {
                     int[] cellBuf = new int[cellWidth * cellHeight];
                     rasterizeContours(glyph.contours, cellBuf, cellWidth, cellHeight,
-                            glyphOffsetX, 0, cellWidth, cellHeight, scale, ascPx);
+                            glyphOffsetX, 0, cellWidth, cellHeight,
+                            scaleX, scaleY, ascPx);
+                    int inkRight = findRightmostInk(cellBuf, cellWidth, 0, 0, cellWidth, cellHeight);
+                    advancePx = applyCondensedTrailingGuard(
+                            charCode, horizontalScale, advancePx, glyphDrawOffsetX, inkRight);
+                    advanceFixed = Math.max(advanceFixed, advancePx << 6);
                     overflowGlyphs.put(charCode, cellBuf);
                 }
+                overflowWidths.put(charCode, advancePx);
+                overflowAdvanceFixed.put(charCode, advanceFixed);
             }
         }
 
@@ -433,13 +547,85 @@ public class TtfBitmapRasterizer {
             // already set above
         } else if (!ttf.cmap.containsKey((int) ' ')) {
             // Estimate space width as ~1/4 of unitsPerEm
-            charWidths[' '] = Math.max(1, Math.round(ttf.unitsPerEm * scale / 4));
+            charAdvanceFixed[' '] = Math.max(1, Math.round(ttf.unitsPerEm * scaleX * 64.0f / 4.0f));
+            charWidths[' '] = BitmapFont.roundFixedToPixel(charAdvanceFixed[' ']);
         }
 
         return BitmapFont.create(argb, bitmapWidth, bitmapHeight,
-                cellWidth, cellHeight, charWidths, charOffsetsX, fontName, targetSize,
+                cellWidth, cellHeight, charWidths, charOffsetsX, charAdvanceFixed,
+                fontName, reportedFontSize,
                 ascPx, metricsLineHeight,
-                overflowGlyphs, overflowWidths, overflowOffsetsX);
+                overflowGlyphs, overflowWidths, overflowAdvanceFixed,
+                overflowOffsetsX, kerningFixed, missingGlyphFallbackAllowed);
+    }
+
+    private static Map<Long, Integer> buildKerningFixed(TtfData ttf, float scaleX) {
+        Map<Long, Integer> result = new HashMap<>();
+        if (ttf.glyphKerning.isEmpty() || ttf.cmap.isEmpty()) {
+            return result;
+        }
+
+        Map<Integer, List<Integer>> charsByGlyph = new HashMap<>();
+        for (Map.Entry<Integer, Integer> entry : ttf.cmap.entrySet()) {
+            charsByGlyph.computeIfAbsent(entry.getValue(), ignored -> new ArrayList<>())
+                    .add(entry.getKey());
+        }
+
+        for (Map.Entry<Long, Integer> entry : ttf.glyphKerning.entrySet()) {
+            long pair = entry.getKey();
+            int leftGlyph = (int) (pair >> 32);
+            int rightGlyph = (int) pair;
+            List<Integer> leftChars = charsByGlyph.get(leftGlyph);
+            List<Integer> rightChars = charsByGlyph.get(rightGlyph);
+            if (leftChars == null || rightChars == null) {
+                continue;
+            }
+            int kernFixed = Math.round(entry.getValue() * scaleX * 64.0f);
+            if (kernFixed == 0) {
+                continue;
+            }
+            for (int leftChar : leftChars) {
+                for (int rightChar : rightChars) {
+                    result.put(BitmapFont.charPairKey(leftChar, rightChar), kernFixed);
+                }
+            }
+        }
+        return result;
+    }
+
+    private static int applyCondensedTrailingGuard(int charCode, float horizontalScale,
+                                                   int advancePx, int drawOffsetX,
+                                                   int inkRight) {
+        if (!needsCondensedTrailingGuard(charCode, horizontalScale, advancePx, drawOffsetX, inkRight)) {
+            return advancePx;
+        }
+        int rightFromPen = drawOffsetX + inkRight;
+        return Math.max(advancePx, rightFromPen + 1);
+    }
+
+    private static boolean needsCondensedTrailingGuard(int charCode, float horizontalScale,
+                                                       int advancePx, int drawOffsetX,
+                                                       int inkRight) {
+        if (horizontalScale >= 0.99f || inkRight < 0 || advancePx < 4) {
+            return false;
+        }
+        int rightFromPen = drawOffsetX + inkRight;
+        return rightFromPen >= advancePx;
+    }
+
+    private static int findRightmostInk(int[] pixels, int bitmapWidth,
+                                        int cellX, int cellY, int cellWidth, int cellHeight) {
+        for (int x = cellWidth - 1; x >= 0; x--) {
+            for (int y = 0; y < cellHeight; y++) {
+                int px = cellX + x;
+                int py = cellY + y;
+                int idx = py * bitmapWidth + px;
+                if (idx >= 0 && idx < pixels.length && ((pixels[idx] >>> 24) & 0xFF) != 0) {
+                    return x;
+                }
+            }
+        }
+        return -1;
     }
 
     /**
@@ -448,11 +634,11 @@ public class TtfBitmapRasterizer {
     private static void rasterizeContours(List<List<TtfPoint>> contours,
                                            int[] argb, int bufWidth, int bufHeight,
                                            int cellX, int cellY, int cellWidth, int cellHeight,
-                                           float scale, int baselineY) {
+                                           float scaleX, float scaleY, int baselineY) {
         // Flatten contours to polygon edges (resolve off-curve points)
         List<List<float[]>> polygons = new ArrayList<>();
         for (List<TtfPoint> contour : contours) {
-            List<float[]> points = flattenTtfContour(contour, scale, baselineY);
+            List<float[]> points = flattenTtfContour(contour, scaleX, scaleY, baselineY);
             if (points.size() >= 3) {
                 polygons.add(points);
             }
@@ -495,7 +681,12 @@ public class TtfBitmapRasterizer {
                     // Use round for pixel-center sampling (fill pixel if center is inside span)
                     int xStart = Math.max(0, Math.min(cellWidth, Math.round(fx0)));
                     int xEnd = Math.max(0, Math.min(cellWidth, Math.round(fx1)));
-
+                    if (xEnd <= xStart && fx1 > fx0) {
+                        int hinted = Math.max(0, Math.min(cellWidth - 1,
+                                (int) Math.floor((fx0 + fx1) * 0.5f)));
+                        xStart = hinted;
+                        xEnd = hinted + 1;
+                    }
                     for (int bx = xStart; bx < xEnd; bx++) {
                         int px = cellX + bx;
                         int py = cellY + y;
@@ -515,7 +706,8 @@ public class TtfBitmapRasterizer {
      * Flatten a TrueType contour (with on-curve and off-curve points) into
      * a list of pixel-space [x, y] coordinates, subdividing quadratic Beziers.
      */
-    private static List<float[]> flattenTtfContour(List<TtfPoint> contour, float scale, int baselineY) {
+    private static List<float[]> flattenTtfContour(List<TtfPoint> contour, float scaleX,
+                                                   float scaleY, int baselineY) {
         List<float[]> result = new ArrayList<>();
         int n = contour.size();
         if (n < 2) return result;
@@ -545,8 +737,8 @@ public class TtfBitmapRasterizer {
 
         // Walk through the contour
         int sz = expanded.size();
-        float startX = expanded.get(startIdx).x * scale;
-        float startY = baselineY - expanded.get(startIdx).y * scale;
+        float startX = expanded.get(startIdx).x * scaleX;
+        float startY = baselineY - expanded.get(startIdx).y * scaleY;
         result.add(new float[]{startX, startY});
 
         int i = (startIdx + 1) % sz;
@@ -554,16 +746,16 @@ public class TtfBitmapRasterizer {
         while (count < sz) {
             TtfPoint p = expanded.get(i);
             if (p.onCurve) {
-                float px = p.x * scale;
-                float py = baselineY - p.y * scale;
+                float px = p.x * scaleX;
+                float py = baselineY - p.y * scaleY;
                 result.add(new float[]{px, py});
             } else {
                 // Quadratic Bezier: current off-curve point + next on-curve point
                 TtfPoint next = expanded.get((i + 1) % sz);
-                float cpx = p.x * scale;
-                float cpy = baselineY - p.y * scale;
-                float epx = next.x * scale;
-                float epy = baselineY - next.y * scale;
+                float cpx = p.x * scaleX;
+                float cpy = baselineY - p.y * scaleY;
+                float epx = next.x * scaleX;
+                float epy = baselineY - next.y * scaleY;
 
                 // Subdivide quadratic Bezier
                 float[] last = result.get(result.size() - 1);

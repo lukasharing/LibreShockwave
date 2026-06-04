@@ -24,6 +24,7 @@ public class BitmapFont {
     private final int cellWidth;
     private final int cellHeight;
     private final int[] charWidths;   // per-character advance width in pixels (for grid chars 0-127)
+    private final int[] charAdvanceFixed; // per-character advance width in 26.6 pixels
     private final int[] charOffsetsX; // per-character draw offset relative to the pen position
     private final String fontName;
     private final int fontSize;       // target rendering size
@@ -33,7 +34,10 @@ public class BitmapFont {
     // Overflow storage for chars > 127 (Unicode extended)
     private final Map<Integer, int[]> overflowGlyphs; // charCode -> ARGB pixels (cellWidth x cellHeight)
     private final Map<Integer, Integer> overflowWidths; // charCode -> advance width
+    private final Map<Integer, Integer> overflowAdvanceFixed; // charCode -> 26.6 advance width
     private final Map<Integer, Integer> overflowOffsetsX; // charCode -> draw offset
+    private final Map<Long, Integer> kerningFixed; // (left,right) char pair -> 26.6 kerning
+    private final boolean missingGlyphFallbackAllowed;
 
     /**
      * Factory for constructing a BitmapFont from external rasterizers.
@@ -57,19 +61,57 @@ public class BitmapFont {
                               Map<Integer, int[]> overflowGlyphs,
                               Map<Integer, Integer> overflowWidths,
                               Map<Integer, Integer> overflowOffsetsX) {
+        return create(bitmap, bitmapWidth, bitmapHeight,
+                cellWidth, cellHeight, charWidths, charOffsetsX, null,
+                fontName, fontSize, metricsAscent, metricsLineHeight,
+                overflowGlyphs, overflowWidths, null, overflowOffsetsX, null);
+    }
+
+    public static BitmapFont create(int[] bitmap, int bitmapWidth, int bitmapHeight,
+                              int cellWidth, int cellHeight,
+                              int[] charWidths, int[] charOffsetsX, int[] charAdvanceFixed,
+                              String fontName, int fontSize,
+                              int metricsAscent, int metricsLineHeight,
+                              Map<Integer, int[]> overflowGlyphs,
+                              Map<Integer, Integer> overflowWidths,
+                              Map<Integer, Integer> overflowAdvanceFixed,
+                              Map<Integer, Integer> overflowOffsetsX,
+                              Map<Long, Integer> kerningFixed) {
         return new BitmapFont(bitmap, bitmapWidth, bitmapHeight,
-                cellWidth, cellHeight, charWidths, charOffsetsX, fontName, fontSize,
+                cellWidth, cellHeight, charWidths, charOffsetsX, charAdvanceFixed, fontName, fontSize,
                 metricsAscent, metricsLineHeight,
-                overflowGlyphs, overflowWidths, overflowOffsetsX);
+                overflowGlyphs, overflowWidths, overflowAdvanceFixed, overflowOffsetsX, kerningFixed, true);
+    }
+
+    static BitmapFont create(int[] bitmap, int bitmapWidth, int bitmapHeight,
+                             int cellWidth, int cellHeight,
+                             int[] charWidths, int[] charOffsetsX, int[] charAdvanceFixed,
+                             String fontName, int fontSize,
+                             int metricsAscent, int metricsLineHeight,
+                             Map<Integer, int[]> overflowGlyphs,
+                             Map<Integer, Integer> overflowWidths,
+                             Map<Integer, Integer> overflowAdvanceFixed,
+                             Map<Integer, Integer> overflowOffsetsX,
+                             Map<Long, Integer> kerningFixed,
+                             boolean missingGlyphFallbackAllowed) {
+        return new BitmapFont(bitmap, bitmapWidth, bitmapHeight,
+                cellWidth, cellHeight, charWidths, charOffsetsX, charAdvanceFixed, fontName, fontSize,
+                metricsAscent, metricsLineHeight,
+                overflowGlyphs, overflowWidths, overflowAdvanceFixed, overflowOffsetsX, kerningFixed,
+                missingGlyphFallbackAllowed);
     }
 
     private BitmapFont(int[] bitmap, int bitmapWidth, int bitmapHeight,
-                       int cellWidth, int cellHeight, int[] charWidths, int[] charOffsetsX,
+                       int cellWidth, int cellHeight,
+                       int[] charWidths, int[] charOffsetsX, int[] charAdvanceFixed,
                        String fontName, int fontSize,
                        int metricsAscent, int metricsLineHeight,
                        Map<Integer, int[]> overflowGlyphs,
                        Map<Integer, Integer> overflowWidths,
-                       Map<Integer, Integer> overflowOffsetsX) {
+                       Map<Integer, Integer> overflowAdvanceFixed,
+                       Map<Integer, Integer> overflowOffsetsX,
+                       Map<Long, Integer> kerningFixed,
+                       boolean missingGlyphFallbackAllowed) {
         this.bitmap = bitmap;
         this.bitmapWidth = bitmapWidth;
         this.bitmapHeight = bitmapHeight;
@@ -77,13 +119,39 @@ public class BitmapFont {
         this.cellHeight = cellHeight;
         this.charWidths = charWidths;
         this.charOffsetsX = charOffsetsX != null ? charOffsetsX : new int[NUM_CHARS];
+        this.charAdvanceFixed = charAdvanceFixed != null
+                ? charAdvanceFixed
+                : buildFixedAdvances(charWidths);
         this.fontName = fontName;
         this.fontSize = fontSize;
         this.metricsAscent = metricsAscent;
         this.metricsLineHeight = metricsLineHeight;
-        this.overflowGlyphs = overflowGlyphs;
-        this.overflowWidths = overflowWidths;
+        this.overflowGlyphs = overflowGlyphs != null ? overflowGlyphs : new HashMap<>();
+        this.overflowWidths = overflowWidths != null ? overflowWidths : new HashMap<>();
+        this.overflowAdvanceFixed = overflowAdvanceFixed != null
+                ? overflowAdvanceFixed
+                : buildFixedOverflowAdvances(this.overflowWidths);
         this.overflowOffsetsX = overflowOffsetsX != null ? overflowOffsetsX : new HashMap<>();
+        this.kerningFixed = kerningFixed != null ? kerningFixed : new HashMap<>();
+        this.missingGlyphFallbackAllowed = missingGlyphFallbackAllowed;
+    }
+
+    private static int[] buildFixedAdvances(int[] charWidths) {
+        int[] fixed = new int[charWidths != null ? charWidths.length : NUM_CHARS];
+        for (int i = 0; i < fixed.length; i++) {
+            fixed[i] = (charWidths != null ? charWidths[i] : 0) << 6;
+        }
+        return fixed;
+    }
+
+    private static Map<Integer, Integer> buildFixedOverflowAdvances(Map<Integer, Integer> overflowWidths) {
+        Map<Integer, Integer> fixed = new HashMap<>();
+        if (overflowWidths != null) {
+            for (Map.Entry<Integer, Integer> entry : overflowWidths.entrySet()) {
+                fixed.put(entry.getKey(), entry.getValue() << 6);
+            }
+        }
+        return fixed;
     }
 
     /** Get advance width for a character (in pixels). */
@@ -92,6 +160,31 @@ public class BitmapFont {
         if (charCode >= 0 && charCode < charWidths.length) return charWidths[charCode];
         Integer ow = overflowWidths.get(charCode);
         return ow != null ? ow : cellWidth;
+    }
+
+    /** Get advance width for a character in 26.6 pixel units. */
+    public int getCharAdvanceFixed(int charCode) {
+        charCode = resolveDirectorTextCode(charCode);
+        if (charCode >= 0 && charCode < charAdvanceFixed.length) return charAdvanceFixed[charCode];
+        Integer advance = overflowAdvanceFixed.get(charCode);
+        if (advance != null) return advance;
+        return getCharWidth(charCode) << 6;
+    }
+
+    /** Get kerning adjustment for a character pair in 26.6 pixel units. */
+    public int getKerningFixed(int leftCharCode, int rightCharCode) {
+        int left = resolveDirectorTextCode(leftCharCode);
+        int right = resolveDirectorTextCode(rightCharCode);
+        Integer kern = kerningFixed.get(charPairKey(left, right));
+        return kern != null ? kern : 0;
+    }
+
+    public static long charPairKey(int leftCharCode, int rightCharCode) {
+        return ((long) leftCharCode << 32) ^ (rightCharCode & 0xFFFFFFFFL);
+    }
+
+    public static int roundFixedToPixel(int fixed) {
+        return Math.round(fixed / 64.0f);
     }
 
     /**
@@ -117,11 +210,23 @@ public class BitmapFont {
 
     /** Get total string width in pixels. */
     public int getStringWidth(String text) {
+        return getStringWidth(text, false, Integer.MAX_VALUE);
+    }
+
+    /** Get total string width in pixels, using logical 26.6 advances and optional kerning. */
+    public int getStringWidth(String text, boolean kerning, int kerningThreshold) {
         int w = 0;
+        int previous = -1;
+        boolean applyKerning = kerning && fontSize >= kerningThreshold;
         for (int i = 0; i < text.length(); i++) {
-            w += getCharWidth(text.charAt(i));
+            int ch = text.charAt(i);
+            if (applyKerning && previous >= 0) {
+                w += getKerningFixed(previous, ch);
+            }
+            w += getCharAdvanceFixed(ch);
+            previous = ch;
         }
-        return w;
+        return roundFixedToPixel(w);
     }
 
     /** Get the line height (ascent + descent, for text line spacing). */
@@ -130,6 +235,9 @@ public class BitmapFont {
     public int getAscent() { return metricsAscent; }
     public String getFontName() { return fontName; }
     public int getFontSize() { return fontSize; }
+
+    /** Whether text layout may substitute another font when this one lacks a glyph. */
+    public boolean allowsMissingGlyphFallback() { return missingGlyphFallbackAllowed; }
 
     /**
      * Draw a single character at the given position into a destination ARGB buffer.
@@ -452,10 +560,11 @@ public class BitmapFont {
             charWidths[li] = charWidths[ui];
         }
 
-        return new BitmapFont(argb, bitmapWidth, bitmapHeight,
-                cellWidth, cellHeight, charWidths, new int[NUM_CHARS], font.fontName, targetHeight,
+        return BitmapFont.create(argb, bitmapWidth, bitmapHeight,
+                cellWidth, cellHeight, charWidths, new int[NUM_CHARS], null,
+                font.fontName, targetHeight,
                 pfrAscPx, pfrLineHeight,
-                overflowGlyphs, overflowWidths, new HashMap<>());
+                overflowGlyphs, overflowWidths, null, new HashMap<>(), null, false);
     }
 
     private static boolean cellHasInk(int[] argb, int bitmapWidth,
@@ -552,6 +661,12 @@ public class BitmapFont {
                     // Use round for pixel-center sampling (fill pixel if center is inside span)
                     int xStart = Math.max(0, Math.min(cellWidth, Math.round(x0)));
                     int xEnd = Math.max(0, Math.min(cellWidth, Math.round(x1)));
+                    if (xEnd <= xStart && x1 > x0) {
+                        int hinted = Math.max(0, Math.min(cellWidth - 1,
+                                (int) Math.floor((x0 + x1) * 0.5f)));
+                        xStart = hinted;
+                        xEnd = hinted + 1;
+                    }
 
                     for (int bx = xStart; bx < xEnd; bx++) {
                         int px = cellX + bx;

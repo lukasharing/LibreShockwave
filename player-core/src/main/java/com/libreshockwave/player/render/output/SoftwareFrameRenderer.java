@@ -106,6 +106,15 @@ public final class SoftwareFrameRenderer {
         boolean flipH = sprite.isFlipH() ^ sprite.hasDirectorHorizontalMirror();
         boolean flipV = sprite.isFlipV();
 
+        if (hasAffineTransform(sprite)) {
+            blitBitmapTransformed(argb, stageWidth, stageHeight,
+                    baked.getPixels(), baked.getWidth(), baked.getHeight(),
+                    sx, sy, sw, sh, blend, ink, flipH, flipV,
+                    sprite.getRotation(), sprite.getSkew(),
+                    sprite.getRegistrationX(), sprite.getRegistrationY());
+            return;
+        }
+
         if (sw == baked.getWidth() && sh == baked.getHeight()) {
             blitBitmap(argb, stageWidth, stageHeight,
                     baked.getPixels(), baked.getWidth(), baked.getHeight(),
@@ -117,6 +126,25 @@ public final class SoftwareFrameRenderer {
         }
     }
 
+    private static boolean hasAffineTransform(RenderSprite sprite) {
+        if (sprite.hasDirectorHorizontalMirror()) {
+            return false;
+        }
+        return normalizeAngle(sprite.getRotation()) != 0 || normalizeAngle(sprite.getSkew()) != 0;
+    }
+
+    private static int normalizeAngle(double angle) {
+        int normalized = (int) Math.round(angle) % 360;
+        if (normalized < 0) {
+            normalized += 360;
+        }
+        return normalized;
+    }
+
+    private static int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
     private static void drawStageBorder(int[] argb, int w, int h, int color) {
         for (int x = 0; x < w; x++) {
             argb[x] = color;
@@ -126,6 +154,93 @@ public final class SoftwareFrameRenderer {
             argb[y * w] = color;
             argb[y * w + w - 1] = color;
         }
+    }
+
+    static void blitBitmapTransformed(int[] argb, int stageWidth, int stageHeight,
+                                      int[] srcPixels, int srcW, int srcH,
+                                      int dstX, int dstY, int dstW, int dstH,
+                                      int blend, InkMode ink, boolean flipH, boolean flipV,
+                                      double rotation, double skew,
+                                      int registrationX, int registrationY) {
+        if (srcPixels == null || srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) return;
+        if ((long) srcPixels.length < (long) srcW * srcH) return;
+
+        double rotationRad = Math.toRadians(rotation);
+        double cos = Math.cos(rotationRad);
+        double sin = Math.sin(rotationRad);
+        double shear = Math.tan(Math.toRadians(skew));
+
+        registrationX = clamp(registrationX, 0, dstW);
+        registrationY = clamp(registrationY, 0, dstH);
+
+        double m00 = cos;
+        double m01 = shear * cos - sin;
+        double m10 = sin;
+        double m11 = shear * sin + cos;
+
+        double anchorX = dstX + registrationX;
+        double anchorY = dstY + registrationY;
+        double x0 = transformX(anchorX, m00, m01, -registrationX, -registrationY);
+        double y0 = transformY(anchorY, m10, m11, -registrationX, -registrationY);
+        double x1 = transformX(anchorX, m00, m01, dstW - registrationX, -registrationY);
+        double y1 = transformY(anchorY, m10, m11, dstW - registrationX, -registrationY);
+        double x2 = transformX(anchorX, m00, m01, dstW - registrationX, dstH - registrationY);
+        double y2 = transformY(anchorY, m10, m11, dstW - registrationX, dstH - registrationY);
+        double x3 = transformX(anchorX, m00, m01, -registrationX, dstH - registrationY);
+        double y3 = transformY(anchorY, m10, m11, -registrationX, dstH - registrationY);
+
+        int minX = Math.max(0, (int) Math.floor(Math.min(Math.min(x0, x1), Math.min(x2, x3))));
+        int minY = Math.max(0, (int) Math.floor(Math.min(Math.min(y0, y1), Math.min(y2, y3))));
+        int maxX = Math.min(stageWidth, (int) Math.ceil(Math.max(Math.max(x0, x1), Math.max(x2, x3))));
+        int maxY = Math.min(stageHeight, (int) Math.ceil(Math.max(Math.max(y0, y1), Math.max(y2, y3))));
+        if (minX >= maxX || minY >= maxY) return;
+
+        double det = m00 * m11 - m10 * m01;
+        if (Math.abs(det) < 0.000001) return;
+        double inv00 = m11 / det;
+        double inv01 = -m01 / det;
+        double inv10 = -m10 / det;
+        double inv11 = m00 / det;
+
+        int srcLen = srcPixels.length;
+        int argbLen = argb.length;
+        boolean useSpecialInk = isSpecialCompositingInk(ink);
+
+        for (int dy = minY; dy < maxY; dy++) {
+            for (int dx = minX; dx < maxX; dx++) {
+                double relX = dx + 0.5 - anchorX;
+                double relY = dy + 0.5 - anchorY;
+                double localX = inv00 * relX + inv01 * relY + registrationX;
+                double localY = inv10 * relX + inv11 * relY + registrationY;
+                if (localX < 0.0 || localX >= dstW || localY < 0.0 || localY >= dstH) {
+                    continue;
+                }
+
+                int srcX = (int) Math.floor(localX * srcW / dstW);
+                int srcY = (int) Math.floor(localY * srcH / dstH);
+                if (flipH) srcX = srcW - 1 - srcX;
+                if (flipV) srcY = srcH - 1 - srcY;
+                if (srcX < 0 || srcX >= srcW || srcY < 0 || srcY >= srcH) continue;
+
+                int srcIdx = srcY * srcW + srcX;
+                if (srcIdx < 0 || srcIdx >= srcLen) continue;
+
+                int dstIdx = dy * stageWidth + dx;
+                if (dstIdx < 0 || dstIdx >= argbLen) continue;
+
+                compositePixel(argb, dstIdx, srcPixels[srcIdx], blend, ink, useSpecialInk);
+            }
+        }
+    }
+
+    private static double transformX(double anchorX, double m00, double m01,
+                                     double localX, double localY) {
+        return anchorX + m00 * localX + m01 * localY;
+    }
+
+    private static double transformY(double anchorY, double m10, double m11,
+                                     double localX, double localY) {
+        return anchorY + m10 * localX + m11 * localY;
     }
 
     // ========================================================================
@@ -154,25 +269,10 @@ public final class SoftwareFrameRenderer {
                 int fetchX = flipH ? (srcW - 1 - sx) : sx;
                 int srcIdx = fetchY * srcW + fetchX;
                 int src = srcPixels[srcIdx];
-                int srcA = (src >> 24) & 0xFF;
-                if (srcA == 0) continue;
-
                 int dstIdx = (dstY + sy) * stageWidth + (dstX + sx);
                 if (dstIdx < 0 || dstIdx >= argbLen) continue;
 
-                if (useSpecialInk) {
-                    if (blend < 100) {
-                        srcA = (srcA * blend) / 100;
-                        if (srcA == 0) continue;
-                    }
-                    compositeSpecialInk(argb, dstIdx, src, srcA, ink);
-                } else if (blend < 100) {
-                    alphaCompositePercent(argb, dstIdx, src, srcA, blend);
-                } else if (srcA >= 255) {
-                    argb[dstIdx] = src | 0xFF000000;
-                } else {
-                    alphaComposite(argb, dstIdx, src, srcA);
-                }
+                compositePixel(argb, dstIdx, src, blend, ink, useSpecialInk);
             }
         }
     }
@@ -212,25 +312,10 @@ public final class SoftwareFrameRenderer {
                 if (srcIdx < 0 || srcIdx >= srcLen) continue;
 
                 int src = srcPixels[srcIdx];
-                int srcA = (src >> 24) & 0xFF;
-                if (srcA == 0) continue;
-
                 int dstIdx = dy * stageWidth + dx;
                 if (dstIdx < 0 || dstIdx >= argbLen) continue;
 
-                if (useSpecialInk) {
-                    if (blend < 100) {
-                        srcA = (srcA * blend) / 100;
-                        if (srcA == 0) continue;
-                    }
-                    compositeSpecialInk(argb, dstIdx, src, srcA, ink);
-                } else if (blend < 100) {
-                    alphaCompositePercent(argb, dstIdx, src, srcA, blend);
-                } else if (srcA >= 255) {
-                    argb[dstIdx] = src | 0xFF000000;
-                } else {
-                    alphaComposite(argb, dstIdx, src, srcA);
-                }
+                compositePixel(argb, dstIdx, src, blend, ink, useSpecialInk);
             }
         }
     }
@@ -250,6 +335,26 @@ public final class SoftwareFrameRenderer {
             || ink == InkMode.REVERSE || ink == InkMode.GHOST
             || ink == InkMode.NOT_COPY || ink == InkMode.NOT_TRANSPARENT
             || ink == InkMode.NOT_REVERSE || ink == InkMode.NOT_GHOST;
+    }
+
+    private static void compositePixel(int[] argb, int dstIdx, int src, int blend,
+                                       InkMode ink, boolean useSpecialInk) {
+        int srcA = (src >> 24) & 0xFF;
+        if (srcA == 0) return;
+
+        if (useSpecialInk) {
+            if (blend < 100) {
+                srcA = (srcA * blend) / 100;
+                if (srcA == 0) return;
+            }
+            compositeSpecialInk(argb, dstIdx, src, srcA, ink);
+        } else if (blend < 100) {
+            alphaCompositePercent(argb, dstIdx, src, srcA, blend);
+        } else if (srcA >= 255) {
+            argb[dstIdx] = src | 0xFF000000;
+        } else {
+            alphaComposite(argb, dstIdx, src, srcA);
+        }
     }
 
     /**

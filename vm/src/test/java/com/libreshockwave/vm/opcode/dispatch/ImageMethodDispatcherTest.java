@@ -1,6 +1,7 @@
 package com.libreshockwave.vm.opcode.dispatch;
 
 import com.libreshockwave.bitmap.Bitmap;
+import com.libreshockwave.bitmap.Palette;
 import com.libreshockwave.vm.datum.Datum;
 import org.junit.jupiter.api.Test;
 
@@ -9,6 +10,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ImageMethodDispatcherTest {
 
@@ -159,6 +161,37 @@ class ImageMethodDispatcherTest {
     }
 
     @Test
+    void cropPreservesAdjustedImageAnchor() {
+        Bitmap source = new Bitmap(30, 20, 32);
+        source.fill(0xFFFFFFFF);
+        source.setAnchorPoint(15, 12);
+
+        Datum.ImageRef cropped = (Datum.ImageRef) ImageMethodDispatcher.dispatch(
+                new Datum.ImageRef(source),
+                "crop",
+                List.of(new Datum.Rect(5, 3, 25, 18)));
+
+        assertTrue(cropped.bitmap().hasAnchorPoint());
+        assertEquals(10, cropped.bitmap().getAnchorX());
+        assertEquals(9, cropped.bitmap().getAnchorY());
+    }
+
+    @Test
+    void trimWhiteSpacePreservesAdjustedImageAnchor() {
+        Bitmap source = new Bitmap(30, 20, 32);
+        source.fill(0xFFFFFFFF);
+        source.fillRect(6, 4, 10, 8, 0xFF000000);
+        source.setAnchorPoint(15, 12);
+
+        Datum.ImageRef trimmed = (Datum.ImageRef) ImageMethodDispatcher.dispatch(
+                new Datum.ImageRef(source), "trimWhiteSpace", List.of());
+
+        assertTrue(trimmed.bitmap().hasAnchorPoint());
+        assertEquals(9, trimmed.bitmap().getAnchorX());
+        assertEquals(8, trimmed.bitmap().getAnchorY());
+    }
+
+    @Test
     void copyPixelsWithVoidSourceRectCopiesTheWholeSourceImage() {
         Bitmap source = new Bitmap(2, 2, 32);
         source.fill(0xFFFFFFFF);
@@ -250,7 +283,6 @@ class ImageMethodDispatcherTest {
                 0xFFC0C0C0,
                 0xFF202020
         });
-        src.setNativeAlpha(true);
         Bitmap mask = new Bitmap(2, 1, 32, new int[] {
                 0xFFFFFFFF,
                 0x00FFFFFF
@@ -275,6 +307,50 @@ class ImageMethodDispatcherTest {
                 "The transparent half of the transformed mask should leave the destination unchanged");
         assertEquals(0xFFB25E7B, dest.getPixel(1, 0),
                 "Quad copies must reuse normal copyPixels color/tint handling after transforming source pixels");
+    }
+
+    @Test
+    void skewedQuadCopyPixelsDoesNotFillBoundingBox() {
+        Bitmap dest = new Bitmap(5, 4, 32);
+        dest.fill(0xFF112233);
+
+        Bitmap src = new Bitmap(3, 2, 32);
+        src.fill(0xFFFF0000);
+
+        Datum.List skewQuad = new Datum.List(new ArrayList<>(List.of(
+                new Datum.Point(1, 0),
+                new Datum.Point(4, 1),
+                new Datum.Point(3, 3),
+                new Datum.Point(0, 2)
+        )));
+
+        ImageMethodDispatcher.dispatch(new Datum.ImageRef(dest), "copyPixels",
+                List.of(new Datum.ImageRef(src), skewQuad, new Datum.Rect(0, 0, 3, 2)));
+
+        assertEquals(0xFF112233, dest.getPixel(0, 0),
+                "Non-rectangular quad copies must leave pixels outside the quad untouched");
+        assertEquals(0xFFFF0000, dest.getPixel(2, 1),
+                "Pixels inside the skewed quad should still receive the transformed source");
+    }
+
+    @Test
+    void copyPixelsPaletteAliasRemapsIndexedSourceLikePaletteRef() {
+        Bitmap dest = new Bitmap(1, 1, 32);
+        dest.fill(0xFFFFFFFF);
+
+        Bitmap src = new Bitmap(1, 1, 8);
+        src.setImagePalette(Palette.SYSTEM_MAC_PALETTE);
+        src.setPixelPaletteIndex(0, 0, 255, 0xFFFF0000);
+
+        Datum.PropList props = new Datum.PropList();
+        props.add("palette", Datum.symbol("grayscale"), true);
+
+        ImageMethodDispatcher.dispatch(new Datum.ImageRef(dest), "copyPixels",
+                List.of(new Datum.ImageRef(src), new Datum.Rect(0, 0, 1, 1),
+                        new Datum.Rect(0, 0, 1, 1), props));
+
+        assertEquals(0xFF000000, dest.getPixel(0, 0),
+                "Director accepts #palette in copyPixels propLists, not only #paletteRef");
     }
 
     @Test

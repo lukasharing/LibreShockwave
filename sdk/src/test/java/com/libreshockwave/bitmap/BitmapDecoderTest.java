@@ -113,7 +113,7 @@ class BitmapDecoderTest {
     }
 
     @Test
-    void twoBitBuiltInPalettePixelsScaleToFullPaletteRange() {
+    void twoBitGrayscalePixelsScaleToFullRamp() {
         Bitmap bitmap = BitmapDecoder.decode(
                 new byte[] { (byte) 0b00011011 },
                 4,
@@ -132,7 +132,7 @@ class BitmapDecoderTest {
     }
 
     @Test
-    void fourBitBuiltInPalettePixelsScaleToFullPaletteRange() {
+    void fourBitGrayscalePixelsScaleToFullRamp() {
         Bitmap bitmap = BitmapDecoder.decode(
                 new byte[] { 0x05, (byte) 0xAF },
                 4,
@@ -148,6 +148,44 @@ class BitmapDecoderTest {
         assertEquals(0xFFAAAAAA, bitmap.getPixel(1, 0));
         assertEquals(0xFF555555, bitmap.getPixel(2, 0));
         assertEquals(0xFF000000, bitmap.getPixel(3, 0));
+    }
+
+    @Test
+    void twoBitSystemPalettePixelsUseCompactIndicesDirectly() {
+        Bitmap bitmap = BitmapDecoder.decode(
+                new byte[] { (byte) 0b00011011 },
+                4,
+                1,
+                2,
+                Palette.SYSTEM_MAC_PALETTE,
+                true,
+                1200,
+                1
+        );
+
+        assertEquals(0xFFFFFFFF, bitmap.getPixel(0, 0));
+        assertEquals(0xFFFFFFCC, bitmap.getPixel(1, 0));
+        assertEquals(0xFFFFFF99, bitmap.getPixel(2, 0));
+        assertEquals(0xFFFFFF66, bitmap.getPixel(3, 0));
+    }
+
+    @Test
+    void fourBitSystemPalettePixelsUseCompactIndicesDirectly() {
+        Bitmap bitmap = BitmapDecoder.decode(
+                new byte[] { 0x05, (byte) 0xAF },
+                4,
+                1,
+                4,
+                Palette.SYSTEM_MAC_PALETTE,
+                true,
+                1200,
+                2
+        );
+
+        assertEquals(0xFFFFFFFF, bitmap.getPixel(0, 0));
+        assertEquals(0xFFFFFF00, bitmap.getPixel(1, 0));
+        assertEquals(0xFFFFCC33, bitmap.getPixel(2, 0));
+        assertEquals(0xFFFF9966, bitmap.getPixel(3, 0));
     }
 
     @Test

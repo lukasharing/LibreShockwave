@@ -11,6 +11,7 @@ import com.libreshockwave.player.cast.CastLib;
 import com.libreshockwave.player.cast.CastLibManager;
 import com.libreshockwave.player.cast.CastMember;
 import com.libreshockwave.player.render.SpriteRegistry;
+import com.libreshockwave.player.sprite.SpriteColorSource;
 import com.libreshockwave.player.sprite.SpriteState;
 
 import java.util.ArrayList;
@@ -237,6 +238,7 @@ public class StageRenderer {
         int width = pos.width();
         int height = pos.height();
         boolean visible = state.isVisible();
+        RegPoint reg = new RegPoint(0, 0);
 
         // External score casts can be demand-loaded. Consult CastLibManager
         // first so placeholder CASp data in the root movie does not mask the
@@ -254,7 +256,7 @@ public class StageRenderer {
 
         // Apply registration point offset (scaled for stretched sprites per ScummVM behavior)
         if (member != null) {
-            RegPoint reg = scaledRegPoint(
+            reg = scaledRegPoint(
                     member,
                     width,
                     height,
@@ -282,10 +284,13 @@ public class StageRenderer {
             channel, x, y, width, height, locZ, visible, type, member, null,
             state.hasForeColor() ? state.getForeColor() : data.resolvedForeColor(),
             state.hasBackColor() ? state.getBackColor() : data.resolvedBackColor(),
+            state.hasForeColor() ? state.getForeColorSource() : SpriteColorSource.forScoreColor(data.isForeColorRGB()),
+            state.hasBackColor() ? state.getBackColorSource() : SpriteColorSource.forScoreColor(data.isBackColorRGB()),
             state.hasForeColor(), state.hasBackColor(),
             state.getInk(), state.getBlend(),
             baseFlipH(state), state.isFlipV(),
             state.getRotation(), state.getSkew(),
+            reg.x(), reg.y(),
             null,
             state.hasScriptBehaviors()
         );
@@ -320,6 +325,7 @@ public class StageRenderer {
                         RenderSprite.SpriteType.SHAPE,
                         null, null,
                         fillColor, state.getBackColor(),
+                        state.getBackColorSource(), state.getBackColorSource(),
                         true, state.hasBackColor(),
                         0, state.getBlend(), // COPY ink for solid fill
                         state.isFlipH(), state.isFlipV(),
@@ -336,6 +342,7 @@ public class StageRenderer {
         int locZ = pos.locZ();
         int width = pos.width();
         int height = pos.height();
+        RegPoint reg = new RegPoint(0, 0);
 
         // Look up the cast member — try CastLibManager first for dynamic sprites,
         // since the castLib/castMember values are runtime numbers from the VM
@@ -360,12 +367,13 @@ public class StageRenderer {
                 height = liveRuntimeBitmap.getHeight();
             }
         }
+        boolean useRuntimeBitmapRegistration = usesRuntimeBitmapRegistration(dynamicMember);
 
         RenderSprite.SpriteType type = RenderSprite.SpriteType.UNKNOWN;
-        if (member != null) {
+        if (member != null && !useRuntimeBitmapRegistration) {
             type = determineSpriteTypeFromMember(member);
             // Apply registration point offset (scaled for stretched sprites)
-            RegPoint reg = scaledRegPoint(
+            reg = scaledRegPoint(
                     member,
                     width,
                     height,
@@ -386,7 +394,7 @@ public class StageRenderer {
         } else if (dynamicMember != null) {
             type = determineSpriteTypeFromDynamic(dynamicMember);
             // Apply registration point offset from dynamic member
-            RegPoint reg = mirroredDynamicRegPoint(
+            reg = mirroredDynamicRegPoint(
                     dynamicMember,
                     width,
                     height,
@@ -414,10 +422,12 @@ public class StageRenderer {
             state.isVisible(),
             type, member, dynamicMember,
             state.getForeColor(), state.getBackColor(),
+            state.getForeColorSource(), state.getBackColorSource(),
             state.hasForeColor(), state.hasBackColor(),
             state.getInk(), state.getBlend(),
             state.isFlipH() ^ state.isEffectiveMemberMirrored(), state.isFlipV(),
             state.getRotation(), state.getSkew(),
+            reg.x(), reg.y(),
             null,
             state.hasScriptBehaviors()
         );
@@ -430,6 +440,13 @@ public class StageRenderer {
                 && bitmap.isScriptModified()
                 && bitmap.getWidth() > 0
                 && bitmap.getHeight() > 0;
+    }
+
+    private static boolean usesRuntimeBitmapRegistration(CastMember member) {
+        return member != null
+                && member.getMemberType() == MemberType.BITMAP
+                && member.getBitmap() != null
+                && member.getBitmap().isScriptModified();
     }
 
     /**
@@ -492,10 +509,10 @@ public class StageRenderer {
             int bmpW = bi.width();
             int bmpH = bi.height();
             if (spriteWidth > 0 && bmpW > 0 && bmpW != spriteWidth) {
-                regX = regX * spriteWidth / bmpW;
+                regX = scaleRegistrationCoordinate(regX, spriteWidth, bmpW);
             }
             if (spriteHeight > 0 && bmpH > 0 && bmpH != spriteHeight) {
-                regY = regY * spriteHeight / bmpH;
+                regY = scaleRegistrationCoordinate(regY, spriteHeight, bmpH);
             }
             regX = mirrorOffset(regX, spriteWidth > 0 ? spriteWidth : bmpW, flipH);
             regY = mirrorOffset(regY, spriteHeight > 0 ? spriteHeight : bmpH, flipV);
@@ -512,6 +529,11 @@ public class StageRenderer {
         int regX = mirrorOffset(member.regPointX(), spriteWidth, flipH);
         int regY = mirrorOffset(member.regPointY(), spriteHeight, flipV);
         return new RegPoint(regX, regY);
+    }
+
+    private int scaleRegistrationCoordinate(int coordinate, int spriteSize, int bitmapSize) {
+        long scaled = (long) coordinate * spriteSize;
+        return (int) Math.round(scaled / (double) bitmapSize);
     }
 
     private RegPoint mirroredDynamicRegPoint(CastMember dynamicMember, int spriteWidth, int spriteHeight,
@@ -558,22 +580,16 @@ public class StageRenderer {
     /**
      * Resolve a score color value to RGB.
      * If the color is already RGB (colorFlag set), return it directly.
-     * Otherwise, treat it as a Director color number and look up through the default palette.
-     *
-     * Director's score foreColor/backColor bytes use inverted palette indexing:
-     * foreColor 0 = black (palette index 255), foreColor 255 = white (palette index 0).
-     * This is the standard Director color model for D5+ movies.
+     * Otherwise, treat it as a direct palette index in the default palette.
      */
     private int resolveScoreColor(int color, boolean isRGB) {
         if (isRGB) {
             return color;
         }
-        // Director color number → palette index (inverted mapping)
         if (color >= 0 && color <= 255 && file != null) {
             Palette palette = file.resolvePalette(-1); // Default palette
             if (palette != null) {
-                int paletteIndex = 255 - color;
-                return palette.getColor(paletteIndex);
+                return palette.getColor(color);
             }
         }
         return color;

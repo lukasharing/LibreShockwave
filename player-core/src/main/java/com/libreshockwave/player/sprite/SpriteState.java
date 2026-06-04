@@ -32,6 +32,8 @@ public class SpriteState {
     private int stretch = 0;
     private int foreColor = 0;
     private int backColor = 0xFFFFFF;
+    private SpriteColorSource foreColorSource = SpriteColorSource.PALETTE_INDEX;
+    private SpriteColorSource backColorSource = SpriteColorSource.RGB;
     private boolean hasForeColor = false;
     private boolean hasBackColor = false;
     private boolean hasSizeChanged = false;
@@ -93,6 +95,8 @@ public class SpriteState {
     public int getStretch() { return stretch; }
     public int getForeColor() { return foreColor; }
     public int getBackColor() { return backColor; }
+    public SpriteColorSource getForeColorSource() { return foreColorSource; }
+    public SpriteColorSource getBackColorSource() { return backColorSource; }
     public boolean hasForeColor() { return hasForeColor; }
     public boolean hasBackColor() { return hasBackColor; }
 
@@ -128,8 +132,25 @@ public class SpriteState {
         this.cursorMaskNum = mask;
         this.cursor = 0;
     }
-    public void setForeColor(int foreColor) { this.foreColor = foreColor; this.hasForeColor = true; }
-    public void setBackColor(int backColor) { this.backColor = backColor; this.hasBackColor = true; }
+    public void setForeColor(int foreColor) {
+        setForeColor(foreColor, SpriteColorSource.forLegacyExplicitColor(foreColor));
+    }
+
+    public void setForeColor(int foreColor, SpriteColorSource source) {
+        this.foreColor = foreColor;
+        this.foreColorSource = source != null ? source : SpriteColorSource.forLegacyExplicitColor(foreColor);
+        this.hasForeColor = true;
+    }
+
+    public void setBackColor(int backColor) {
+        setBackColor(backColor, SpriteColorSource.forLegacyExplicitColor(backColor));
+    }
+
+    public void setBackColor(int backColor, SpriteColorSource source) {
+        this.backColor = backColor;
+        this.backColorSource = source != null ? source : SpriteColorSource.forLegacyExplicitColor(backColor);
+        this.hasBackColor = true;
+    }
 
     public List<Datum> getScriptInstanceList() { return scriptInstanceList; }
     public boolean hasScriptBehaviors() { return !scriptInstanceList.isEmpty(); }
@@ -264,9 +285,11 @@ public class SpriteState {
         }
         if (!hasForeColor) {
             this.foreColor = data.resolvedForeColor();
+            this.foreColorSource = SpriteColorSource.forScoreColor(data.isForeColorRGB());
         }
         if (!hasBackColor) {
             this.backColor = data.resolvedBackColor();
+            this.backColorSource = SpriteColorSource.forScoreColor(data.isBackColorRGB());
         }
     }
 
@@ -296,9 +319,11 @@ public class SpriteState {
         }
         if (!hasForeColor) {
             this.foreColor = data.resolvedForeColor();
+            this.foreColorSource = SpriteColorSource.forScoreColor(data.isForeColorRGB());
         }
         if (!hasBackColor) {
             this.backColor = data.resolvedBackColor();
+            this.backColorSource = SpriteColorSource.forScoreColor(data.isBackColorRGB());
         }
     }
 
@@ -336,6 +361,8 @@ public class SpriteState {
         this.stretch = data.stretch();
         this.foreColor = data.resolvedForeColor();
         this.backColor = data.resolvedBackColor();
+        this.foreColorSource = SpriteColorSource.forScoreColor(data.isForeColorRGB());
+        this.backColorSource = SpriteColorSource.forScoreColor(data.isBackColorRGB());
         this.hasForeColor = false;
         this.hasBackColor = false;
         this.hasSizeChanged = false;

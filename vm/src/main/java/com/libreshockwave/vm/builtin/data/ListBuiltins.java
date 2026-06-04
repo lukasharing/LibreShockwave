@@ -37,7 +37,7 @@ public final class ListBuiltins {
         builtins.put("getpropat", ListBuiltins::getPropAt);
         builtins.put("findpos", ListBuiltins::findPos);
         builtins.put("getone", ListBuiltins::getOne);
-        builtins.put("getpos", ListBuiltins::getOne);
+        builtins.put("getpos", ListBuiltins::getPos);
         builtins.put("deleteone", ListBuiltins::deleteOne);
         builtins.put("sort", ListBuiltins::sort);
         builtins.put("listp", ListBuiltins::listP);
@@ -356,6 +356,38 @@ public final class ListBuiltins {
                 }
             }
         }
+        if (container instanceof Datum.PropList pl) {
+            for (Datum.PropEntry entry : pl.entries()) {
+                if (entry.value().lingoEquals(target)) {
+                    return entry.keyDatum().deepCopy();
+                }
+            }
+        }
+        return Datum.ZERO;
+    }
+
+    /**
+     * getPos(list, value) - Find position of value in list or propList (1-based).
+     */
+    private static Datum getPos(LingoVM vm, List<Datum> args) {
+        if (args.size() < 2) return Datum.ZERO;
+        Datum container = args.get(0);
+        Datum target = args.get(1);
+
+        if (container instanceof Datum.List l) {
+            for (int i = 0; i < l.items().size(); i++) {
+                if (l.items().get(i).lingoEquals(target)) {
+                    return Datum.of(i + 1);
+                }
+            }
+        }
+        if (container instanceof Datum.PropList pl) {
+            for (int i = 0; i < pl.size(); i++) {
+                if (pl.getValue(i).lingoEquals(target)) {
+                    return Datum.of(i + 1);
+                }
+            }
+        }
         return Datum.ZERO;
     }
 
@@ -371,6 +403,13 @@ public final class ListBuiltins {
             for (int i = 0; i < l.items().size(); i++) {
                 if (l.items().get(i).lingoEquals(target)) {
                     l.items().remove(i);
+                    break;
+                }
+            }
+        } else if (container instanceof Datum.PropList pl) {
+            for (int i = 0; i < pl.size(); i++) {
+                if (pl.getValue(i).lingoEquals(target)) {
+                    pl.removeAt(i);
                     break;
                 }
             }

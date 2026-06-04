@@ -161,17 +161,16 @@ public class BitmapDecoder {
         Bitmap bitmap = new Bitmap(width, height, 2);
         byte[] indices = new byte[width * height];
 
-        boolean scaleIndices = shouldScaleCompactPaletteIndices(palette);
-
         // Expand 2-bit data: each byte -> four palette indices.
-        // Built-in palettes use the full 0-255 range; authored CLUTs use raw slots 0-3.
+        // Director 2-bit pixels are compact indices 0-3. Only grayscale
+        // built-ins need a depth-aware spread across the full ramp.
         byte[] expanded = new byte[data.length * 4];
         for (int i = 0; i < data.length; i++) {
             int val = data[i] & 0xFF;
-            expanded[i * 4]     = (byte) compactPaletteIndex((val & 0xC0) >> 6, 3, scaleIndices);
-            expanded[i * 4 + 1] = (byte) compactPaletteIndex((val & 0x30) >> 4, 3, scaleIndices);
-            expanded[i * 4 + 2] = (byte) compactPaletteIndex((val & 0x0C) >> 2, 3, scaleIndices);
-            expanded[i * 4 + 3] = (byte) compactPaletteIndex(val & 0x03, 3, scaleIndices);
+            expanded[i * 4]     = (byte) compactPaletteIndex((val & 0xC0) >> 6, 3, palette);
+            expanded[i * 4 + 1] = (byte) compactPaletteIndex((val & 0x30) >> 4, 3, palette);
+            expanded[i * 4 + 2] = (byte) compactPaletteIndex((val & 0x0C) >> 2, 3, palette);
+            expanded[i * 4 + 3] = (byte) compactPaletteIndex(val & 0x03, 3, palette);
         }
 
         for (int y = 0; y < height; y++) {
@@ -192,21 +191,19 @@ public class BitmapDecoder {
     /**
      * Decode a 4-bit bitmap (16 colors).
      * Each byte contains two 4-bit palette indices.
-     * Nibble values are palette indices. Built-in palettes use the full
-     * 0-255 range; authored CLUT members store their 16-color ramps in slots
-     * 0-15 and must not be scaled.
+     * Nibble values are compact palette indices. Authored 16-color CLUTs use
+     * slots 0-15 directly; grayscale uses a depth-aware full-ramp spread.
      */
     public static Bitmap decode4Bit(byte[] data, int width, int height, int scanWidth, Palette palette) {
         Bitmap bitmap = new Bitmap(width, height, 4);
         byte[] indices = new byte[width * height];
-        boolean scaleIndices = shouldScaleCompactPaletteIndices(palette);
 
         // Expand 4-bit data: each byte -> two palette indices.
         byte[] expanded = new byte[data.length * 2];
         for (int i = 0; i < data.length; i++) {
             int val = data[i] & 0xFF;
-            expanded[i * 2] = (byte) compactPaletteIndex((val & 0xF0) >> 4, 15, scaleIndices);
-            expanded[i * 2 + 1] = (byte) compactPaletteIndex(val & 0x0F, 15, scaleIndices);
+            expanded[i * 2] = (byte) compactPaletteIndex((val & 0xF0) >> 4, 15, palette);
+            expanded[i * 2 + 1] = (byte) compactPaletteIndex(val & 0x0F, 15, palette);
         }
 
         for (int y = 0; y < height; y++) {
@@ -224,17 +221,8 @@ public class BitmapDecoder {
         return bitmap;
     }
 
-    private static boolean shouldScaleCompactPaletteIndices(Palette palette) {
-        return palette == null
-            || palette == Palette.SYSTEM_MAC_PALETTE
-            || palette == Palette.SYSTEM_WIN_PALETTE
-            || palette == Palette.RAINBOW_PALETTE
-            || palette == Palette.GRAYSCALE_PALETTE
-            || palette == Palette.METALLIC_PALETTE;
-    }
-
-    private static int compactPaletteIndex(int value, int maxValue, boolean scaleToFullPalette) {
-        if (!scaleToFullPalette) {
+    private static int compactPaletteIndex(int value, int maxValue, Palette palette) {
+        if (palette != Palette.GRAYSCALE_PALETTE) {
             return value;
         }
         return Math.round(value / (float) maxValue * 255.0f);

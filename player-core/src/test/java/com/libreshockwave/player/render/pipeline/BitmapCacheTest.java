@@ -7,6 +7,7 @@ import com.libreshockwave.chunks.CastMemberChunk;
 import com.libreshockwave.id.ChunkId;
 import com.libreshockwave.id.InkMode;
 import com.libreshockwave.player.cast.CastMember;
+import com.libreshockwave.player.sprite.SpriteColorSource;
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.opcode.dispatch.ImageMethodDispatcher;
 import org.junit.jupiter.api.Test;
@@ -47,26 +48,179 @@ class BitmapCacheTest {
         raw.setPaletteIndices(new byte[] {0, (byte) 128, (byte) 255});
 
         BitmapCache.IndexedMatteColorRemap remap = BitmapCache.resolveIndexedMatteColorRemap(
-                raw, InkMode.MATTE.code(), 0x000000, 0xFFFFFF, true, true, null);
+                raw, InkMode.MATTE.code(),
+                0x000000, SpriteColorSource.RGB,
+                0xFFFFFF, SpriteColorSource.RGB,
+                true, true, null);
 
         assertNull(remap);
     }
 
     @Test
-    void indexedMatteRemapUsesDirectForeColorAndResolvedBackColor() {
+    void indexedMatteScriptBackColorResolvesAsDirectPaletteIndex() {
+        Bitmap raw = new Bitmap(3, 1, 8, new int[] {
+                0xFFFFFFFF,
+                0xFFCCCCCC,
+                0xFF000000
+        });
+        raw.setPaletteIndices(new byte[] {0, (byte) 128, (byte) 255});
+        int[] colors = new int[256];
+        colors[0] = 0xFFFFFF;
+        colors[128] = 0xCCCCCC;
+        colors[255] = 0x000000;
+        Palette palette = new Palette(colors, "sprite-colors");
+
+        BitmapCache.IndexedMatteColorRemap remap = BitmapCache.resolveIndexedMatteColorRemap(
+                raw, InkMode.MATTE.code(),
+                0x000000, SpriteColorSource.RGB,
+                0, SpriteColorSource.PALETTE_INDEX,
+                false, true, palette);
+
+        assertNull(remap, "script-set bgColor paletteIndex(0) resolves to white");
+    }
+
+    @Test
+    void indexedMatteWithSpriteBackColorKeepsBlackOutlineTouchingEdge() {
+        Bitmap raw = new Bitmap(5, 5, 8, new int[] {
+                0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000,
+                0xFF000000, 0xFFFF6600, 0xFFFF6600, 0xFFFFFFFF, 0xFFFFFFFF,
+                0xFF000000, 0xFFFF6600, 0xFFFF6600, 0xFFFFFFFF, 0xFFFFFFFF,
+                0xFF000000, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
+                0xFF000000, 0xFF000000, 0xFF000000, 0xFFFFFFFF, 0xFFFFFFFF
+        });
+        raw.setPaletteIndices(new byte[] {
+                (byte) 255, (byte) 255, (byte) 255, (byte) 255, (byte) 255,
+                (byte) 255, 64, 64, 0, 0,
+                (byte) 255, 64, 64, 0, 0,
+                (byte) 255, 0, 0, 0, 0,
+                (byte) 255, (byte) 255, (byte) 255, 0, 0
+        });
+        int[] colors = new int[256];
+        colors[0] = 0xFFFFFF;
+        colors[64] = 0xFF6600;
+        colors[255] = 0x000000;
+        raw.setImagePalette(new Palette(colors, "director-colors"));
+        CastMember member = new CastMember(1, 10007, MemberType.BITMAP);
+        member.setBitmapDirectly(raw);
+
+        Bitmap processed = new BitmapCache().getProcessedDynamic(
+                member, InkMode.MATTE.code(), 0, SpriteColorSource.PALETTE_INDEX,
+                0, SpriteColorSource.RGB, false, true);
+
+        assertNotNull(processed);
+        assertEquals(0xFF000000, processed.getPixel(0, 0),
+                "explicit sprite bgColor must not key out black outline pixels");
+        assertEquals(0xFFFF6600, processed.getPixel(1, 1),
+                "visible artwork pixels must survive matte processing");
+        assertEquals(0x00000000, processed.getPixel(4, 1),
+                "script-set bgColor paletteIndex(0) keys white as the matte");
+        assertEquals(0x00000000, processed.getPixel(4, 4),
+                "edge-connected white backing should be transparent");
+    }
+
+    @Test
+    void indexedMatteFallsBackWhenExplicitBackColorIsNotOnEdge() {
+        Bitmap raw = new Bitmap(1, 1, 8, new int[] {0xFF000000});
+        raw.setPaletteIndices(new byte[] {(byte) 255});
+        int[] colors = new int[256];
+        colors[0] = 0xFFFFFF;
+        colors[255] = 0x000000;
+        raw.setImagePalette(new Palette(colors, "director-colors"));
+        CastMember member = new CastMember(1, 10017, MemberType.BITMAP);
+        member.setBitmapDirectly(raw);
+
+        Bitmap processed = new BitmapCache().getProcessedDynamic(
+                member, InkMode.MATTE.code(), 0, SpriteColorSource.PALETTE_INDEX,
+                0, SpriteColorSource.RGB, false, true);
+
+        assertNotNull(processed);
+        assertEquals(0x00000000, processed.getPixel(0, 0),
+                "a script bgColor that is absent from the edge must not block inferred matte removal");
+    }
+
+    @Test
+    void sameNumericBackColorDoesNotShareMatteCacheAcrossColorSources() {
+        Bitmap raw = new Bitmap(3, 1, 8, new int[] {
+                0xFFFFFFFF,
+                0xFFFF6600,
+                0xFF000000
+        });
+        raw.setPaletteIndices(new byte[] {0, 64, (byte) 255});
+        int[] colors = new int[256];
+        colors[0] = 0xFFFFFF;
+        colors[64] = 0xFF6600;
+        colors[255] = 0x000000;
+        raw.setImagePalette(new Palette(colors, "director-colors"));
+        CastMember member = new CastMember(1, 10008, MemberType.BITMAP);
+        member.setBitmapDirectly(raw);
+
+        BitmapCache cache = new BitmapCache();
+        Bitmap directPaletteIndex = cache.getProcessedDynamic(
+                member, InkMode.MATTE.code(), 0, SpriteColorSource.PALETTE_INDEX,
+                0, SpriteColorSource.RGB, false, true);
+        Bitmap directorColorNumber = cache.getProcessedDynamic(
+                member, InkMode.MATTE.code(), 0, SpriteColorSource.DIRECTOR_COLOR_NUMBER,
+                0, SpriteColorSource.RGB, false, true);
+
+        assertNotNull(directPaletteIndex);
+        assertNotNull(directorColorNumber);
+        assertEquals(0x00000000, directPaletteIndex.getPixel(0, 0),
+                "paletteIndex(0) keys palette slot 0, the white matte");
+        assertEquals(0xFF000000, directPaletteIndex.getPixel(2, 0),
+                "paletteIndex(0) must not key the black edge");
+        assertEquals(0xFF000000, directorColorNumber.getPixel(0, 0),
+                "Director color-number 0 is distinct from paletteIndex(0) and does not key palette slot 0");
+        assertEquals(0x00000000, directorColorNumber.getPixel(2, 0),
+                "Director color-number 0 keys palette slot 255");
+    }
+
+    @Test
+    void scoreBackColorZeroKeysPaletteZeroWhiteMatte() {
+        Bitmap raw = new Bitmap(3, 1, 8, new int[] {
+                0xFFFFFFFF,
+                0xFFFF6600,
+                0xFF000000
+        });
+        raw.setPaletteIndices(new byte[] {0, 64, (byte) 255});
+        int[] colors = new int[256];
+        colors[0] = 0xFFFFFF;
+        colors[64] = 0xFF6600;
+        colors[255] = 0x000000;
+        raw.setImagePalette(new Palette(colors, "score-colors"));
+        CastMember member = new CastMember(1, 10009, MemberType.BITMAP);
+        member.setBitmapDirectly(raw);
+
+        Bitmap processed = new BitmapCache().getProcessedDynamic(
+                member, InkMode.MATTE.code(), 0, SpriteColorSource.forScoreColor(false),
+                0, SpriteColorSource.forScoreColor(false), false, true);
+
+        assertNotNull(processed);
+        assertEquals(0x00000000, processed.getPixel(0, 0),
+                "score backColor 0 keys palette slot 0, the white matte backing");
+        assertEquals(0xFFFF6600, processed.getPixel(1, 0));
+        assertEquals(0xFF000000, processed.getPixel(2, 0),
+                "score backColor 0 must not erase black outline/content pixels");
+    }
+
+    @Test
+    void indexedMatteRemapUsesScriptBackColorPaletteIndex() {
         Bitmap raw = new Bitmap(3, 1, 8, new int[] {
                 0xFFFFFFFF,
                 0xFF7B5005,
                 0xFF000000
         });
         raw.setPaletteIndices(new byte[] {0, (byte) 128, (byte) 255});
-        Palette palette = new Palette(new int[] {
-                0xFFFFFFFF,
-                0xFF33CC66
-        }, "test-remap");
+        int[] colors = new int[256];
+        colors[0] = 0xFFFFFF;
+        colors[1] = 0x33CC66;
+        colors[255] = 0x000000;
+        Palette palette = new Palette(colors, "test-remap");
 
         BitmapCache.IndexedMatteColorRemap remap = BitmapCache.resolveIndexedMatteColorRemap(
-                raw, InkMode.MATTE.code(), 0x000000, 1, true, true, palette);
+                raw, InkMode.MATTE.code(),
+                0x000000, SpriteColorSource.RGB,
+                1, SpriteColorSource.PALETTE_INDEX,
+                true, true, palette);
 
         assertNotNull(remap);
         assertEquals(0x000000, remap.foreColor());
@@ -434,8 +588,11 @@ class BitmapCacheTest {
                 1, 0, 0, 3, 2, 0, true,
                 RenderSprite.SpriteType.BITMAP,
                 null, member,
-                0x000000, 0x33CC66, true, true,
-                8, 100, false, false, null, false
+                0x000000, 0x33CC66,
+                SpriteColorSource.RGB, SpriteColorSource.RGB,
+                true, true,
+                8, 100, false, false,
+                0.0, 0.0, null, false
         );
 
         SpriteBaker baker = new SpriteBaker(new BitmapCache(), null, null);

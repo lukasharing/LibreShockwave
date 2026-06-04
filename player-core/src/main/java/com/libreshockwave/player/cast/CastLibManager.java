@@ -40,6 +40,9 @@ public class CastLibManager implements CastLibProvider {
     private final DirectorFile file;
     private final Map<Integer, CastLib> castLibs = new LinkedHashMap<>();
     private final Map<Integer, Map<String, HandlerLocation>> handlerLookupCache = new HashMap<>();
+    private final Map<String, HandlerLocation> globalHandlerLookupCache = new HashMap<>();
+    private final Map<String, Datum> memberByNameLookupCache = new HashMap<>();
+    private final Map<String, Datum> registryMemberByNameLookupCache = new HashMap<>();
     private final Map<Integer, List<String>> scriptPropertyNamesCache = new HashMap<>();
     private boolean initialized = false;
 
@@ -393,19 +396,26 @@ public class CastLibManager implements CastLibProvider {
     public Datum getMemberByName(int castLibNumber, String memberName) {
         ensureInitialized();
         memberName = unquoteLingoStringLiteral(memberName);
+        String cacheKey = memberByNameCacheKey(castLibNumber, memberName);
+        if (memberByNameLookupCache.containsKey(cacheKey)) {
+            return memberByNameLookupCache.get(cacheKey);
+        }
+        Datum result = Datum.VOID;
         if (castLibNumber > 0) {
-            return getMemberByNameInCast(getCastLib(castLibNumber), memberName);
+            result = getMemberByNameInCast(getCastLib(castLibNumber), memberName);
         } else {
             for (CastLib castLib : castLibs.values()) {
                 MemberNameCandidate found = getMemberByNameCandidate(castForMemberLookup(castLib), memberName);
                 if (found == null) {
                     continue;
                 }
-                return found.ref();
+                result = found.ref();
+                break;
             }
         }
 
-        return Datum.VOID;
+        memberByNameLookupCache.put(cacheKey, result);
+        return result;
     }
 
     @Override
@@ -441,26 +451,37 @@ public class CastLibManager implements CastLibProvider {
     public Datum getRegistryMemberByName(int castLibNumber, String memberName) {
         ensureInitialized();
         memberName = unquoteLingoStringLiteral(memberName);
+        String cacheKey = memberByNameCacheKey(castLibNumber, memberName);
+        if (registryMemberByNameLookupCache.containsKey(cacheKey)) {
+            return registryMemberByNameLookupCache.get(cacheKey);
+        }
+        Datum result = Datum.VOID;
         if (castLibNumber > 0) {
             CastLib castLib = getCastLib(castLibNumber);
             if (!isRegistryVisibleCast(castLib)) {
-                return Datum.VOID;
+                registryMemberByNameLookupCache.put(cacheKey, result);
+                return result;
             }
-            return getRegistryMemberByNameInCast(castLib, memberName);
+            result = getRegistryMemberByNameInCast(castLib, memberName);
+        } else {
+            for (CastLib castLib : castLibs.values()) {
+                CastLib loadedCast = castForMemberLookup(castLib);
+                if (!isRegistryVisibleCast(loadedCast)) {
+                    continue;
+                }
+                Datum found = getRegistryMemberByNameInCast(loadedCast, memberName);
+                if (!found.isVoid()) {
+                    result = found;
+                    break;
+                }
+            }
         }
+        registryMemberByNameLookupCache.put(cacheKey, result);
+        return result;
+    }
 
-        Datum lastFound = Datum.VOID;
-        for (CastLib castLib : castLibs.values()) {
-            CastLib loadedCast = castForMemberLookup(castLib);
-            if (!isRegistryVisibleCast(loadedCast)) {
-                continue;
-            }
-            Datum found = getRegistryMemberByNameInCast(loadedCast, memberName);
-            if (!found.isVoid()) {
-                lastFound = found;
-            }
-        }
-        return lastFound;
+    private static String memberByNameCacheKey(int castLibNumber, String memberName) {
+        return castLibNumber + ":" + LingoVM.normalizeLookupName(memberName);
     }
 
     private static String unquoteLingoStringLiteral(String value) {
@@ -643,53 +664,87 @@ public class CastLibManager implements CastLibProvider {
         if (member == null) {
             return Datum.VOID;
         }
-        if ("duplicate".equalsIgnoreCase(methodName) && !args.isEmpty()) {
-            Datum targetArg = args.get(0);
-            Datum.CastMemberRef targetRef = null;
-
-            if (targetArg instanceof Datum.CastMemberRef cmr) {
-                targetRef = cmr;
-            } else if (targetArg.isInt() || targetArg.isFloat()) {
-                int slotValue = targetArg.toInt();
-                SlotId slotId = new SlotId(slotValue);
-                if (slotId.castLib() >= 1 && slotId.member() >= 1) {
-                    Datum decodedRef = Datum.CastMemberRef.of(slotId.castLib(), slotId.member());
-                    if (decodedRef instanceof Datum.CastMemberRef cmr) {
-                        targetRef = cmr;
-                    }
-                } else if (castLibNumber >= 1 && slotValue >= 1) {
-                    // Fallback for callers that pass a raw member number instead of member.number.
-                    Datum fallbackRef = Datum.CastMemberRef.of(castLibNumber, slotValue);
-                    if (fallbackRef instanceof Datum.CastMemberRef cmr) {
-                        targetRef = cmr;
-                    }
-                }
-            }
-
-            if (targetRef == null) {
-                return member.callMethod(methodName, args);
-            }
-
-            CastLib targetCastLib = getCastLib(targetRef.castLibNum());
-            if (targetCastLib == null) {
-                return Datum.VOID;
-            }
-            CastMember argumentMember = targetCastLib.getMember(targetRef.memberNum());
-            if (argumentMember == null) {
-                return Datum.VOID;
-            }
-            Palette receiverPalette = member.getPaletteData();
-            if (receiverPalette != null) {
-                argumentMember.setPaletteData(receiverPalette);
-                return targetArg;
-            }
-            Palette argumentPalette = argumentMember.getPaletteData();
-            if (argumentPalette != null) {
-                member.setPaletteData(argumentPalette);
-                return Datum.CastMemberRef.of(castLibNumber, memberNumber);
-            }
+        if ("duplicate".equalsIgnoreCase(methodName)) {
+            return duplicateMember(castLib, member, args);
         }
         return member.callMethod(methodName, args);
+    }
+
+    private Datum duplicateMember(CastLib sourceCastLib, CastMember sourceMember, java.util.List<Datum> args) {
+        if (sourceCastLib == null || sourceMember == null) {
+            return Datum.VOID;
+        }
+
+        Datum.CastMemberRef targetRef;
+        if (args == null || args.isEmpty()) {
+            CastMember targetMember = sourceCastLib.createDynamicMember(sourceMember.getMemberType().getName());
+            if (targetMember == null) {
+                return Datum.VOID;
+            }
+            Datum createdRef = Datum.CastMemberRef.of(sourceCastLib.getNumber(), targetMember.getMemberNumber());
+            if (!(createdRef instanceof Datum.CastMemberRef cmr)) {
+                return Datum.VOID;
+            }
+            targetRef = cmr;
+        } else {
+            targetRef = resolveDuplicateTargetRef(sourceCastLib.getNumber(), args.get(0));
+            if (targetRef == null) {
+                return sourceMember.callMethod("duplicate", args);
+            }
+        }
+
+        CastLib targetCastLib = getCastLib(targetRef.castLibNum());
+        if (targetCastLib == null) {
+            return Datum.VOID;
+        }
+        CastMember targetMember = targetCastLib.getMember(targetRef.memberNum());
+        if (targetMember == null) {
+            targetMember = targetCastLib.createDynamicMemberAt(
+                    targetRef.memberNum(), sourceMember.getMemberType());
+        }
+        if (targetMember == null) {
+            return Datum.VOID;
+        }
+
+        if (targetMember.copyMediaFrom(sourceMember)) {
+            return targetRef;
+        }
+
+        // Some legacy movies call duplicate() on an empty receiver while passing
+        // the real source member as the argument. Keep that compatibility after
+        // trying Director's documented source->target direction first.
+        if (args != null && !args.isEmpty()) {
+            CastMember argumentMember = targetCastLib.getMember(targetRef.memberNum());
+            if (argumentMember != null && sourceMember.copyMediaFrom(argumentMember)) {
+                return Datum.CastMemberRef.of(sourceMember.getCastLibNumber(), sourceMember.getMemberNumber());
+            }
+        }
+        return Datum.VOID;
+    }
+
+    private static Datum.CastMemberRef resolveDuplicateTargetRef(int sourceCastLibNumber, Datum targetArg) {
+        if (targetArg instanceof Datum.CastMemberRef cmr) {
+            return cmr;
+        }
+        if (targetArg == null || (!targetArg.isInt() && !targetArg.isFloat())) {
+            return null;
+        }
+
+        int slotValue = targetArg.toInt();
+        SlotId slotId = new SlotId(slotValue);
+        if (slotId.castLib() >= 1 && slotId.member() >= 1) {
+            Datum decodedRef = Datum.CastMemberRef.of(slotId.castLib(), slotId.member());
+            if (decodedRef instanceof Datum.CastMemberRef cmr) {
+                return cmr;
+            }
+        }
+        if (sourceCastLibNumber >= 1 && slotValue >= 1) {
+            Datum fallbackRef = Datum.CastMemberRef.of(sourceCastLibNumber, slotValue);
+            if (fallbackRef instanceof Datum.CastMemberRef cmr) {
+                return cmr;
+            }
+        }
+        return null;
     }
 
     /**
@@ -764,7 +819,7 @@ public class CastLibManager implements CastLibProvider {
             }
             CastMemberChunk chunk = castLib.findMemberByNumber(memberNumber);
             if (chunk != null && chunk.file() != null) {
-                return chunk.file().resolvePaletteByMemberNumber(memberNumber);
+                return chunk.file().resolvePaletteByMemberNumberExact(memberNumber);
             }
         }
         // Fallback: search all cast libs
@@ -783,7 +838,7 @@ public class CastLibManager implements CastLibProvider {
             }
             CastMemberChunk chunk = cl.findMemberByNumber(memberNumber);
             if (chunk != null && chunk.file() != null) {
-                return chunk.file().resolvePaletteByMemberNumber(memberNumber);
+                return chunk.file().resolvePaletteByMemberNumberExact(memberNumber);
             }
         }
         return null;
@@ -1342,7 +1397,7 @@ public class CastLibManager implements CastLibProvider {
             if (chunk != null && chunk.file() != null) {
                 int memberNum = castLib.getMemberNumber(chunk);
                 com.libreshockwave.bitmap.Palette pal =
-                        memberNum > 0 ? chunk.file().resolvePaletteByMemberNumber(memberNum) : null;
+                        memberNum > 0 ? chunk.file().resolvePaletteByMemberNumberExact(memberNum) : null;
                 if (pal != null) {
                     if (firstMatch == null) {
                         firstMatch = pal;
@@ -1385,7 +1440,7 @@ public class CastLibManager implements CastLibProvider {
         }
         com.libreshockwave.chunks.CastMemberChunk chunk = castLib.findMemberByNumber(memberNum);
         if (chunk != null && chunk.file() != null) {
-            return chunk.file().resolvePaletteByMemberNumber(memberNum);
+            return chunk.file().resolvePaletteByMemberNumberExact(memberNum);
         }
         return null;
     }
@@ -1538,6 +1593,11 @@ public class CastLibManager implements CastLibProvider {
     public HandlerLocation findHandler(String handlerName) {
         ensureInitialized();
 
+        String normalizedHandlerName = LingoVM.normalizeLookupName(handlerName);
+        if (globalHandlerLookupCache.containsKey(normalizedHandlerName)) {
+            return globalHandlerLookupCache.get(normalizedHandlerName);
+        }
+
         for (CastLib castLib : castLibs.values()) {
             if (!castLib.isLoaded()) {
                 // Only search loaded casts - don't trigger lazy load for handler search
@@ -1545,9 +1605,6 @@ public class CastLibManager implements CastLibProvider {
             }
 
             var defaultNames = castLib.getScriptNames();
-            if (defaultNames == null) {
-                continue;
-            }
 
             for (var script : castLib.getAllScripts()) {
                 if (!isGlobalHandlerScriptType(script.getScriptType())) {
@@ -1555,13 +1612,19 @@ public class CastLibManager implements CastLibProvider {
                 }
                 // Use per-script Lnam (each Lctx has its own lnamSectionId)
                 var scriptNames = getPerScriptNames(script, defaultNames);
+                if (scriptNames == null) {
+                    continue;
+                }
                 var handler = script.findHandler(handlerName, scriptNames);
                 if (handler != null) {
-                    return new HandlerLocation(castLib.getNumber(), script, handler, scriptNames);
+                    HandlerLocation location = new HandlerLocation(castLib.getNumber(), script, handler, scriptNames);
+                    globalHandlerLookupCache.put(normalizedHandlerName, location);
+                    return location;
                 }
             }
         }
 
+        globalHandlerLookupCache.put(normalizedHandlerName, null);
         return null;
     }
 
@@ -1682,6 +1745,9 @@ public class CastLibManager implements CastLibProvider {
 
     public void clearHandlerLookupCache() {
         handlerLookupCache.clear();
+        globalHandlerLookupCache.clear();
+        memberByNameLookupCache.clear();
+        registryMemberByNameLookupCache.clear();
         scriptPropertyNamesCache.clear();
     }
 

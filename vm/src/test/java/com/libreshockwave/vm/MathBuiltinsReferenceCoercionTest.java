@@ -55,6 +55,17 @@ class MathBuiltinsReferenceCoercionTest {
     }
 
     @Test
+    void paletteIndexPreservesDirectorStarHexIntegerValue() {
+        LingoVM vm = new LingoVM(null);
+
+        Datum whiteInteger = vm.callHandler("integer", List.of(Datum.of("*ffffff")));
+        Datum whitePalette = vm.callHandler("paletteIndex", List.of(whiteInteger));
+
+        assertTrue(whitePalette instanceof Datum.PaletteIndexColor);
+        assertEquals(0xFFFFFF, ((Datum.PaletteIndexColor) whitePalette).index());
+    }
+
+    @Test
     void integerAndPaletteIndexCoerceJavaNullArgumentsLikeVoid() {
         LingoVM vm = new LingoVM(null);
         ArrayList<Datum> args = new ArrayList<>();

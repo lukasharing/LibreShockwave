@@ -139,7 +139,7 @@ class InkProcessorTest {
     }
 
     @Test
-    void backgroundTransparentKeysOpaqueBorderColorEvenWithNativeAlpha() {
+    void backgroundTransparentUsesNativeAlphaEvenWhenBorderIsOpaqueWhite() {
         Bitmap src = new Bitmap(3, 2, 32, new int[] {
             0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
             0x00000000, 0xFF336699, 0x00000000
@@ -149,7 +149,7 @@ class InkProcessorTest {
         Bitmap result = InkProcessor.applyInk(src, InkMode.BACKGROUND_TRANSPARENT,
                 0xFFFFFF, true, null);
 
-        assertEquals(0x00000000, result.getPixel(0, 0));
+        assertEquals(0xFFFFFFFF, result.getPixel(0, 0));
         assertEquals(0xFF336699, result.getPixel(1, 1));
     }
 
@@ -201,6 +201,22 @@ class InkProcessorTest {
         assertEquals(0xFFFFFFFF, result.getPixel(0, 0));
         assertEquals(0x40000000, result.getPixel(1, 0));
         assertEquals(0x00FFFFFF, result.getPixel(2, 0));
+    }
+
+    @Test
+    void matteSkipsWhiteFloodFillForOpaqueNativeAlpha32BitImages() {
+        Bitmap src = new Bitmap(2, 1, 32, new int[] {
+            0xFFFFFFFF,
+            0xFF000000
+        });
+        src.setNativeAlpha(true);
+
+        int matte = InkProcessor.resolveMatteColor(src, InkMode.MATTE, 0, true, null);
+        Bitmap result = InkProcessor.applyInk(src, InkMode.MATTE, 0, true, null);
+
+        assertEquals(-1, matte);
+        assertEquals(0xFFFFFFFF, result.getPixel(0, 0));
+        assertEquals(0xFF000000, result.getPixel(1, 0));
     }
 
     @Test
@@ -316,7 +332,7 @@ class InkProcessorTest {
     }
 
     @Test
-    void matteUsesDominantIndexedEdgeColorAndPreservesInteriorWhiteContent() {
+    void matteDoesNotInferNonZeroDominantIndexedEdgeAsBackground() {
         Bitmap src = new Bitmap(4, 4, 8, new int[] {
             0xFFFFCC00, 0xFFFFCC00, 0xFFFFCC00, 0xFFFFCC00,
             0xFFFFCC00, 0xFFFFFFFF, 0xFFCCCCCC, 0xFFFFCC00,
@@ -332,12 +348,37 @@ class InkProcessorTest {
 
         Bitmap result = InkProcessor.applyInk(src, InkMode.MATTE, 0, false, null);
 
-        assertEquals(0x00000000, result.getPixel(0, 0));
+        assertEquals(0xFFFFCC00, result.getPixel(0, 0));
         assertEquals(0xFFFFFFFF, result.getPixel(1, 1));
         assertEquals(0xFFCCCCCC, result.getPixel(2, 1));
         assertEquals(0xFF000000, result.getPixel(1, 2));
         assertEquals(0xFFFFFFFF, result.getPixel(2, 2));
-        assertEquals(0x00000000, result.getPixel(3, 3));
+        assertEquals(0xFFFFCC00, result.getPixel(3, 3));
+    }
+
+    @Test
+    void matteInfersNonZeroWhiteIndexedEdgeAsBackground() {
+        Bitmap src = new Bitmap(5, 5, 8, new int[] {
+            0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
+            0xFFFFFFFF, 0xFF224466, 0xFF224466, 0xFF224466, 0xFFFFFFFF,
+            0xFFFFFFFF, 0xFF224466, 0xFFFFFFFF, 0xFF224466, 0xFFFFFFFF,
+            0xFFFFFFFF, 0xFF224466, 0xFF224466, 0xFF224466, 0xFFFFFFFF,
+            0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+        });
+        src.setPaletteIndices(new byte[] {
+            17, 17, 17, 17, 17,
+            17, 7, 7, 7, 17,
+            17, 7, 0, 7, 17,
+            17, 7, 7, 7, 17,
+            17, 17, 17, 17, 17
+        });
+
+        Bitmap result = InkProcessor.applyInk(src, InkMode.MATTE, 0, false, null);
+
+        assertEquals(0x00000000, result.getPixel(0, 0));
+        assertEquals(0xFF224466, result.getPixel(1, 1));
+        assertEquals(0xFFFFFFFF, result.getPixel(2, 2));
+        assertEquals(0x00000000, result.getPixel(4, 4));
     }
 
     @Test

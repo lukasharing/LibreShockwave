@@ -5,6 +5,7 @@ import com.libreshockwave.chunks.CastMemberChunk;
 import com.libreshockwave.id.ChannelId;
 import com.libreshockwave.id.InkMode;
 import com.libreshockwave.player.cast.CastMember;
+import com.libreshockwave.player.sprite.SpriteColorSource;
 
 /**
  * Represents a sprite to be rendered on the stage.
@@ -24,6 +25,8 @@ public final class RenderSprite {
     private final CastMember dynamicMember; // For runtime-created members (window system, etc.)
     private final int foreColor;
     private final int backColor;
+    private final SpriteColorSource foreColorSource;
+    private final SpriteColorSource backColorSource;
     private final boolean hasForeColor;
     private final boolean hasBackColor;
     private final InkMode inkMode;
@@ -32,6 +35,8 @@ public final class RenderSprite {
     private final boolean flipV;
     private final double rotation;
     private final double skew;
+    private final int registrationX;
+    private final int registrationY;
     private final Bitmap bakedBitmap;
     private final boolean hasBehaviors;
 
@@ -77,10 +82,81 @@ public final class RenderSprite {
             CastMemberChunk castMember,
             CastMember dynamicMember,
             int foreColor, int backColor,
+            SpriteColorSource foreColorSource, SpriteColorSource backColorSource,
+            boolean hasForeColor, boolean hasBackColor,
+            int ink, int blend,
+            boolean flipH, boolean flipV,
+            Bitmap bakedBitmap,
+            boolean hasBehaviors) {
+        this(channel, x, y, width, height, locZ, visible, type, castMember, dynamicMember,
+                foreColor, backColor, foreColorSource, backColorSource,
+                hasForeColor, hasBackColor, ink, blend, flipH, flipV, 0.0, 0.0, 0, 0,
+                bakedBitmap, hasBehaviors);
+    }
+
+    public RenderSprite(
+            int channel,
+            int x, int y,
+            int width, int height,
+            int locZ,
+            boolean visible,
+            SpriteType type,
+            CastMemberChunk castMember,
+            CastMember dynamicMember,
+            int foreColor, int backColor,
             boolean hasForeColor, boolean hasBackColor,
             int ink, int blend,
             boolean flipH, boolean flipV,
             double rotation, double skew,
+            Bitmap bakedBitmap,
+            boolean hasBehaviors) {
+        this(channel, x, y, width, height, locZ, visible, type, castMember, dynamicMember,
+                foreColor, backColor,
+                hasForeColor ? SpriteColorSource.forLegacyExplicitColor(foreColor) : SpriteColorSource.forLegacyScoreColor(foreColor),
+                hasBackColor ? SpriteColorSource.forLegacyExplicitColor(backColor) : SpriteColorSource.forLegacyScoreColor(backColor),
+                hasForeColor, hasBackColor, ink, blend, flipH, flipV, rotation, skew, 0, 0,
+                bakedBitmap, hasBehaviors);
+    }
+
+    public RenderSprite(
+            int channel,
+            int x, int y,
+            int width, int height,
+            int locZ,
+            boolean visible,
+            SpriteType type,
+            CastMemberChunk castMember,
+            CastMember dynamicMember,
+            int foreColor, int backColor,
+            SpriteColorSource foreColorSource, SpriteColorSource backColorSource,
+            boolean hasForeColor, boolean hasBackColor,
+            int ink, int blend,
+            boolean flipH, boolean flipV,
+            double rotation, double skew,
+            Bitmap bakedBitmap,
+            boolean hasBehaviors) {
+        this(channel, x, y, width, height, locZ, visible, type, castMember, dynamicMember,
+                foreColor, backColor, foreColorSource, backColorSource,
+                hasForeColor, hasBackColor, ink, blend, flipH, flipV, rotation, skew,
+                0, 0, bakedBitmap, hasBehaviors);
+    }
+
+    public RenderSprite(
+            int channel,
+            int x, int y,
+            int width, int height,
+            int locZ,
+            boolean visible,
+            SpriteType type,
+            CastMemberChunk castMember,
+            CastMember dynamicMember,
+            int foreColor, int backColor,
+            SpriteColorSource foreColorSource, SpriteColorSource backColorSource,
+            boolean hasForeColor, boolean hasBackColor,
+            int ink, int blend,
+            boolean flipH, boolean flipV,
+            double rotation, double skew,
+            int registrationX, int registrationY,
             Bitmap bakedBitmap,
             boolean hasBehaviors) {
         this.channelId = new ChannelId(channel);
@@ -95,6 +171,8 @@ public final class RenderSprite {
         this.dynamicMember = dynamicMember;
         this.foreColor = foreColor;
         this.backColor = backColor;
+        this.foreColorSource = foreColorSource != null ? foreColorSource : SpriteColorSource.forLegacyScoreColor(foreColor);
+        this.backColorSource = backColorSource != null ? backColorSource : SpriteColorSource.forLegacyScoreColor(backColor);
         this.hasForeColor = hasForeColor;
         this.hasBackColor = hasBackColor;
         this.inkMode = InkMode.fromCode(ink);
@@ -103,6 +181,8 @@ public final class RenderSprite {
         this.flipV = flipV;
         this.rotation = rotation;
         this.skew = skew;
+        this.registrationX = registrationX;
+        this.registrationY = registrationY;
         this.bakedBitmap = bakedBitmap;
         this.hasBehaviors = hasBehaviors;
     }
@@ -120,6 +200,8 @@ public final class RenderSprite {
     public CastMember getDynamicMember() { return dynamicMember; }
     public int getForeColor() { return foreColor; }
     public int getBackColor() { return backColor; }
+    public SpriteColorSource getForeColorSource() { return foreColorSource; }
+    public SpriteColorSource getBackColorSource() { return backColorSource; }
     public boolean hasForeColor() { return hasForeColor; }
     public boolean hasBackColor() { return hasBackColor; }
     public InkMode getInkMode() { return inkMode; }
@@ -129,6 +211,8 @@ public final class RenderSprite {
     public boolean isFlipV() { return flipV; }
     public double getRotation() { return rotation; }
     public double getSkew() { return skew; }
+    public int getRegistrationX() { return registrationX; }
+    public int getRegistrationY() { return registrationY; }
     public Bitmap getBakedBitmap() { return bakedBitmap; }
     public boolean hasBehaviors() { return hasBehaviors; }
 
@@ -146,8 +230,10 @@ public final class RenderSprite {
      */
     public RenderSprite withBakedBitmap(Bitmap baked) {
         return new RenderSprite(channelId.value(), x, y, width, height, locZ, visible, type,
-            castMember, dynamicMember, foreColor, backColor, hasForeColor, hasBackColor,
-            inkMode.code(), blend, flipH, flipV, rotation, skew, baked, hasBehaviors);
+            castMember, dynamicMember, foreColor, backColor, foreColorSource, backColorSource,
+            hasForeColor, hasBackColor,
+            inkMode.code(), blend, flipH, flipV, rotation, skew, registrationX, registrationY,
+            baked, hasBehaviors);
     }
 
     /**
@@ -157,8 +243,10 @@ public final class RenderSprite {
      */
     public RenderSprite withBakedBitmapAndSize(Bitmap baked, int newWidth, int newHeight) {
         return new RenderSprite(channelId.value(), x, y, newWidth, newHeight, locZ, visible, type,
-            castMember, dynamicMember, foreColor, backColor, hasForeColor, hasBackColor,
-            inkMode.code(), blend, flipH, flipV, rotation, skew, baked, hasBehaviors);
+            castMember, dynamicMember, foreColor, backColor, foreColorSource, backColorSource,
+            hasForeColor, hasBackColor,
+            inkMode.code(), blend, flipH, flipV, rotation, skew, registrationX, registrationY,
+            baked, hasBehaviors);
     }
 
     private static int normalizeTransformAngle(double angle) {

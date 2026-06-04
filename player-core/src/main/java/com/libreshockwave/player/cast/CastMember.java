@@ -123,6 +123,8 @@ public class CastMember {
     private boolean textWordWrap = false;
     private boolean textAntialias = false;
     private int textAntiAliasThreshold = 14;
+    private boolean textKerning = true;
+    private int textKerningThreshold = 14;
     private int textBoxType = 0; // 0 = adjust to fit, 1 = fixed
     private int textRectLeft = 0;
     private int textRectTop = 0;
@@ -248,7 +250,7 @@ public class CastMember {
 
             // Fallback for same-file palettes when no cross-cast resolver is installed.
             if (palette == null && paletteRefMemberNum >= 1) {
-                palette = sourceFile.resolvePaletteByMemberNumber(paletteRefMemberNum);
+                palette = sourceFile.resolvePaletteByMemberNumberExact(paletteRefMemberNum);
             }
 
             if (palette != null) {
@@ -275,7 +277,7 @@ public class CastMember {
                 }
             }
             if (sourceFile != null) {
-                com.libreshockwave.bitmap.Palette resolved = sourceFile.resolvePaletteByMemberNumber(cmr.memberNum());
+                com.libreshockwave.bitmap.Palette resolved = sourceFile.resolvePaletteByMemberNumberExact(cmr.memberNum());
                 if (resolved != null) {
                     return new ResolvedPalette(resolved, cmr.castLibNum(), cmr.memberNum(), null);
                 }
@@ -506,6 +508,9 @@ public class CastMember {
         String nextName = newName != null ? newName : "";
         this.name = nextName;
         this.nameExplicitlySet = true;
+        if (bitmap != null) {
+            bitmap.setDebugOwnerName(nextName);
+        }
     }
 
     private boolean isRuntimeDynamicMember() {
@@ -593,7 +598,8 @@ public class CastMember {
         if (text == null || text.isEmpty()) return 0;
         return textRenderer.locToCharPos(text, localX, localY,
                 textFont, textFontSize, textFontStyle, effectiveTextLineAdvance(),
-                getTextAlignmentForWidth(fieldWidth), fieldWidth);
+                getTextAlignmentForWidth(fieldWidth), fieldWidth,
+                textKerning, textKerningThreshold);
     }
 
     public String getTextAlignment() { return textAlignment; }
@@ -824,7 +830,7 @@ public class CastMember {
             return dynamicPalette;
         }
         if (sourceFile != null && memberType == MemberType.PALETTE) {
-            return sourceFile.resolvePaletteByMemberNumber(memberId.value());
+            return sourceFile.resolvePaletteByMemberNumberExact(memberId.value());
         }
         return null;
     }
@@ -958,6 +964,8 @@ public class CastMember {
             case "wordwrap" -> Datum.of(textWordWrap ? 1 : 0);
             case "antialias" -> Datum.of(textAntialias ? 1 : 0);
             case "antialiasthreshold" -> Datum.of(textAntiAliasThreshold);
+            case "kerning" -> Datum.of(textKerning ? 1 : 0);
+            case "kerningthreshold" -> Datum.of(textKerningThreshold);
             case "boxtype" -> Datum.of(textBoxType);
             case "fixedlinespace" -> Datum.of(textFixedLineSpace);
             case "lineheight" -> Datum.of(effectiveTextLineAdvance());
@@ -1074,7 +1082,9 @@ public class CastMember {
                     textFontStyle,
                     textFixedLineSpace,
                     "left",
-                    0);
+                    0,
+                    textKerning,
+                    textKerningThreshold);
             maxWidth = Math.max(maxWidth, loc[0] + 2);
         }
         return maxWidth;
@@ -1104,7 +1114,8 @@ public class CastMember {
                 textFont, textFontSize, textFontStyle,
                 alignment, textColor, bgColor,
                 textWordWrap, effectiveTextAntialias(),
-                textFixedLineSpace, textTopSpacing);
+                textFixedLineSpace, textTopSpacing,
+                textKerning, textKerningThreshold);
         textRenderedImageScriptMutated = false;
         attachTextImageMutationCallback(textRenderedImage);
         if (textRenderedImage != null && ((((bgColor >>> 24) & 0xFF) < 0xFF)
@@ -1133,6 +1144,7 @@ public class CastMember {
         if (bitmap == null) {
             return;
         }
+        bitmap.setDebugOwnerName(name);
         bitmap.setMutationCallback(this::notifyMemberVisualChanged);
     }
 
@@ -1259,7 +1271,7 @@ public class CastMember {
         return false;
     }
 
-    private boolean copyMediaFrom(CastMember source) {
+    boolean copyMediaFrom(CastMember source) {
         if (source == null) {
             return false;
         }
@@ -1277,6 +1289,8 @@ public class CastMember {
             this.textWordWrap = source.textWordWrap;
             this.textAntialias = source.textAntialias;
             this.textAntiAliasThreshold = source.textAntiAliasThreshold;
+            this.textKerning = source.textKerning;
+            this.textKerningThreshold = source.textKerningThreshold;
             this.textBoxType = source.textBoxType;
             this.textRectLeft = source.textRectLeft;
             this.textRectTop = source.textRectTop;
@@ -1436,6 +1450,18 @@ public class CastMember {
                 notifyMemberVisualChanged();
                 return true;
             }
+            case "kerning" -> {
+                this.textKerning = value.toInt() != 0;
+                textImageDirty = true;
+                notifyMemberVisualChanged();
+                return true;
+            }
+            case "kerningthreshold" -> {
+                this.textKerningThreshold = Math.max(0, value.toInt());
+                textImageDirty = true;
+                notifyMemberVisualChanged();
+                return true;
+            }
             case "boxtype" -> {
                 this.textBoxType = textBoxTypeFromDatum(value);
                 textImageDirty = true;
@@ -1573,10 +1599,34 @@ public class CastMember {
         String text = getTextContent();
         int length = text != null ? text.length() : 0;
         if (!coversWholeTextRange(chunkType, start, end, length)) {
+            if ("fontstyle".equals(prop)) {
+                return applyPartialTextFontStyle(value);
+            }
             return true;
         }
 
         return setTextProp(prop, value);
+    }
+
+    private boolean applyPartialTextFontStyle(Datum value) {
+        boolean[] requested = new boolean[3];
+        collectFontStyle(value, requested);
+        if (!requested[0] && !requested[1]) {
+            return true;
+        }
+
+        boolean[] current = new boolean[3];
+        collectFontStyle(Datum.of(textFontStyle), current);
+        current[0] |= requested[0];
+        current[1] |= requested[1];
+        StringBuilder out = new StringBuilder();
+        appendFontStyle(out, current[0], "bold");
+        appendFontStyle(out, current[1], "italic");
+        appendFontStyle(out, current[2], "underline");
+        textFontStyle = out.length() > 0 ? out.toString() : "plain";
+        textImageDirty = true;
+        notifyMemberVisualChanged();
+        return true;
     }
 
     public Datum getTextRangeProp(String chunkType, int start, int end, String propName) {
@@ -1748,6 +1798,8 @@ public class CastMember {
         textWordWrap = false;
         textAntialias = false;
         textAntiAliasThreshold = 14;
+        textKerning = true;
+        textKerningThreshold = 14;
         textBoxType = 0;
         textRectLeft = 0;
         textRectTop = 0;
@@ -1824,7 +1876,8 @@ public class CastMember {
                 int fieldWidth = Math.max(1, textRectRight - textRectLeft);
                 int[] pos = textRenderer.charPosToLoc(text, charIndex,
                         textFont, textFontSize, textFontStyle, effectiveTextLineAdvance(),
-                        getTextAlignmentForWidth(fieldWidth), fieldWidth);
+                        getTextAlignmentForWidth(fieldWidth), fieldWidth,
+                        textKerning, textKerningThreshold);
                 yield new Datum.Point(pos[0], pos[1]);
             }
             case "count" -> {

@@ -119,7 +119,6 @@ public final class ImageMethodDispatcher {
                 }
                 Bitmap trimmed = bmp.getRegion(bounds[0], bounds[1],
                         bounds[2] - bounds[0], bounds[3] - bounds[1]);
-                trimmed.clearAnchorPoint();
                 yield new Datum.ImageRef(trimmed);
             }
             case "creatematte" -> {
@@ -171,7 +170,7 @@ public final class ImageMethodDispatcher {
     public static void setProperty(Datum.ImageRef imageRef, String propName, Datum value) {
         Bitmap bmp = imageRef.bitmap();
         switch (propName.toLowerCase()) {
-            case "paletteref" -> {
+            case "paletteref", "palette" -> {
                 ResolvedPalette resolved = resolvePaletteFromDatum(value, bmp);
                 if (resolved != null && resolved.palette() != null) {
                     bmp.remapImagePalette(resolved.palette());
@@ -740,7 +739,9 @@ public final class ImageMethodDispatcher {
                 mask = maskRef.bitmap();
             }
             maskOffset = maskOffsetFromPropList(pl);
-            Datum paletteDatum = getPropIgnoreCase(pl, "paletteRef", "paletteref", "PaletteRef");
+            Datum paletteDatum = getPropIgnoreCase(pl,
+                    "paletteRef", "paletteref", "PaletteRef",
+                    "palette", "Palette");
             if (!paletteDatum.isVoid()) {
                 copyPaletteRef = resolvePaletteFromDatum(paletteDatum);
             }
@@ -748,6 +749,10 @@ public final class ImageMethodDispatcher {
 
         if (copyPaletteRef != null && copyPaletteRef.palette() != null) {
             src = copyWithPaletteRef(src, copyPaletteRef);
+        }
+        if (src.hasNativeMatteAlpha()) {
+            mask = null;
+            maskOffset = new MaskOffset(0, 0);
         }
 
         int srcW = srcRect.right() - srcRect.left();
@@ -874,9 +879,7 @@ public final class ImageMethodDispatcher {
             effectiveInk = Palette.InkMode.COPY;
         }
         if (effectiveInk == Palette.InkMode.BACKGROUND_TRANSPARENT
-                && src.hasNativeMatteAlpha()
-                && !hasOpaqueBackgroundKeyBorder(effectiveSrc, effectiveSrcX, effectiveSrcY, srcW, srcH,
-                        backgroundKeyRgb(backgroundKey))) {
+                && effectiveSrc.hasNativeMatteAlpha()) {
             effectiveInk = Palette.InkMode.COPY;
         }
         if (effectiveInk == Palette.InkMode.DARKEN) {
@@ -1160,6 +1163,10 @@ public final class ImageMethodDispatcher {
             }
             maskOffset = maskOffsetFromPropList(props);
         }
+        if (src.hasNativeMatteAlpha()) {
+            mask = null;
+            maskOffset = new MaskOffset(0, 0);
+        }
 
         // Map Director's quad orientation back into source-space coordinates.
         // This covers identity, flips, and 90-degree rotations.
@@ -1169,7 +1176,10 @@ public final class ImageMethodDispatcher {
         Bitmap transformedMask = mask != null ? new Bitmap(destW, destH, mask.getBitDepth()) : null;
         if (transformedMask != null) {
             transformedMask.copyPaletteMetadataFrom(mask);
-            transformedMask.setNativeAlpha(mask.isNativeAlpha());
+            transformedMask.setNativeAlpha(true);
+        }
+        if (src.isTextRenderedImage()) {
+            transformed.markTextRenderedImage(src.getTextRenderBackgroundColor());
         }
         byte[] srcPaletteIndices = src.getPaletteIndicesUnsafe();
         byte[] transformedIndices = srcPaletteIndices != null ? new byte[destW * destH] : null;
@@ -1207,24 +1217,22 @@ public final class ImageMethodDispatcher {
                     }
                     int maskX = srcX - maskOffset.x();
                     int maskY = srcY - maskOffset.y();
-                    if (transformedMask != null
-                            && maskX >= 0 && maskX < mask.getWidth()
-                            && maskY >= 0 && maskY < mask.getHeight()) {
-                        transformedMask.setPixel(x, y, mask.getPixel(maskX, maskY));
-                    }
+                    setTransformedMaskPixel(transformedMask, mask, x, y, maskX, maskY);
                 }
             }
         } else {
-            // Fallback to the previous behaviour for quads that are not simple
-            // axis-aligned rectangle transforms.
-            boolean flipH = px[0] > px[1];
-            boolean flipV = py[0] > py[3];
+            transformed.setNativeAlpha(true);
             for (int y = 0; y < destH; y++) {
+                double worldY = minY + y + 0.5;
                 for (int x = 0; x < destW; x++) {
-                    int srcX = flipH ? (srcW - 1 - (x * srcW / destW)) : (x * srcW / destW);
-                    int srcY = flipV ? (srcH - 1 - (y * srcH / destH)) : (y * srcH / destH);
-                    srcX += srcRect.left();
-                    srcY += srcRect.top();
+                    double worldX = minX + x + 0.5;
+                    NormalizedQuadPoint uv = mapPointInQuad(worldX, worldY, px, py);
+                    if (uv == null) {
+                        continue;
+                    }
+
+                    int srcX = srcRect.left() + clamp((int) Math.floor(uv.u() * srcW), 0, srcW - 1);
+                    int srcY = srcRect.top() + clamp((int) Math.floor(uv.v() * srcH), 0, srcH - 1);
                     if (srcX >= 0 && srcX < src.getWidth() && srcY >= 0 && srcY < src.getHeight()) {
                         transformed.setPixel(x, y, src.getPixel(srcX, srcY));
                         if (transformedIndices != null) {
@@ -1233,11 +1241,7 @@ public final class ImageMethodDispatcher {
                     }
                     int maskX = srcX - maskOffset.x();
                     int maskY = srcY - maskOffset.y();
-                    if (transformedMask != null
-                            && maskX >= 0 && maskX < mask.getWidth()
-                            && maskY >= 0 && maskY < mask.getHeight()) {
-                        transformedMask.setPixel(x, y, mask.getPixel(maskX, maskY));
-                    }
+                    setTransformedMaskPixel(transformedMask, mask, x, y, maskX, maskY);
                 }
             }
         }
@@ -1255,6 +1259,68 @@ public final class ImageMethodDispatcher {
         }
 
         return copyPixels(dest, transformedArgs);
+    }
+
+    private record NormalizedQuadPoint(double u, double v) {}
+
+    private static NormalizedQuadPoint mapPointInQuad(double x, double y, int[] px, int[] py) {
+        double[] first = barycentric(x, y,
+                px[0], py[0],
+                px[1], py[1],
+                px[2], py[2]);
+        if (first != null) {
+            double u = first[1] + first[2];
+            double v = first[2];
+            return new NormalizedQuadPoint(u, v);
+        }
+
+        double[] second = barycentric(x, y,
+                px[0], py[0],
+                px[2], py[2],
+                px[3], py[3]);
+        if (second != null) {
+            double u = second[1];
+            double v = second[1] + second[2];
+            return new NormalizedQuadPoint(u, v);
+        }
+        return null;
+    }
+
+    private static double[] barycentric(double px, double py,
+                                        double ax, double ay,
+                                        double bx, double by,
+                                        double cx, double cy) {
+        double v0x = bx - ax;
+        double v0y = by - ay;
+        double v1x = cx - ax;
+        double v1y = cy - ay;
+        double v2x = px - ax;
+        double v2y = py - ay;
+        double den = (v0x * v1y) - (v1x * v0y);
+        if (Math.abs(den) < 0.000001) {
+            return null;
+        }
+        double b = ((v2x * v1y) - (v1x * v2y)) / den;
+        double c = ((v0x * v2y) - (v2x * v0y)) / den;
+        double a = 1.0 - b - c;
+        double epsilon = -0.000001;
+        if (a < epsilon || b < epsilon || c < epsilon) {
+            return null;
+        }
+        return new double[] {a, b, c};
+    }
+
+    private static void setTransformedMaskPixel(Bitmap transformedMask, Bitmap mask,
+                                                int destX, int destY,
+                                                int maskX, int maskY) {
+        if (transformedMask == null || mask == null) {
+            return;
+        }
+        int alpha = Drawing.maskAlphaAt(mask, maskX, maskY);
+        if (alpha <= 0) {
+            return;
+        }
+        transformedMask.setPixel(destX, destY, (alpha << 24) | 0x00FFFFFF);
     }
 
     private static Datum.PropList transformedQuadProps(Datum.PropList props, Bitmap transformedMask) {
@@ -1850,7 +1916,6 @@ public final class ImageMethodDispatcher {
         if (w <= 0 || h <= 0) return Datum.VOID;
 
         Bitmap cropped = bmp.getRegion(rect.left(), rect.top(), w, h);
-        cropped.clearAnchorPoint();
         return new Datum.ImageRef(cropped);
     }
 

@@ -11,6 +11,7 @@ import com.libreshockwave.player.cast.CastLibManager;
 import com.libreshockwave.player.cast.CastMember;
 import com.libreshockwave.player.debug.LifecycleDiagnostics;
 import com.libreshockwave.player.render.SpriteRegistry;
+import com.libreshockwave.player.sprite.SpriteColorSource;
 import com.libreshockwave.player.sprite.SpriteState;
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.builtin.sprite.SpritePropertyProvider;
@@ -54,7 +55,7 @@ public class SpriteProperties implements SpritePropertyProvider {
                 case "visible" -> Datum.of(0);
                 case "loch", "locv", "width", "height", "left", "top", "ink",
                      "castnum", "membernum", "blend", "stretch", "locz",
-                     "forecolor", "backcolor" -> Datum.ZERO;
+                     "forecolor", "backcolor", "color", "bgcolor" -> Datum.ZERO;
                 case "loc" -> new Datum.Point(0, 0);
                 case "rect" -> new Datum.Rect(0, 0, 0, 0);
                 case "spritenum" -> Datum.of(spriteNum);
@@ -79,8 +80,8 @@ public class SpriteProperties implements SpritePropertyProvider {
             case "ink" -> Datum.of(sprite.getInk());
             case "blend" -> Datum.of(sprite.getBlend());
             case "stretch" -> Datum.of(sprite.getStretch());
-            case "forecolor" -> Datum.of(sprite.getForeColor());
-            case "backcolor" -> Datum.of(sprite.getBackColor());
+            case "forecolor", "color" -> Datum.of(sprite.getForeColor());
+            case "backcolor", "bgcolor" -> Datum.of(sprite.getBackColor());
             case "left" -> {
                 bounds = resolveSpriteBounds(sprite);
                 yield Datum.of(bounds.left());
@@ -344,13 +345,15 @@ public class SpriteProperties implements SpritePropertyProvider {
             }
             case "forecolor" -> {
                 if (!value.isVoid()) {
-                    sprite.setForeColor(coerceColorValue(value));
+                    SpriteColor color = coerceSpriteColor(value);
+                    sprite.setForeColor(color.value(), color.source());
                 }
                 return true;
             }
             case "backcolor" -> {
                 if (!value.isVoid()) {
-                    sprite.setBackColor(coerceColorValue(value));
+                    SpriteColor color = coerceSpriteColor(value);
+                    sprite.setBackColor(color.value(), color.source());
                 }
                 return true;
             }
@@ -381,13 +384,15 @@ public class SpriteProperties implements SpritePropertyProvider {
             }
             case "color" -> {
                 if (!value.isVoid()) {
-                    sprite.setForeColor(coerceColorValue(value));
+                    SpriteColor color = coerceSpriteColor(value);
+                    sprite.setForeColor(color.value(), color.source());
                 }
                 return true;
             }
             case "bgcolor" -> {
                 if (!value.isVoid()) {
-                    sprite.setBackColor(coerceColorValue(value));
+                    SpriteColor color = coerceSpriteColor(value);
+                    sprite.setBackColor(color.value(), color.source());
                 }
                 return true;
             }
@@ -474,14 +479,23 @@ public class SpriteProperties implements SpritePropertyProvider {
         return assignMember(sprite, value, true);
     }
 
-    private static int coerceColorValue(Datum value) {
+    private record SpriteColor(int value, SpriteColorSource source) {}
+
+    private static SpriteColor coerceSpriteColor(Datum value) {
         if (value instanceof Datum.Color c) {
-            return (c.r() << 16) | (c.g() << 8) | c.b();
+            return new SpriteColor(
+                    ((c.r() & 0xFF) << 16) | ((c.g() & 0xFF) << 8) | (c.b() & 0xFF),
+                    SpriteColorSource.RGB);
         }
         if (value instanceof Datum.PaletteIndexColor p) {
-            return p.index() & 0xFF;
+            if (p.index() > 255) {
+                return new SpriteColor(p.index() & 0xFFFFFF, SpriteColorSource.RGB);
+            }
+            return new SpriteColor(p.index() & 0xFF, SpriteColorSource.PALETTE_INDEX);
         }
-        return value.toInt();
+        int numeric = value.toInt();
+        return new SpriteColor(numeric,
+                numeric > 255 ? SpriteColorSource.RGB : SpriteColorSource.PALETTE_INDEX);
     }
 
     private static void applyEmptyMemberOverride(SpriteState sprite) {

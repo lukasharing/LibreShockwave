@@ -26,6 +26,18 @@ public interface TextRenderer {
                       boolean wordWrap, boolean antialias,
                       int fixedLineSpace, int topSpacing);
 
+    default Bitmap renderText(String text, int width, int height,
+                              String fontName, int fontSize, String fontStyle,
+                              String alignment, int textColor, int bgColor,
+                              boolean wordWrap, boolean antialias,
+                              int fixedLineSpace, int topSpacing,
+                              boolean kerning, int kerningThreshold) {
+        return renderText(text, width, height,
+                fontName, fontSize, fontStyle,
+                alignment, textColor, bgColor,
+                wordWrap, antialias, fixedLineSpace, topSpacing);
+    }
+
     /**
      * Compute the pixel position of a character in text.
      * Used for Director's charPosToLoc() method.
@@ -36,6 +48,15 @@ public interface TextRenderer {
                        String fontName, int fontSize, String fontStyle,
                        int fixedLineSpace, String alignment, int fieldWidth);
 
+    default int[] charPosToLoc(String text, int charIndex,
+                               String fontName, int fontSize, String fontStyle,
+                               int fixedLineSpace, String alignment, int fieldWidth,
+                               boolean kerning, int kerningThreshold) {
+        return charPosToLoc(text, charIndex,
+                fontName, fontSize, fontStyle,
+                fixedLineSpace, alignment, fieldWidth);
+    }
+
     /**
      * Compute the character index at a given pixel position in text.
      * Inverse of charPosToLoc(). Used for mouse click → caret placement.
@@ -45,6 +66,15 @@ public interface TextRenderer {
     int locToCharPos(String text, int x, int y,
                      String fontName, int fontSize, String fontStyle,
                      int fixedLineSpace, String alignment, int fieldWidth);
+
+    default int locToCharPos(String text, int x, int y,
+                             String fontName, int fontSize, String fontStyle,
+                             int fixedLineSpace, String alignment, int fieldWidth,
+                             boolean kerning, int kerningThreshold) {
+        return locToCharPos(text, x, y,
+                fontName, fontSize, fontStyle,
+                fixedLineSpace, alignment, fieldWidth);
+    }
 
     /**
      * Get the line height for text rendering.

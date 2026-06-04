@@ -109,7 +109,7 @@ public final class StringBuiltins {
         Datum.PropList props = new Datum.PropList();
         int start = 0;
         while (start <= source.length()) {
-            int end = source.indexOf(delimiter, start);
+            int end = findDelimiter(source, delimiter, start);
             if (end < 0) {
                 end = source.length();
             }
@@ -119,9 +119,32 @@ public final class StringBuiltins {
             if (end == source.length()) {
                 break;
             }
-            start = end + delimiter.length();
+            start = end + delimiterWidth(source, delimiter, end);
         }
         return props;
+    }
+
+    private static int findDelimiter(String source, String delimiter, int start) {
+        if ("\r".equals(delimiter)) {
+            for (int i = start; i < source.length(); i++) {
+                char ch = source.charAt(i);
+                if (ch == '\r' || ch == '\n') {
+                    return i;
+                }
+            }
+            return -1;
+        }
+        return source.indexOf(delimiter, start);
+    }
+
+    private static int delimiterWidth(String source, String delimiter, int index) {
+        if ("\r".equals(delimiter)
+                && source.charAt(index) == '\r'
+                && index + 1 < source.length()
+                && source.charAt(index + 1) == '\n') {
+            return 2;
+        }
+        return delimiter.length();
     }
 
     private static void addPropertyItem(Datum.PropList props, String rawItem, LingoVM vm) {

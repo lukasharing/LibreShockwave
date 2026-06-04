@@ -31,7 +31,7 @@ public final class MemberRegistryMethodDispatcher {
             return NOT_HANDLED;
         }
 
-        switch (methodName.toLowerCase(Locale.ROOT)) {
+        switch (LingoVM.normalizeLookupName(methodName)) {
             case "getmemnum", "exists", "memberexists", "getmember" -> {
                 Datum.PropList registry = getRegistry(instance);
                 if (registry != null) {
@@ -50,7 +50,33 @@ public final class MemberRegistryMethodDispatcher {
             return NOT_HANDLED;
         }
 
-        String method = methodName.toLowerCase(Locale.ROOT);
+        return dispatchNormalized(instance, LingoVM.normalizeLookupName(methodName), args);
+    }
+
+    static DispatchResult prefillNormalized(Datum.ScriptInstance instance, String method, List<Datum> args) {
+        if (method == null || method.isEmpty()) {
+            return NOT_HANDLED;
+        }
+
+        switch (method) {
+            case "getmemnum", "exists", "memberexists", "getmember" -> {
+                Datum.PropList registry = getRegistry(instance);
+                if (registry != null) {
+                    resolveRegisteredMemberSlot(instance, registry, args, true);
+                }
+                return NOT_HANDLED;
+            }
+            default -> {
+                return NOT_HANDLED;
+            }
+        }
+    }
+
+    static DispatchResult dispatchNormalized(Datum.ScriptInstance instance, String method, List<Datum> args) {
+        if (method == null || method.isEmpty()) {
+            return NOT_HANDLED;
+        }
+
         return switch (method) {
             case "getmemnum", "exists", "memberexists", "getmember", "readaliasindexesfromfield" -> {
                 Datum.PropList registry = getRegistry(instance);

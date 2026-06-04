@@ -123,6 +123,48 @@ class StageRendererRegPointFlipTest {
     }
 
     @Test
+    void scriptModifiedRuntimeBitmapRegPointOverridesStaticChunkRegistration() throws Exception {
+        CastMember dynamicMember = new CastMember(1, 10000, MemberType.BITMAP);
+        Bitmap liveBitmap = new Bitmap(100, 30, 32);
+        liveBitmap.setAnchorPoint(50, 30);
+        liveBitmap.markScriptModified();
+        dynamicMember.setProp("image", new Datum.ImageRef(liveBitmap));
+        dynamicMember.setProp("regPoint", new Datum.Point(50, 30));
+
+        byte[] staleSpecificData = bitmapSpecificData(100, 30, 0, 0);
+        CastMemberChunk staleChunk = new CastMemberChunk(
+                null,
+                new ChunkId(78),
+                MemberType.BITMAP,
+                0,
+                staleSpecificData.length,
+                new byte[0],
+                staleSpecificData,
+                "runtime_overridden",
+                0,
+                0,
+                0
+        );
+
+        StageRenderer renderer = new StageRenderer(newEmptyDirectorFile());
+        renderer.setCastLibManager(new StubCastLibManager(dynamicMember, staleChunk));
+
+        SpriteState state = new SpriteState(9);
+        state.setDynamicMember(1, 10000);
+        state.setLocH(300);
+        state.setLocV(120);
+        state.setWidth(100);
+        state.setHeight(30);
+
+        Method method = StageRenderer.class.getDeclaredMethod("createDynamicRenderSprite", SpriteState.class);
+        method.setAccessible(true);
+        RenderSprite sprite = (RenderSprite) method.invoke(renderer, state);
+
+        assertEquals(250, sprite.getX());
+        assertEquals(90, sprite.getY());
+    }
+
+    @Test
     void legacyDirectorMoviesRoundStretchedBitmapRegistrationScale() throws Exception {
         StageRenderer renderer = new StageRenderer(newDirectorFileWithVersion(1600));
         CastMemberChunk member = bitmapMember(rendererFile(renderer), bitmapSpecificData(214, 2, 0, 1));
@@ -133,13 +175,13 @@ class StageRendererRegPointFlipTest {
     }
 
     @Test
-    void modernDirectorMoviesTruncateStretchedBitmapRegistrationScale() throws Exception {
+    void modernDirectorMoviesRoundStretchedBitmapRegistrationScale() throws Exception {
         StageRenderer renderer = new StageRenderer(newDirectorFileWithVersion(1858));
         CastMemberChunk member = bitmapMember(rendererFile(renderer), bitmapSpecificData(214, 2, 0, 1));
 
         Object scaled = invokeScaledRegPoint(renderer, member, 214, 67, false, false);
 
-        assertEquals(33, regY(scaled));
+        assertEquals(34, regY(scaled));
     }
 
     private static Object invokeScaledRegPoint(StageRenderer renderer, CastMemberChunk member,
@@ -217,15 +259,21 @@ class StageRendererRegPointFlipTest {
 
     private static final class StubCastLibManager extends CastLibManager {
         private final CastMember dynamicMember;
+        private final CastMemberChunk staticMember;
 
         private StubCastLibManager(CastMember dynamicMember) {
+            this(dynamicMember, null);
+        }
+
+        private StubCastLibManager(CastMember dynamicMember, CastMemberChunk staticMember) {
             super(null, null);
             this.dynamicMember = dynamicMember;
+            this.staticMember = staticMember;
         }
 
         @Override
         public CastMemberChunk getCastMember(int castLibNumber, int memberNumber) {
-            return null;
+            return castLibNumber == 1 && memberNumber == 10000 ? staticMember : null;
         }
 
         @Override

@@ -387,12 +387,14 @@ public class LingoVM {
         if (cached != null) {
             return cached;
         }
-        if (missingHandlerCache.contains(cacheKey)) {
+        CastLibProvider provider = CastLibProvider.getProvider();
+        boolean cachedMissing = missingHandlerCache.contains(cacheKey);
+        if (cachedMissing && provider == null) {
             return null;
         }
 
         // First search the main file
-        if (file != null) {
+        if (!cachedMissing && file != null) {
             for (ScriptChunk script : file.getScripts()) {
                 if (!isGlobalHandlerScriptType(script.getScriptType())) {
                     continue;
@@ -407,7 +409,6 @@ public class LingoVM {
         }
 
         // Then search external cast libraries via CastLibProvider
-        var provider = com.libreshockwave.vm.builtin.cast.CastLibProvider.getProvider();
         if (provider != null) {
             var location = provider.findHandler(handlerName);
             if (location != null && location.script() instanceof ScriptChunk script

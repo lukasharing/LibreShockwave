@@ -346,6 +346,31 @@ public class ScriptModifiedBitmapTest {
     }
 
     @Test
+    void backgroundTransparentPaletteIndexBgColorKeysOnlyThatSourceIndex() {
+        Palette palette = new Palette(new int[] {0xFFFFFF, 0x336699, 0x336699}, "duplicate-rgb");
+        Bitmap src = new Bitmap(2, 1, 8);
+        src.setImagePalette(palette);
+        src.fillRectPaletteIndex(0, 0, 1, 1, 1, 0xFF336699);
+        src.fillRectPaletteIndex(1, 0, 1, 1, 2, 0xFF336699);
+
+        Bitmap dest = new Bitmap(2, 1, 32);
+        dest.fill(0xFFCCCCCC);
+
+        Datum.PropList props = new Datum.PropList();
+        props.add("ink", Datum.of(36), true);
+        props.add("bgColor", new Datum.PaletteIndexColor(1), true);
+
+        ImageMethodDispatcher.dispatch(new Datum.ImageRef(dest), "copyPixels",
+                List.of(new Datum.ImageRef(src), new Datum.Rect(0, 0, 2, 1),
+                        new Datum.Rect(0, 0, 2, 1), props));
+
+        assertEquals(0xFFCCCCCC, dest.getPixel(0, 0),
+                "palette-index bgColor should key only the matching source index");
+        assertEquals(0xFF336699, dest.getPixel(1, 0),
+                "a different source index with the same RGB must remain visible");
+    }
+
+    @Test
     void backgroundTransparentCopyPixelsInfersGrayscaleTextBackgroundKey() {
         Bitmap dest = new Bitmap(3, 3, 32);
         dest.fill(0xFFAF8349);
@@ -440,7 +465,7 @@ public class ScriptModifiedBitmapTest {
     }
 
     @Test
-    void backgroundTransparentCopyPixelsKeysOpaqueWhiteMatteBorderOnNativeAlphaSource() {
+    void backgroundTransparentCopyPixelsPreservesOpaqueWhiteWhenSourceUsesNativeAlpha() {
         Bitmap dest = new Bitmap(7, 5, 32);
         dest.fill(0xFF99CC33);
 
@@ -461,10 +486,10 @@ public class ScriptModifiedBitmapTest {
                 List.of(new Datum.ImageRef(src), new Datum.Rect(0, 0, 7, 5),
                         new Datum.Rect(0, 0, 7, 5), props));
 
-        assertEquals(0xFF99CC33, dest.getPixel(0, 0),
-                "Opaque white matte borders should key out under ink 36");
-        assertEquals(0xFF99CC33, dest.getPixel(1, 1),
-                "Opaque white matte interiors should key out under ink 36");
+        assertEquals(0xFFFFFFFF, dest.getPixel(0, 0),
+                "Native alpha sources copy opaque white instead of using ink 36's color key");
+        assertEquals(0xFFFFFFFF, dest.getPixel(1, 1),
+                "Native alpha sources copy opaque white interiors instead of using ink 36's color key");
         assertEquals(0xFF000000, dest.getPixel(2, 2),
                 "Black arrow pixels should still copy");
         assertEquals(0xFFF0F0F0, dest.getPixel(3, 3),
@@ -753,7 +778,7 @@ public class ScriptModifiedBitmapTest {
     }
 
     @Test
-    void copyPixelsCombinesMaskImageWithNativeAlphaSource() {
+    void copyPixelsIgnoresMaskImageWhenSourceUsesNativeAlpha() {
         Bitmap dest = new Bitmap(1, 1, 32);
         dest.fill(0xFFFFFFFF);
 
@@ -770,8 +795,8 @@ public class ScriptModifiedBitmapTest {
                 List.of(new Datum.ImageRef(src), new Datum.Rect(0, 0, 1, 1),
                         new Datum.Rect(0, 0, 1, 1), props));
 
-        assertEquals(0xFFFFFFFF, dest.getPixel(0, 0),
-                "Explicit #maskImage should still clip native-alpha sources");
+        assertEquals(0xFF7F7F7F, dest.getPixel(0, 0),
+                "Native source alpha takes precedence over explicit #maskImage");
     }
 
     @Test

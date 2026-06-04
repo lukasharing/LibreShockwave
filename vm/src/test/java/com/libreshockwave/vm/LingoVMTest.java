@@ -627,6 +627,52 @@ class LingoVMTest {
     }
 
     @Test
+    void externalProviderCanSatisfyHandlerAfterEarlierMissingLookup() {
+        LingoVM vm = new LingoVM(null);
+        assertNull(vm.findHandler("lateHandler"));
+
+        ScriptChunk.Handler handler = new ScriptChunk.Handler(
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                List.of(),
+                List.of(),
+                List.of(),
+                Map.of());
+        ScriptChunk script = new ScriptChunk(
+                null,
+                new ChunkId(31),
+                ScriptChunk.ScriptType.MOVIE_SCRIPT,
+                0,
+                List.of(handler),
+                List.of(),
+                List.of(),
+                List.of(),
+                new byte[0]);
+
+        CastLibProvider.setProvider(new NoOpCastLibProvider() {
+            @Override
+            public CastLibProvider.HandlerLocation findHandler(String handlerName) {
+                if ("lateHandler".equalsIgnoreCase(handlerName)) {
+                    return new CastLibProvider.HandlerLocation(2, script, handler, null);
+                }
+                return null;
+            }
+        });
+        try {
+            assertNotNull(vm.findHandler("lateHandler"),
+                    "a handler miss cached before external casts are visible must not mask provider scripts");
+        } finally {
+            CastLibProvider.clearProvider();
+        }
+    }
+
+    @Test
     void handlerTimeoutCanBeDisabledForDeterministicStepLimitedRuntimes() {
         LingoVM vm = new LingoVM(null);
 
@@ -1247,6 +1293,16 @@ class LingoVMTest {
         assertEquals(255, ((Datum.Color) result).r());
         assertEquals(128, ((Datum.Color) result).g());
         assertEquals(0, ((Datum.Color) result).b());
+    }
+
+    @Test
+    void singleArgumentColorReturnsDirectPaletteIndex() {
+        LingoVM vm = new LingoVM(null);
+
+        Datum result = vm.callHandler("color", List.of(Datum.of(137)));
+
+        assertTrue(result instanceof Datum.PaletteIndexColor);
+        assertEquals(137, ((Datum.PaletteIndexColor) result).index());
     }
 
     @Test

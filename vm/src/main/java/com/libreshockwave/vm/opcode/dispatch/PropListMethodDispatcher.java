@@ -108,10 +108,32 @@ public final class PropListMethodDispatcher {
                 }
                 yield Datum.ZERO;
             }
+            case "getpos" -> {
+                // getPos(propList, value) - find the ordinal position where the value matches
+                if (args.isEmpty()) yield Datum.ZERO;
+                Datum searchValue = args.get(0);
+                for (int i = 0; i < propList.size(); i++) {
+                    if (propList.getValue(i).lingoEquals(searchValue)) {
+                        yield Datum.of(i + 1);
+                    }
+                }
+                yield Datum.ZERO;
+            }
             case "deleteprop" -> {
                 if (args.isEmpty()) yield Datum.VOID;
                 Datum keyDatum = args.get(0);
                 removeTypedKey(propList, keyDatum);
+                yield Datum.VOID;
+            }
+            case "deleteone" -> {
+                if (args.isEmpty()) yield Datum.VOID;
+                Datum searchValue = args.get(0);
+                for (int i = 0; i < propList.size(); i++) {
+                    if (propList.getValue(i).lingoEquals(searchValue)) {
+                        propList.removeAt(i);
+                        break;
+                    }
+                }
                 yield Datum.VOID;
             }
             case "findpos" -> {

@@ -7,6 +7,7 @@ import com.libreshockwave.player.cast.CastLib;
 import com.libreshockwave.player.cast.CastLibManager;
 import com.libreshockwave.player.cast.CastMember;
 import com.libreshockwave.player.render.SpriteRegistry;
+import com.libreshockwave.player.sprite.SpriteColorSource;
 import com.libreshockwave.player.sprite.SpriteState;
 import com.libreshockwave.vm.datum.Datum;
 import org.junit.jupiter.api.Test;
@@ -18,6 +19,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -84,6 +86,8 @@ class SpritePropertiesLifecycleTest {
         SpriteState state = registry.get(17);
         assertEquals(0x123456, state.getForeColor());
         assertEquals(0xABCDEF, state.getBackColor());
+        assertEquals(0x123456, props.getSpriteProp(17, "color").toInt());
+        assertEquals(0xABCDEF, props.getSpriteProp(17, "bgColor").toInt());
     }
 
     @Test
@@ -97,6 +101,18 @@ class SpritePropertiesLifecycleTest {
         SpriteState state = registry.get(17);
         assertEquals(17, state.getForeColor());
         assertEquals(42, state.getBackColor());
+    }
+
+    @Test
+    void starHexPaletteIndexSpriteColorActsAsPackedRgb() {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteProperties props = new SpriteProperties(registry);
+
+        assertTrue(props.setSpriteProp(17, "bgColor", new Datum.PaletteIndexColor(0xFFFFFF)));
+
+        SpriteState state = registry.get(17);
+        assertEquals(0xFFFFFF, state.getBackColor());
+        assertEquals(SpriteColorSource.RGB, state.getBackColorSource());
     }
 
     @Test
@@ -480,6 +496,26 @@ class SpritePropertiesLifecycleTest {
         assertFalse(state.hasForeColor());
         assertFalse(state.hasBackColor());
         assertEquals(1, registry.getRevision());
+    }
+
+    @Test
+    void spriteColorPropertiesPreserveDirectorColorSource() {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteProperties props = new SpriteProperties(registry);
+
+        assertTrue(props.setSpriteProp(7, "bgColor", new Datum.PaletteIndexColor(0)));
+        SpriteState state = registry.get(7);
+        assertNotNull(state);
+        assertEquals(0, state.getBackColor());
+        assertEquals(SpriteColorSource.PALETTE_INDEX, state.getBackColorSource());
+
+        assertTrue(props.setSpriteProp(7, "bgColor", Datum.of(0)));
+        assertEquals(0, state.getBackColor());
+        assertEquals(SpriteColorSource.PALETTE_INDEX, state.getBackColorSource());
+
+        assertTrue(props.setSpriteProp(7, "bgColor", new Datum.Color(0, 0, 0)));
+        assertEquals(0, state.getBackColor());
+        assertEquals(SpriteColorSource.RGB, state.getBackColorSource());
     }
 
     @Test

@@ -119,18 +119,22 @@ public class FontRegistry {
         BitmapFont cached = rasterizedCache.get(cacheKey);
         if (cached != null) return cached;
 
-        // TTF rasterizer from PFR-converted TTF (pure Java — works on both desktop and WASM)
+        Pfr1Font parsed = parsedFonts.get(key);
+
+        // TTF rasterizer from PFR-converted TTF (pure Java — works on both desktop and WASM).
+        // Director's fontSize is a nominal type size, not permission to pick or
+        // synthesize a horizontally condensed strike to fit the field rectangle.
         byte[] ttfBytes = ttfCache.get(key);
         if (ttfBytes != null) {
-            BitmapFont rasterized = TtfBitmapRasterizer.rasterize(ttfBytes, fontSize, fontName);
+            BitmapFont rasterized = TtfBitmapRasterizer.rasterizeEmbeddedPfr(
+                    ttfBytes, fontSize, fontSize, fontName);
             if (rasterized != null) {
                 rasterizedCache.put(cacheKey, rasterized);
                 return rasterized;
             }
         }
 
-        // PFR1 direct rasterization
-        Pfr1Font parsed = parsedFonts.get(key);
+        // PFR1 direct rasterization fallback.
         if (parsed != null) {
             BitmapFont rasterized = BitmapFont.fromPfr1(parsed, fontSize);
             if (rasterized != null) {

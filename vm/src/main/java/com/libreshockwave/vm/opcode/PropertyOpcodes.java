@@ -844,7 +844,10 @@ public final class PropertyOpcodes {
                 if ("length".equals(propName)) {
                     yield Datum.of(str.value().length());
                 }
-                yield getChainedObjProp(obj, propName);
+                yield getStringProp(str.toStr(), propName);
+            }
+            case Datum.FieldText fieldText -> {
+                yield getStringProp(fieldText.toStr(), propName);
             }
             case Datum.SpriteRef sr -> {
                 SpritePropertyProvider spriteProvider = SpritePropertyProvider.getProvider();

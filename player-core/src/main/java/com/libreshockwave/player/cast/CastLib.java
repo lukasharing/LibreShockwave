@@ -1179,9 +1179,39 @@ public class CastLib {
             load();
         }
 
-        // Map type name to MemberType
+        int memberNum = findLowestVisibleEmptySlot(1);
+        if (memberNum > MAX_ENCODED_MEMBER_SLOT) {
+            return null;
+        }
         String normalizedType = typeName.toLowerCase();
-        MemberType type = switch (normalizedType) {
+        MemberType type = memberTypeFromName(normalizedType);
+        boolean directorTextAsset = isDirectorTextAssetType(normalizedType, type);
+        return createDynamicMemberAt(memberNum, type, directorTextAsset);
+    }
+
+    CastMember createDynamicMemberAt(int memberNum, MemberType type) {
+        return createDynamicMemberAt(memberNum, type, false);
+    }
+
+    private CastMember createDynamicMemberAt(int memberNum, MemberType type, boolean directorTextAsset) {
+        if (memberNum < 1 || memberNum > MAX_ENCODED_MEMBER_SLOT || memberChunks.containsKey(memberNum)) {
+            return null;
+        }
+        CastMember existing = members.get(memberNum);
+        if (existing != null && existing.isReusableDynamicSlot()) {
+            existing.reuseAs(type, directorTextAsset);
+            return existing;
+        }
+        if (existing != null) {
+            return existing;
+        }
+        CastMember member = new CastMember(castLibId.value(), memberNum, type, directorTextAsset);
+        members.put(memberNum, member);
+        return member;
+    }
+
+    private static MemberType memberTypeFromName(String normalizedType) {
+        return switch (normalizedType) {
             case "field", "text" -> MemberType.TEXT;
             case "bitmap" -> MemberType.BITMAP;
             case "palette" -> MemberType.PALETTE;
@@ -1191,20 +1221,10 @@ public class CastLib {
             case "sound" -> MemberType.SOUND;
             default -> MemberType.TEXT; // Default to text for unknown types
         };
+    }
 
-        int memberNum = findLowestVisibleEmptySlot(1);
-        if (memberNum > MAX_ENCODED_MEMBER_SLOT) {
-            return null;
-        }
-        boolean directorTextAsset = "text".equals(normalizedType) && type == MemberType.TEXT;
-        CastMember existing = members.get(memberNum);
-        if (existing != null && existing.isReusableDynamicSlot()) {
-            existing.reuseAs(type, directorTextAsset);
-            return existing;
-        }
-        CastMember member = new CastMember(castLibId.value(), memberNum, type, directorTextAsset);
-        members.put(memberNum, member);
-        return member;
+    private static boolean isDirectorTextAssetType(String normalizedType, MemberType type) {
+        return "text".equals(normalizedType) && type == MemberType.TEXT;
     }
 
     private int findLowestVisibleEmptySlot(int firstSlot) {

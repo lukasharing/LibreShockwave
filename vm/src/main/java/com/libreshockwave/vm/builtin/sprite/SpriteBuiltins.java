@@ -1,5 +1,6 @@
 package com.libreshockwave.vm.builtin.sprite;
 
+import com.libreshockwave.bitmap.Palette;
 import com.libreshockwave.vm.builtin.cast.CastLibProvider;
 import com.libreshockwave.vm.builtin.movie.MoviePropertyProvider;
 import com.libreshockwave.vm.datum.Datum;
@@ -98,12 +99,17 @@ public final class SpriteBuiltins {
 
         // Resolve palette from cast member
         CastLibProvider provider = CastLibProvider.getProvider();
+        Palette pal = null;
         if (provider != null) {
-            com.libreshockwave.bitmap.Palette pal = null;
             if (palRef.isString()) {
                 pal = provider.resolvePaletteByName(palRef.toStr());
             } else if (palRef instanceof Datum.CastMemberRef cmr) {
                 pal = provider.resolvePaletteByMember(cmr.castLibNum(), cmr.memberNum());
+            } else if (palRef instanceof Datum.Int i && i.value() > 0) {
+                pal = provider.resolvePaletteByMember(1, i.value());
+                if (pal == null) {
+                    pal = provider.getMemberPalette(1, i.value());
+                }
             }
             if (pal != null) {
                 Datum.setPuppetPalette(pal);

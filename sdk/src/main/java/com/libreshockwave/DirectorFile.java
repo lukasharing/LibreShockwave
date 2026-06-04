@@ -487,6 +487,16 @@ public class DirectorFile {
         return getPaletteResolver().resolve(memberNumber - 1);
     }
 
+    /**
+     * Resolve a palette by cast member number without fallback heuristics.
+     * Use this for explicit Lingo palette members, e.g. member.paletteRef =
+     * member(n), where Director does not substitute an unrelated CLUT.
+     */
+    public Palette resolvePaletteByMemberNumberExact(int memberNumber) {
+        // PaletteResolver uses paletteId = memberNumber - 1 convention
+        return getPaletteResolver().resolveExact(memberNumber - 1);
+    }
+
     private PaletteResolver getPaletteResolver() {
         if (paletteResolver == null) {
             paletteResolver = new PaletteResolver(casts, castMembers, palettes, castList,
@@ -573,7 +583,9 @@ public class DirectorFile {
                 info.width(), info.height(), info.bitDepth(),
                 palette, bigEndian, directorVersion, info.pitch()
             );
-            bitmap.setNativeAlpha(info.useAlpha() && info.bitDepth() == 32);
+            bitmap.setNativeAlpha(info.useAlpha()
+                    && info.bitDepth() == 32
+                    && hasNonOpaqueAlpha(bitmap));
             if (palette != null) {
                 bitmap.setImagePalette(palette);
             }
@@ -587,6 +599,9 @@ public class DirectorFile {
     private Palette resolveBitmapPalette(BitmapInfo info) {
         if (info == null) {
             return resolvePalette(0);
+        }
+        if (info.isPaletted() && info.paletteCastLib() == 0 && info.paletteId() == 0) {
+            return null;
         }
         if (info.paletteCastLib() == 0) {
             if (info.bitDepth() == 8) {
@@ -664,12 +679,18 @@ public class DirectorFile {
                 }
             }
 
-            bitmap.setNativeAlpha(info.useAlpha() || (alfaData != null && alfaData.length > 0));
+            bitmap.setNativeAlpha(alfaData != null && alfaData.length > 0);
 
             return Optional.of(bitmap);
         } catch (Exception e) {
             return Optional.empty();
         }
+    }
+
+    private static boolean hasNonOpaqueAlpha(Bitmap bitmap) {
+        return bitmap != null
+                && bitmap.getBitDepth() == 32
+                && (bitmap.hasTransparentPixels() || bitmap.hasTranslucentPixels());
     }
 
     /**

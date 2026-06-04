@@ -9,6 +9,7 @@ import com.libreshockwave.id.InkMode;
 
 import com.libreshockwave.player.Player;
 import com.libreshockwave.player.cast.CastMember;
+import com.libreshockwave.player.sprite.SpriteColorSource;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -31,6 +32,7 @@ public class BitmapCache {
 
     private record CacheKey(MemberCacheId member, Palette paletteOverride,
                             int ink, int foreColor, int backColor,
+                            SpriteColorSource foreColorSource, SpriteColorSource backColorSource,
                             boolean hasForeColor, boolean hasBackColor) {}
 
     private record DynamicCacheKey(Bitmap bitmap, int mutationRevision,
@@ -38,6 +40,7 @@ public class BitmapCache {
                                    int paletteRefCastLib, int paletteRefMemberNum,
                                    String paletteRefSystemName, boolean nativeAlpha,
                                    int ink, int foreColor, int backColor,
+                                   SpriteColorSource foreColorSource, SpriteColorSource backColorSource,
                                    boolean hasForeColor, boolean hasBackColor,
                                    boolean neutralizeOpaqueWhite) {}
 
@@ -66,9 +69,22 @@ public class BitmapCache {
     public Bitmap getProcessed(CastMemberChunk member, int ink, int backColor,
                                 int foreColor, boolean hasForeColor, boolean hasBackColor,
                                 Player player, Palette paletteOverride) {
+        return getProcessed(member, ink, backColor, SpriteColorSource.forLegacyExplicitColor(backColor),
+                foreColor, SpriteColorSource.forLegacyExplicitColor(foreColor),
+                hasForeColor, hasBackColor, player, paletteOverride);
+    }
+
+    public Bitmap getProcessed(CastMemberChunk member, int ink, int backColor,
+                                SpriteColorSource backColorSource,
+                                int foreColor, SpriteColorSource foreColorSource,
+                                boolean hasForeColor, boolean hasBackColor,
+                                Player player, Palette paletteOverride) {
         MemberCacheId memberId = memberKey(member);
         CacheKey key = new CacheKey(memberId, paletteOverride, ink,
-                hasForeColor ? foreColor : 0, backColor, hasForeColor, hasBackColor);
+                hasForeColor ? foreColor : 0, backColor,
+                hasForeColor ? foreColorSource : SpriteColorSource.forLegacyScoreColor(foreColor),
+                hasBackColor ? backColorSource : SpriteColorSource.forLegacyScoreColor(backColor),
+                hasForeColor, hasBackColor);
 
         Bitmap cached = cache.get(key);
         if (cached != null) {
@@ -123,13 +139,16 @@ public class BitmapCache {
             // should become all-white, then BLEND/MATTE ink removes the white background
             // making the mask fully transparent.
             if (raw.getBitDepth() <= 1 && hasForeColor) {
-                raw = InkProcessor.applyForeColorRemap(raw, foreColor, backColor);
+                raw = InkProcessor.applyForeColorRemap(raw,
+                        InkProcessor.resolveSpriteColor(foreColor, foreColorSource, palette),
+                        InkProcessor.resolveSpriteColor(backColor, backColorSource, palette));
             }
 
             Bitmap processed = applyIndexedMatteColorRemapIfNeeded(
                     raw,
-                    applySpriteInk(raw, ink, backColor, hasBackColor, useAlpha, palette, false),
-                    ink, foreColor, backColor, hasForeColor, hasBackColor, palette);
+                    applySpriteInk(raw, ink, backColor, backColorSource, hasBackColor, useAlpha, palette, false),
+                    ink, foreColor, foreColorSource, backColor, backColorSource,
+                    hasForeColor, hasBackColor, palette);
             cache.put(key, processed);
             return processed;
         } catch (Exception e) {
@@ -163,6 +182,14 @@ public class BitmapCache {
      */
     public Bitmap getProcessedDynamic(CastMember dynMember, int ink, int backColor,
                                      int foreColor, boolean hasForeColor, boolean hasBackColor) {
+        return getProcessedDynamic(dynMember, ink, backColor, SpriteColorSource.forLegacyExplicitColor(backColor),
+                foreColor, SpriteColorSource.forLegacyExplicitColor(foreColor), hasForeColor, hasBackColor);
+    }
+
+    public Bitmap getProcessedDynamic(CastMember dynMember, int ink, int backColor,
+                                     SpriteColorSource backColorSource,
+                                     int foreColor, SpriteColorSource foreColorSource,
+                                     boolean hasForeColor, boolean hasBackColor) {
         Bitmap bmp = dynMember != null ? dynMember.getBitmap() : null;
         if (bmp == null) {
             return null;
@@ -172,18 +199,32 @@ public class BitmapCache {
             boolean useAlpha = bmp.getBitDepth() == 32 && bmp.isNativeAlpha();
             return applyIndexedMatteColorRemapIfNeeded(
                     bmp,
-                    applySpriteInk(bmp, ink, backColor, hasBackColor,
+                    applySpriteInk(bmp, ink, backColor, backColorSource, hasBackColor,
                             useAlpha, bmp.getImagePalette(), false),
-                    ink, foreColor, backColor, hasForeColor, hasBackColor, bmp.getImagePalette());
+                    ink, foreColor, foreColorSource, backColor, backColorSource,
+                    hasForeColor, hasBackColor, bmp.getImagePalette());
         }
         return applyIndexedMatteColorRemapIfNeeded(
                 bmp,
                 bmp,
-                ink, foreColor, backColor, hasForeColor, hasBackColor, bmp.getImagePalette());
+                ink, foreColor, foreColorSource, backColor, backColorSource,
+                hasForeColor, hasBackColor, bmp.getImagePalette());
     }
 
     public Bitmap getProcessedScriptModifiedDynamic(CastMember dynMember, int ink, int backColor,
                                                     int foreColor, boolean hasForeColor,
+                                                    boolean hasBackColor,
+                                                    boolean neutralizeOpaqueWhite) {
+        return getProcessedScriptModifiedDynamic(dynMember, ink, backColor,
+                SpriteColorSource.forLegacyExplicitColor(backColor),
+                foreColor, SpriteColorSource.forLegacyExplicitColor(foreColor),
+                hasForeColor, hasBackColor, neutralizeOpaqueWhite);
+    }
+
+    public Bitmap getProcessedScriptModifiedDynamic(CastMember dynMember, int ink, int backColor,
+                                                    SpriteColorSource backColorSource,
+                                                    int foreColor, SpriteColorSource foreColorSource,
+                                                    boolean hasForeColor,
                                                     boolean hasBackColor,
                                                     boolean neutralizeOpaqueWhite) {
         Bitmap bmp = dynMember != null ? dynMember.getBitmap() : null;
@@ -191,7 +232,7 @@ public class BitmapCache {
             return null;
         }
 
-        DynamicCacheKey key = dynamicKey(bmp, ink, backColor, foreColor,
+        DynamicCacheKey key = dynamicKey(bmp, ink, backColor, backColorSource, foreColor, foreColorSource,
                 hasForeColor, hasBackColor, neutralizeOpaqueWhite);
         Bitmap cached = dynamicCache.get(key);
         if (cached != null) {
@@ -201,7 +242,9 @@ public class BitmapCache {
 
         Bitmap source = bmp;
         if (source.getBitDepth() <= 1 && hasForeColor) {
-            source = InkProcessor.applyForeColorRemap(source, foreColor, backColor);
+            source = InkProcessor.applyForeColorRemap(source,
+                    InkProcessor.resolveSpriteColor(foreColor, foreColorSource, source.getImagePalette()),
+                    InkProcessor.resolveSpriteColor(backColor, backColorSource, source.getImagePalette()));
         }
 
         Bitmap processed;
@@ -213,14 +256,16 @@ public class BitmapCache {
             boolean hasNativeAlpha = inkSource.getBitDepth() == 32 && inkSource.isNativeAlpha();
             processed = applyIndexedMatteColorRemapIfNeeded(
                     bmp,
-                    applySpriteInk(inkSource, ink, backColor, hasBackColor,
+                    applySpriteInk(inkSource, ink, backColor, backColorSource, hasBackColor,
                             hasNativeAlpha, inkSource.getImagePalette(), true),
-                    ink, foreColor, backColor, hasForeColor, hasBackColor, bmp.getImagePalette());
+                    ink, foreColor, foreColorSource, backColor, backColorSource,
+                    hasForeColor, hasBackColor, bmp.getImagePalette());
         } else {
             processed = applyIndexedMatteColorRemapIfNeeded(
                     bmp,
                     source,
-                    ink, foreColor, backColor, hasForeColor, hasBackColor, bmp.getImagePalette());
+                    ink, foreColor, foreColorSource, backColor, backColorSource,
+                    hasForeColor, hasBackColor, bmp.getImagePalette());
         }
         dynamicCache.put(key, processed);
         return processed;
@@ -233,9 +278,11 @@ public class BitmapCache {
         return raw.copyWithNonNativeAlphaOpaque();
     }
 
-    private static Bitmap applySpriteInk(Bitmap raw, int ink, int backColor, boolean hasBackColor,
+    private static Bitmap applySpriteInk(Bitmap raw, int ink, int backColor,
+                                         SpriteColorSource backColorSource, boolean hasBackColor,
                                          boolean useAlpha, Palette palette, boolean skipGraduatedAlpha) {
-        Bitmap processed = InkProcessor.applyInk(raw, ink, backColor, useAlpha, palette, skipGraduatedAlpha);
+        Bitmap processed = InkProcessor.applyInk(raw, ink, backColor, backColorSource, hasBackColor,
+                useAlpha, palette, skipGraduatedAlpha);
         if (shouldUseImplicitIndexedBackground(raw, processed, ink, hasBackColor)) {
             Bitmap indexed = InkProcessor.applyImplicitIndexedBackgroundTransparent(raw);
             if (introducesTransparency(raw, indexed)) {
@@ -279,7 +326,9 @@ public class BitmapCache {
     }
 
     private DynamicCacheKey dynamicKey(Bitmap bitmap, int ink, int backColor,
-                                       int foreColor, boolean hasForeColor,
+                                       SpriteColorSource backColorSource,
+                                       int foreColor, SpriteColorSource foreColorSource,
+                                       boolean hasForeColor,
                                        boolean hasBackColor,
                                        boolean neutralizeOpaqueWhite) {
         return new DynamicCacheKey(
@@ -294,6 +343,8 @@ public class BitmapCache {
                 ink,
                 hasForeColor ? foreColor : 0,
                 backColor,
+                hasForeColor ? foreColorSource : SpriteColorSource.forLegacyScoreColor(foreColor),
+                hasBackColor ? backColorSource : SpriteColorSource.forLegacyScoreColor(backColor),
                 hasForeColor,
                 hasBackColor,
                 neutralizeOpaqueWhite
@@ -323,6 +374,17 @@ public class BitmapCache {
     static IndexedMatteColorRemap resolveIndexedMatteColorRemap(
             Bitmap raw, int ink, int foreColor, int backColor,
             boolean hasForeColor, boolean hasBackColor, Palette palette) {
+        return resolveIndexedMatteColorRemap(raw, ink,
+                foreColor, SpriteColorSource.forLegacyExplicitColor(foreColor),
+                backColor, SpriteColorSource.forLegacyExplicitColor(backColor),
+                hasForeColor, hasBackColor, palette);
+    }
+
+    static IndexedMatteColorRemap resolveIndexedMatteColorRemap(
+            Bitmap raw, int ink,
+            int foreColor, SpriteColorSource foreColorSource,
+            int backColor, SpriteColorSource backColorSource,
+            boolean hasForeColor, boolean hasBackColor, Palette palette) {
         if (raw == null || raw.getBitDepth() <= 1 || raw.getPaletteIndicesUnsafe() == null) {
             return null;
         }
@@ -333,9 +395,11 @@ public class BitmapCache {
         if (!hasForeColor && !hasBackColor) {
             return null;
         }
-        int effectiveForeColor = hasForeColor ? (foreColor & 0xFFFFFF) : 0x000000;
+        int effectiveForeColor = hasForeColor
+                ? InkProcessor.resolveSpriteColor(foreColor, foreColorSource, palette)
+                : 0x000000;
         int effectiveBackColor = hasBackColor
-                ? InkProcessor.resolveBackColor(raw, InkMode.COPY, backColor, false, palette)
+                ? InkProcessor.resolveSpriteColor(backColor, backColorSource, palette)
                 : 0xFFFFFF;
 
         // Skip the default black→white identity ramp. Dynamic sprites inherit score defaults
@@ -350,11 +414,23 @@ public class BitmapCache {
     static Bitmap applyIndexedMatteColorRemapIfNeeded(
             Bitmap raw, Bitmap processed, int ink, int foreColor, int backColor,
             boolean hasForeColor, boolean hasBackColor, Palette palette) {
+        return applyIndexedMatteColorRemapIfNeeded(raw, processed, ink,
+                foreColor, SpriteColorSource.forLegacyExplicitColor(foreColor),
+                backColor, SpriteColorSource.forLegacyExplicitColor(backColor),
+                hasForeColor, hasBackColor, palette);
+    }
+
+    static Bitmap applyIndexedMatteColorRemapIfNeeded(
+            Bitmap raw, Bitmap processed, int ink,
+            int foreColor, SpriteColorSource foreColorSource,
+            int backColor, SpriteColorSource backColorSource,
+            boolean hasForeColor, boolean hasBackColor, Palette palette) {
         return applyIndexedMatteColorRemap(
                 raw,
                 processed,
                 resolveIndexedMatteColorRemap(
-                        raw, ink, foreColor, backColor, hasForeColor, hasBackColor, palette));
+                        raw, ink, foreColor, foreColorSource, backColor, backColorSource,
+                        hasForeColor, hasBackColor, palette));
     }
 
     static Bitmap applyIndexedMatteColorRemap(Bitmap raw, Bitmap processed, IndexedMatteColorRemap remap) {
