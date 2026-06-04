@@ -270,11 +270,12 @@ public final class PropertyOpcodes {
 
     private static Datum getPropListProp(Datum.PropList pl, String propName) {
         if ("count".equalsIgnoreCase(propName) || "length".equalsIgnoreCase(propName)) return Datum.of(pl.size());
-        // Director treats list.ilk / the ilk of list as the built-in type query.
-        // Stored #ilk properties remain accessible through bracket/getaProp.
-        if ("ilk".equalsIgnoreCase(propName)) return Datum.symbol("propList");
+        // Property-list object access can be used as authored struct access.
+        // Habbo Origins stores #ilk:#struct and checks "the ilk of tStruct";
+        // keep the real type query on ilk(value) / list.ilk().
         Datum value = pl.get(propName, true);
         if (value != null) return value;
+        if ("ilk".equalsIgnoreCase(propName)) return Datum.symbol("propList");
         return Datum.VOID;
     }
 
@@ -920,9 +921,10 @@ public final class PropertyOpcodes {
         return switch (obj) {
             case Datum.PropList pl -> {
                 if ("count".equalsIgnoreCase(propName) || "length".equalsIgnoreCase(propName)) yield Datum.of(pl.size());
-                if ("ilk".equalsIgnoreCase(propName)) yield Datum.symbol("propList");
                 Datum found = pl.get(propName);
-                yield found != null ? found : Datum.VOID;
+                if (found != null) yield found;
+                if ("ilk".equalsIgnoreCase(propName)) yield Datum.symbol("propList");
+                yield Datum.VOID;
             }
             case Datum.ScriptInstance si -> AncestorChainWalker.getProperty(si, propName);
             case Datum.CastMemberRef cmr -> getCastMemberProp(cmr, propName);

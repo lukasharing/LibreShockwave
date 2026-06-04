@@ -139,16 +139,25 @@ class PropertyOpcodesTest {
     }
 
     @Test
-    void propListIlkPropertyReturnsBuiltinTypeWhenStoredIlkExists() throws Exception {
+    void propListIlkPropertyCanExposeAuthoredStructMarker() throws Exception {
         Datum.PropList structLike = new Datum.PropList();
         structLike.add("ilk", Datum.symbol("struct"), true);
 
-        assertEquals("propList", getObjectProperty(structLike, "ilk").toKeyName());
-        assertEquals("propList", getChainedObjProp(structLike, "ilk").toKeyName());
-        assertEquals("propList", PropertyOpcodes.resolveTheBuiltin(
+        assertEquals("struct", getObjectProperty(structLike, "ilk").toKeyName());
+        assertEquals("struct", getChainedObjProp(structLike, "ilk").toKeyName());
+        assertEquals("struct", PropertyOpcodes.resolveTheBuiltin(
                 "ilk",
                 new Datum.ArgList(List.of(structLike)),
                 null).toKeyName());
+    }
+
+    @Test
+    void propListIlkPropertyFallsBackToBuiltinTypeWhenNoStoredIlkExists() throws Exception {
+        Datum.PropList propList = new Datum.PropList();
+        propList.add("name", Datum.of("value"), true);
+
+        assertEquals("propList", getObjectProperty(propList, "ilk").toKeyName());
+        assertEquals("propList", getChainedObjProp(propList, "ilk").toKeyName());
     }
 
     @Test
