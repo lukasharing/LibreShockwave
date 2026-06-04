@@ -46,14 +46,14 @@ class PropListMethodDispatcherTest {
     }
 
     @Test
-    void getAPropNumericKeyFallsBackToStringNumericPropertyKey() {
+    void getAPropNumericKeyDoesNotFallBackToStringNumericPropertyKey() {
         Datum.PropList propList = new Datum.PropList();
         propList.add("0", Datum.of("hello-listener"), false);
 
         Datum result = PropListMethodDispatcher.dispatch(
                 propList, "getAProp", List.of(Datum.of(0)));
 
-        assertEquals("hello-listener", result.toStr());
+        assertTrue(result.isVoid());
     }
 
     @Test
@@ -69,18 +69,43 @@ class PropListMethodDispatcherTest {
     }
 
     @Test
-    void getAtStringKeyMatchesCaseInsensitivePropertyName() {
+    void getAtIntegerDoesNotFallBackToNumericPropertyKeyWhenIndexIsOutOfRange() {
+        Datum.PropList propList = new Datum.PropList();
+        propList.add(Datum.of(42), Datum.of("numeric-key"));
+
+        Datum getAtResult = PropListMethodDispatcher.dispatch(
+                propList, "getAt", List.of(Datum.of(42)));
+        Datum getaPropResult = PropListMethodDispatcher.dispatch(
+                propList, "getAProp", List.of(Datum.of(42)));
+
+        assertTrue(getAtResult.isVoid());
+        assertEquals("numeric-key", getaPropResult.toStr());
+    }
+
+    @Test
+    void getAtStringKeyIsCaseSensitive() {
         Datum.PropList propList = new Datum.PropList();
         propList.add("room_interface", Datum.of(1), false);
 
         Datum result = PropListMethodDispatcher.dispatch(
                 propList, "getAt", List.of(Datum.of("Room_interface")));
 
+        assertTrue(result.isVoid());
+    }
+
+    @Test
+    void getAtSymbolKeyIsCaseInsensitive() {
+        Datum.PropList propList = new Datum.PropList();
+        propList.add("room_interface", Datum.of(1), true);
+
+        Datum result = PropListMethodDispatcher.dispatch(
+                propList, "getAt", List.of(Datum.symbol("Room_interface")));
+
         assertEquals(1, result.toInt());
     }
 
     @Test
-    void getAtFallsBackAcrossSymbolAndStringKeysWhenExactKeyMissing() {
+    void getAtDoesNotFallBackAcrossSymbolAndStringKeysWhenExactKeyMissing() {
         Datum.PropList propList = new Datum.PropList();
         propList.add("color", Datum.of(255), false);
 
@@ -89,19 +114,19 @@ class PropListMethodDispatcherTest {
         Datum stringResult = PropListMethodDispatcher.dispatch(
                 propList, "getAt", List.of(Datum.of("color")));
 
-        assertEquals(255, symbolResult.toInt());
+        assertTrue(symbolResult.isVoid());
         assertEquals(255, stringResult.toInt());
     }
 
     @Test
-    void getValueFallsBackAcrossSymbolAndStringKeysWhenExactKeyMissing() {
+    void getValueDoesNotFallBackAcrossSymbolAndStringKeysWhenExactKeyMissing() {
         Datum.PropList propList = new Datum.PropList();
         propList.add("name", Datum.of(42), false);
 
         Datum result = PropListMethodDispatcher.dispatch(
                 propList, "getValue", List.of(new Datum.Symbol("name")));
 
-        assertEquals(42, result.toInt());
+        assertTrue(result.isVoid());
     }
 
     @Test
@@ -230,7 +255,7 @@ class PropListMethodDispatcherTest {
     }
 
     @Test
-    void setAPropUpdatesFirstCompatibleSymbolOrStringKeyAndPreservesKeyToken() {
+    void setAPropUpdatesFirstSameTypeSymbolOrStringKeyAndPreservesKeyToken() {
         Datum.PropList propList = new Datum.PropList();
         propList.add("door", Datum.of("first"), false);
         propList.add("door", Datum.of("second"), true);
@@ -239,8 +264,8 @@ class PropListMethodDispatcherTest {
                 propList, "setAProp", List.of(Datum.symbol("door"), Datum.of("updated")));
 
         assertTrue(propList.getKeyDatum(0) instanceof Datum.Str);
-        assertEquals("updated", propList.getValue(0).toStr());
-        assertEquals("second", propList.getValue(1).toStr());
+        assertEquals("first", propList.getValue(0).toStr());
+        assertEquals("updated", propList.getValue(1).toStr());
     }
 
     @Test

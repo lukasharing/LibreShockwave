@@ -155,33 +155,33 @@ class DatumTest {
     }
 
     @Test
-    void testPropListSymbolAndStringKeysAreCompatibleForDirectorPropertyAccess() {
+    void testPropListSymbolAndStringKeysStaySeparateForDirectorPropertyAccess() {
         Datum.PropList pl = new Datum.PropList();
         pl.add("foo", Datum.of(1), true);
         pl.add("foo", Datum.of(2), false);
 
         assertEquals(1, pl.get(Datum.symbol("FOO")).toInt());
-        assertEquals(1, pl.get(Datum.of("foo")).toInt());
-        assertEquals(1, pl.findPos(Datum.of("foo")));
+        assertEquals(2, pl.get(Datum.of("foo")).toInt());
+        assertEquals(2, pl.findPos(Datum.of("foo")));
 
         pl.put(Datum.of("foo"), Datum.of(9));
 
         assertEquals(2, pl.size());
         assertTrue(pl.getKeyDatum(0) instanceof Datum.Symbol);
-        assertEquals(9, pl.getValue(0).toInt());
-        assertEquals(2, pl.getValue(1).toInt());
+        assertEquals(1, pl.getValue(0).toInt());
+        assertEquals(9, pl.getValue(1).toInt());
     }
 
     @Test
-    void testPropListSetPropPreservesOriginalStringKeyTokenWhenSymbolMatches() {
+    void testPropListSetPropDoesNotMatchStringKeyWithSymbolQuery() {
         Datum.PropList pl = new Datum.PropList();
         pl.add("foo", Datum.of(1), false);
 
-        assertTrue(pl.putExisting(Datum.symbol("foo"), Datum.of(7)));
+        assertFalse(pl.putExisting(Datum.symbol("foo"), Datum.of(7)));
 
         assertTrue(pl.getKeyDatum(0) instanceof Datum.Str);
         assertEquals("foo", pl.getKeyDatum(0).toStr());
-        assertEquals(7, pl.getValue(0).toInt());
+        assertEquals(1, pl.getValue(0).toInt());
     }
 
     @Test
@@ -261,11 +261,13 @@ class DatumTest {
     }
 
     @Test
-    void testPropListMatchesMixedCaseStringAndSymbolPropertyNames() {
+    void testPropListKeepsStringCaseSensitiveAndSymbolLookupSeparate() {
         Datum.PropList pl = new Datum.PropList();
         pl.putTyped("Room_interface", false, Datum.of("window"));
 
-        assertEquals("window", pl.get(Datum.symbol("room_interface")).toStr());
+        assertTrue(pl.get(Datum.symbol("room_interface")) == null);
+        assertTrue(pl.get(Datum.of("room_interface")) == null);
+        assertEquals("window", pl.get(Datum.of("Room_interface")).toStr());
     }
 
     @Test

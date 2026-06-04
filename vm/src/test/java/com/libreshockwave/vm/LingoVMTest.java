@@ -1411,7 +1411,7 @@ class LingoVMTest {
     }
 
     @Test
-    void testBuiltinPropListSetAtKeyCompatibilityUsesSetAPropBehavior() {
+    void testBuiltinPropListSetAtKeyCompatibilityUsesTypedSetAPropBehavior() {
         LingoVM vm = new LingoVM(null);
         vm.setPropListSetAtByKeyCompatibilityEnabled(true);
         Datum.PropList propList = new Datum.PropList();
@@ -1422,12 +1422,12 @@ class LingoVMTest {
 
         assertEquals(2, propList.size());
         assertTrue(propList.entries().getFirst().isSymbolKey());
-        assertEquals("new", propList.getValue(0).toStr());
-        assertEquals("second", propList.getValue(1).toStr());
+        assertEquals("old", propList.getValue(0).toStr());
+        assertEquals("new", propList.getValue(1).toStr());
     }
 
     @Test
-    void testBuiltinGetaPropUsesFirstCompatibleSymbolOrStringKey() {
+    void testBuiltinGetaPropKeepsSymbolAndStringKeysSeparate() {
         LingoVM vm = new LingoVM(null);
         Datum.PropList propList = new Datum.PropList();
         propList.add("room_interface", Datum.of(1), true);
@@ -1437,11 +1437,11 @@ class LingoVMTest {
         Datum stringResult = vm.callHandler("getaProp", List.of(propList, Datum.of("room_interface")));
 
         assertEquals(1, symbolResult.toInt());
-        assertEquals(1, stringResult.toInt());
+        assertEquals(2, stringResult.toInt());
     }
 
     @Test
-    void testBuiltinDeletePropRemovesFirstCompatibleSymbolOrStringKey() {
+    void testBuiltinDeletePropKeepsSymbolAndStringKeysSeparate() {
         LingoVM vm = new LingoVM(null);
         Datum.PropList propList = new Datum.PropList();
         propList.add("room_interface", Datum.of(1), true);
@@ -1450,8 +1450,8 @@ class LingoVMTest {
         vm.callHandler("deleteProp", List.of(propList, Datum.of("room_interface")));
 
         assertEquals(1, propList.size());
-        assertFalse(propList.entries().getFirst().isSymbolKey());
-        assertEquals(2, propList.entries().getFirst().value().toInt());
+        assertTrue(propList.entries().getFirst().isSymbolKey());
+        assertEquals(1, propList.entries().getFirst().value().toInt());
     }
 
     @Test

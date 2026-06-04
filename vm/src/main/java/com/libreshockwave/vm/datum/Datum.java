@@ -239,16 +239,16 @@ public sealed interface Datum {
         public boolean isEmpty() { return entries.isEmpty(); }
 
         /**
-         * Get first value matching key (case-insensitive).
-         * Ignores key type (symbol vs string) — used by getaProp which treats
-         * #foo and "foo" as equivalent.
+         * Java convenience lookup by property name. This mirrors Director-style
+         * property-name access: prefer a symbol key, then an exact string key.
+         * Lingo getaProp/getAt paths use the typed Datum overload below.
          */
         public Datum get(String key) {
             int index = firstStringLikeIndex(key);
             return index >= 0 ? entries.get(index).value() : null;
         }
 
-        /** Type-aware string/symbol get for internal tables that need exact key tokens. */
+        /** Type-aware string/symbol get preserving Director key semantics. */
         public Datum get(String key, boolean isSymbolKey) {
             int sameTypeIndex = firstTypedStringIndex(key, isSymbolKey);
             if (sameTypeIndex >= 0) {
@@ -263,10 +263,10 @@ public sealed interface Datum {
                 return null;
             }
             if (keyDatum instanceof Symbol sym) {
-                return get(sym.name());
+                return get(sym.name(), true);
             }
             if (keyDatum instanceof Str str) {
-                return get(str.value());
+                return get(str.value(), false);
             }
             for (PropEntry e : entries) {
                 if (!(e.keyDatum() instanceof Symbol) && !(e.keyDatum() instanceof Str)
@@ -279,8 +279,8 @@ public sealed interface Datum {
 
         /**
          * Director bracket-style property-list access.
-         * Numeric keys are positional first; string/symbol keys prefer the exact
-         * token type, then fall back to Director-compatible property lookup.
+         * Numeric keys are positional only; string/symbol keys use their original
+         * token type so #foo and "foo" can coexist.
          */
         public Datum getAtOrDefault(Datum keyOrIndex, Datum defaultVal) {
             if (keyOrIndex instanceof Int || keyOrIndex instanceof Float) {
@@ -288,8 +288,7 @@ public sealed interface Datum {
                 if (index >= 0 && index < size()) {
                     return getValue(index);
                 }
-                Datum keyedValue = get(keyOrIndex);
-                return keyedValue != null ? keyedValue : defaultVal;
+                return defaultVal;
             }
             if (keyOrIndex instanceof Symbol || keyOrIndex instanceof Str) {
                 Datum exact = getExactStringToken(keyOrIndex);
@@ -335,18 +334,9 @@ public sealed interface Datum {
             return null;
         }
 
-        /**
-         * Director's getaProp/setaProp path is property-oriented, not positional.
-         * Some movies encode numeric protocol ids as string keys, then look them up
-         * with numeric message ids. Keep getAt's positional semantics separate, but
-         * allow getaProp(0) to find a property authored as "0".
-         */
+        /** Director's getaProp path is property-oriented, not positional. */
         public Datum getAProp(Datum keyDatum) {
-            Datum value = get(keyDatum);
-            if (value != null) {
-                return value;
-            }
-            return getNumericDatumAsStringKey(keyDatum);
+            return get(keyDatum);
         }
 
         /** Get first value matching key, or default if not found. */
@@ -367,18 +357,18 @@ public sealed interface Datum {
             return v != null ? v : defaultVal;
         }
 
-        /** Typed getaProp lookup with numeric-string fallback. */
+        /** Typed getaProp lookup. */
         public Datum getAPropOrDefault(Datum keyDatum, Datum defaultVal) {
             Datum v = getAProp(keyDatum);
             return v != null ? v : defaultVal;
         }
 
-        /** Director property put: update first compatible string/symbol key, or append. */
+        /** Director property put: update first matching typed key, or append. */
         public void put(String key, boolean isSymbolKey, Datum value) {
-            int compatibleIndex = firstStringLikeIndex(key);
-            if (compatibleIndex >= 0) {
-                PropEntry old = entries.get(compatibleIndex);
-                entries.set(compatibleIndex, new PropEntry(old.keyDatum(), old.key(), value, old.isSymbolKey()));
+            int typedIndex = firstTypedStringIndex(key, isSymbolKey);
+            if (typedIndex >= 0) {
+                PropEntry old = entries.get(typedIndex);
+                entries.set(typedIndex, new PropEntry(old.keyDatum(), old.key(), value, old.isSymbolKey()));
                 return;
             }
             entries.add(new PropEntry(key, value, isSymbolKey));
@@ -427,19 +417,18 @@ public sealed interface Datum {
         }
 
         public boolean putExisting(String key, boolean isSymbolKey, Datum value) {
-            int compatibleIndex = firstStringLikeIndex(key);
-            if (compatibleIndex < 0) {
+            int typedIndex = firstTypedStringIndex(key, isSymbolKey);
+            if (typedIndex < 0) {
                 return false;
             }
-            PropEntry old = entries.get(compatibleIndex);
-            entries.set(compatibleIndex, new PropEntry(old.keyDatum(), old.key(), value, old.isSymbolKey()));
+            PropEntry old = entries.get(typedIndex);
+            entries.set(typedIndex, new PropEntry(old.keyDatum(), old.key(), value, old.isSymbolKey()));
             return true;
         }
 
         /** Typed put with no string/symbol cross-type fallback. */
         public void putTyped(String key, boolean isSymbolKey, Datum value) {
-            // Same-token match only: physical #foo and "foo" entries may coexist
-            // even though Director property lookup treats them as compatible.
+            // Same-token match only: physical #foo and "foo" entries may coexist.
             int sameTypeIdx = firstTypedStringIndex(key, isSymbolKey);
             if (sameTypeIdx >= 0) {
                 entries.set(sameTypeIdx, new PropEntry(entries.get(sameTypeIdx).keyDatum(),
@@ -485,7 +474,7 @@ public sealed interface Datum {
             indexAppendedEntry(entries.size() - 1);
         }
 
-        /** Remove first entry matching key (case-insensitive, type-unaware). */
+        /** Remove first entry by property name convenience path. */
         public void remove(String key) {
             removeStringKey(key, null);
         }
@@ -495,17 +484,17 @@ public sealed interface Datum {
             removeStringKey(key, isSymbolKey);
         }
 
-        /** Remove first entry matching the Director-compatible property key. */
+        /** Remove first entry matching the typed Director property key. */
         public void remove(Datum keyDatum) {
             if (keyDatum == null) {
                 return;
             }
             if (keyDatum instanceof Symbol sym) {
-                remove(sym.name());
+                remove(sym.name(), true);
                 return;
             }
             if (keyDatum instanceof Str str) {
-                remove(str.value());
+                remove(str.value(), false);
                 return;
             }
             for (int i = 0; i < entries.size(); i++) {
@@ -538,7 +527,7 @@ public sealed interface Datum {
             return false;
         }
 
-        /** Check if any entry has this key (case-insensitive). */
+        /** Check if any symbol or exact string entry has this Java property name. */
         public boolean containsKey(String key) {
             return firstStringLikeIndex(key) >= 0;
         }
@@ -571,19 +560,19 @@ public sealed interface Datum {
             invalidateStringKeyIndexes();
         }
 
-        /** Find 1-based position of key (case-insensitive), or 0 if not found. */
+        /** Find 1-based position by Java property name convenience lookup. */
         public int findPos(String key) {
             int index = firstStringLikeIndex(key);
             return index >= 0 ? index + 1 : 0;
         }
 
-        /** Find 1-based position of a Director-compatible property key. */
+        /** Find 1-based position of a typed Director property key. */
         public int findPos(Datum keyDatum) {
             if (keyDatum instanceof Symbol sym) {
-                return findPos(sym.name());
+                return findPos(sym.name(), true);
             }
             if (keyDatum instanceof Str str) {
-                return findPos(str.value());
+                return findPos(str.value(), false);
             }
             for (int i = 0; i < entries.size(); i++) {
                 PropEntry e = entries.get(i);
@@ -602,15 +591,17 @@ public sealed interface Datum {
         }
 
         private int firstStringLikeIndex(String key) {
-            ensureStringKeyIndexes();
-            Integer index = firstStringLikeIndexByKey.get(normalizeStringKey(key));
-            return index != null ? index : -1;
+            int symbolIndex = firstTypedStringIndex(key, true);
+            if (symbolIndex >= 0) {
+                return symbolIndex;
+            }
+            return firstTypedStringIndex(key, false);
         }
 
         private int firstTypedStringIndex(String key, boolean isSymbolKey) {
             ensureStringKeyIndexes();
             Integer index = (isSymbolKey ? firstSymbolIndexByKey : firstStringIndexByKey)
-                    .get(normalizeStringKey(key));
+                    .get(normalizeStringKey(key, isSymbolKey));
             return index != null ? index : -1;
         }
 
@@ -626,12 +617,10 @@ public sealed interface Datum {
                 if (!isStringLikeKey(entry)) {
                     continue;
                 }
-                String normalized = normalizeStringKey(entry.key());
-                anyIndex.putIfAbsent(normalized, i);
                 if (entry.isSymbolKey()) {
-                    symbolIndex.putIfAbsent(normalized, i);
+                    symbolIndex.putIfAbsent(normalizeStringKey(entry.key(), true), i);
                 } else {
-                    stringIndex.putIfAbsent(normalized, i);
+                    stringIndex.putIfAbsent(normalizeStringKey(entry.key(), false), i);
                 }
             }
             firstStringLikeIndexByKey = anyIndex;
@@ -653,28 +642,20 @@ public sealed interface Datum {
             if (!isStringLikeKey(entry)) {
                 return;
             }
-            String normalized = normalizeStringKey(entry.key());
-            firstStringLikeIndexByKey.putIfAbsent(normalized, index);
             if (entry.isSymbolKey()) {
-                firstSymbolIndexByKey.putIfAbsent(normalized, index);
+                firstSymbolIndexByKey.putIfAbsent(normalizeStringKey(entry.key(), true), index);
             } else {
-                firstStringIndexByKey.putIfAbsent(normalized, index);
+                firstStringIndexByKey.putIfAbsent(normalizeStringKey(entry.key(), false), index);
             }
         }
 
-        private static String normalizeStringKey(String key) {
-            return (key != null ? key : "").toLowerCase(Locale.ROOT);
+        private static String normalizeStringKey(String key, boolean isSymbolKey) {
+            String value = key != null ? key : "";
+            return isSymbolKey ? value.toLowerCase(Locale.ROOT) : value;
         }
 
         private static boolean isStringLikeKey(PropEntry entry) {
             return entry.keyDatum() instanceof Symbol || entry.keyDatum() instanceof Str;
-        }
-
-        private Datum getNumericDatumAsStringKey(Datum keyDatum) {
-            if (!(keyDatum instanceof Int i)) {
-                return null;
-            }
-            return get(String.valueOf(i.value()));
         }
 
         @Override
@@ -682,7 +663,7 @@ public sealed interface Datum {
             StringBuilder sb = new StringBuilder("[");
             for (int i = 0; i < entries.size(); i++) {
                 if (i > 0) sb.append(", ");
-                sb.append("#").append(entries.get(i).key()).append(": ").append(entries.get(i).value());
+                sb.append(entries.get(i).keyDatum()).append(": ").append(entries.get(i).value());
             }
             return sb.append("]").toString();
         }

@@ -270,9 +270,9 @@ public final class PropertyOpcodes {
 
     private static Datum getPropListProp(Datum.PropList pl, String propName) {
         if ("count".equalsIgnoreCase(propName) || "length".equalsIgnoreCase(propName)) return Datum.of(pl.size());
-        // Check PropList's own keys first (e.g. [#ilk:#struct] in font structs),
-        // then fall back to built-in ilk property
-        Datum value = pl.get(propName);
+        // Check symbolic PropList properties first (e.g. [#ilk:#struct] in
+        // authored structs), then fall back to built-in object properties.
+        Datum value = pl.get(propName, true);
         if (value != null) return value;
         if ("ilk".equalsIgnoreCase(propName)) return Datum.symbol("propList");
         return Datum.VOID;

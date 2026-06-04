@@ -328,7 +328,7 @@ public final class ScriptInstanceMethodDispatcher {
             return Datum.VOID;
         }
         if (container instanceof Datum.PropList pl) {
-            return pl.getAtOrDefault(subKey, Datum.VOID);
+            return pl.getAPropOrDefault(subKey, Datum.VOID);
         }
         // Cannot get sub-property from non-list/proplist
         return Datum.VOID;

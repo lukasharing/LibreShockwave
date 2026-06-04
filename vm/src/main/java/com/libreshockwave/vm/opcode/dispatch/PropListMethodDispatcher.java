@@ -21,7 +21,7 @@ public final class PropListMethodDispatcher {
             // count(propList) -> number of entries
             // count(propList, #prop) -> count of the sub-property value (list.prop.count)
             if (!args.isEmpty()) {
-                Datum sub = propList.getOrDefault(args.get(0).toKeyName(), Datum.VOID);
+                Datum sub = propList.getAPropOrDefault(args.get(0), Datum.VOID);
                 if (sub instanceof Datum.List subList) return Datum.of(subList.items().size());
                 if (sub instanceof Datum.PropList subProp) return Datum.of(subProp.size());
                 return Datum.ZERO;
