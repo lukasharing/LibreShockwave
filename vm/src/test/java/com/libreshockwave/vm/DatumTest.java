@@ -155,33 +155,67 @@ class DatumTest {
     }
 
     @Test
-    void testPropListSymbolAndStringKeysStaySeparateForDirectorPropertyAccess() {
+    void testPropListSymbolAndStringKeysUseFirstCompatiblePropertyInListOrder() {
         Datum.PropList pl = new Datum.PropList();
         pl.add("foo", Datum.of(1), true);
         pl.add("foo", Datum.of(2), false);
 
         assertEquals(1, pl.get(Datum.symbol("FOO")).toInt());
-        assertEquals(2, pl.get(Datum.of("foo")).toInt());
-        assertEquals(2, pl.findPos(Datum.of("foo")));
+        assertEquals(1, pl.get(Datum.of("foo")).toInt());
+        assertEquals(1, pl.findPos(Datum.of("foo")));
 
         pl.put(Datum.of("foo"), Datum.of(9));
 
         assertEquals(2, pl.size());
         assertTrue(pl.getKeyDatum(0) instanceof Datum.Symbol);
-        assertEquals(1, pl.getValue(0).toInt());
-        assertEquals(9, pl.getValue(1).toInt());
+        assertEquals(9, pl.getValue(0).toInt());
+        assertEquals(2, pl.getValue(1).toInt());
     }
 
     @Test
-    void testPropListSetPropDoesNotMatchStringKeyWithSymbolQuery() {
+    void testPropListStringReadsFallBackToSymbolKeys() {
+        Datum.PropList symbolOnly = new Datum.PropList();
+        symbolOnly.add(Datum.symbol("top_up"), Datum.of(7));
+
+        assertEquals(7, symbolOnly.get(Datum.of("top_up")).toInt());
+        assertEquals(7, symbolOnly.getAPropOrDefault(Datum.of("top_up"), Datum.VOID).toInt());
+        assertEquals(7, symbolOnly.getAtOrDefault(Datum.of("top_up"), Datum.VOID).toInt());
+        assertEquals(1, symbolOnly.findPos(Datum.of("top_up")));
+    }
+
+    @Test
+    void testPropListStringWritesUpdateCompatibleSymbolKeyWhenOnlySymbolExists() {
+        Datum.PropList symbolOnly = new Datum.PropList();
+        symbolOnly.add(Datum.symbol("top_up"), Datum.of(7));
+
+        symbolOnly.put(Datum.of("top_up"), Datum.of(8));
+        assertEquals(1, symbolOnly.size());
+        assertTrue(symbolOnly.getKeyDatum(0) instanceof Datum.Symbol);
+        assertEquals(8, symbolOnly.get(Datum.symbol("top_up")).toInt());
+        assertEquals(8, symbolOnly.get(Datum.of("top_up")).toInt());
+    }
+
+    @Test
+    void testPropListSymbolReadsCompatibleStringKeys() {
+        Datum.PropList stringOnly = new Datum.PropList();
+        stringOnly.add(Datum.of("left"), Datum.of(11));
+
+        assertEquals(11, stringOnly.get(Datum.symbol("left")).toInt());
+        assertEquals(11, stringOnly.getAPropOrDefault(Datum.symbol("left"), Datum.VOID).toInt());
+        assertEquals(11, stringOnly.getAtOrDefault(Datum.symbol("left"), Datum.VOID).toInt());
+        assertEquals(1, stringOnly.findPos(Datum.symbol("left")));
+    }
+
+    @Test
+    void testPropListSetPropMatchesStringKeyWithSymbolQueryAndPreservesToken() {
         Datum.PropList pl = new Datum.PropList();
         pl.add("foo", Datum.of(1), false);
 
-        assertFalse(pl.putExisting(Datum.symbol("foo"), Datum.of(7)));
+        assertTrue(pl.putExisting(Datum.symbol("foo"), Datum.of(7)));
 
         assertTrue(pl.getKeyDatum(0) instanceof Datum.Str);
         assertEquals("foo", pl.getKeyDatum(0).toStr());
-        assertEquals(1, pl.getValue(0).toInt());
+        assertEquals(7, pl.getValue(0).toInt());
     }
 
     @Test
@@ -261,13 +295,15 @@ class DatumTest {
     }
 
     @Test
-    void testPropListKeepsStringCaseSensitiveAndSymbolLookupSeparate() {
+    void testPropListStringSymbolCompatibilityKeepsStringCaseSensitive() {
         Datum.PropList pl = new Datum.PropList();
+        pl.add(Datum.symbol("room_interface"), Datum.of("thread"));
         pl.putTyped("Room_interface", false, Datum.of("window"));
 
-        assertTrue(pl.get(Datum.symbol("room_interface")) == null);
-        assertTrue(pl.get(Datum.of("room_interface")) == null);
+        assertEquals("thread", pl.get(Datum.of("room_interface")).toStr());
+        assertEquals("thread", pl.get(Datum.symbol("room_interface")).toStr());
         assertEquals("window", pl.get(Datum.of("Room_interface")).toStr());
+        assertEquals("window", pl.get("Room_interface").toStr());
     }
 
     @Test

@@ -31,6 +31,18 @@ class ListBuiltinsTest {
     }
 
     @Test
+    void globalDeletePropStringKeyRemovesCompatibleSymbolWhenExactStringMissing() {
+        BuiltinRegistry builtins = new BuiltinRegistry();
+        LingoVM vm = new LingoVM(null);
+        Datum.PropList propList = new Datum.PropList();
+        propList.add("top_up", Datum.of(1), true);
+
+        builtins.invoke("deleteProp", vm, List.of(propList, Datum.of("top_up")));
+
+        assertEquals(0, propList.size());
+    }
+
+    @Test
     void globalGetPosAndDeleteOneOperateOnPropertyListValues() {
         BuiltinRegistry builtins = new BuiltinRegistry();
         LingoVM vm = new LingoVM(null);

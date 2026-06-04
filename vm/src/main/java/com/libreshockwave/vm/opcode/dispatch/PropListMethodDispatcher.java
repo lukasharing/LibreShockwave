@@ -97,10 +97,10 @@ public final class PropListMethodDispatcher {
                     }
                 }
                 // Bytecode for property-list bracket assignment is emitted as an
-                // object-method setAt call: set pList[#key] to value. Keep the
-                // global setAt(propList, key, value) strict in ListBuiltins; this
-                // method path must preserve Director's bracket-assignment behavior.
-                propList.putTyped(keyOrIndex, value);
+                // object-method setAt call: set pList[#key] to value. Director
+                // documents bracket assignment as setaProp semantics: update the
+                // first compatible property or append if missing.
+                propList.put(keyOrIndex, value);
                 yield Datum.VOID;
             }
             case "getone" -> {
@@ -128,8 +128,7 @@ public final class PropListMethodDispatcher {
             }
             case "deleteprop" -> {
                 if (args.isEmpty()) yield Datum.VOID;
-                Datum keyDatum = args.get(0);
-                removeTypedKey(propList, keyDatum);
+                propList.remove(args.get(0));
                 yield Datum.VOID;
             }
             case "deleteone" -> {
@@ -171,16 +170,6 @@ public final class PropListMethodDispatcher {
                     propList.deepCopy();
             default -> Datum.VOID;
         };
-    }
-
-    private static void removeTypedKey(Datum.PropList propList, Datum keyDatum) {
-        if (keyDatum instanceof Datum.Symbol symbol) {
-            propList.remove(symbol.name(), true);
-        } else if (keyDatum instanceof Datum.Str string) {
-            propList.remove(string.value(), false);
-        } else {
-            propList.remove(keyDatum);
-        }
     }
 
     private static Datum evaluateStoredValue(Datum value) {

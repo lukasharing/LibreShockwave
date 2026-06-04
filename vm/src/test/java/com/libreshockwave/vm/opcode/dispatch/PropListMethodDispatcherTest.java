@@ -141,32 +141,71 @@ class PropListMethodDispatcherTest {
     }
 
     @Test
-    void getAtDoesNotFallBackAcrossSymbolAndStringKeysWhenExactKeyMissing() {
+    void getAtStringAndSymbolKeysUseFirstCompatiblePropertyInListOrder() {
         Datum.PropList propList = new Datum.PropList();
         propList.add("color", Datum.of(255), false);
+        propList.add("top_up", Datum.of(9), true);
 
         Datum symbolResult = PropListMethodDispatcher.dispatch(
                 propList, "getAt", List.of(new Datum.Symbol("color")));
         Datum stringResult = PropListMethodDispatcher.dispatch(
                 propList, "getAt", List.of(Datum.of("color")));
+        Datum symbolFromStringResult = PropListMethodDispatcher.dispatch(
+                propList, "getAt", List.of(Datum.of("top_up")));
 
-        assertTrue(symbolResult.isVoid());
+        assertEquals(255, symbolResult.toInt());
         assertEquals(255, stringResult.toInt());
+        assertEquals(9, symbolFromStringResult.toInt());
     }
 
     @Test
-    void getValueDoesNotFallBackAcrossSymbolAndStringKeysWhenExactKeyMissing() {
+    void getValueSymbolKeyReadsCompatibleStringKey() {
         Datum.PropList propList = new Datum.PropList();
         propList.add("name", Datum.of(42), false);
 
         Datum result = PropListMethodDispatcher.dispatch(
                 propList, "getValue", List.of(new Datum.Symbol("name")));
 
-        assertTrue(result.isVoid());
+        assertEquals(42, result.toInt());
     }
 
     @Test
-    void getAtKeepsDuplicateSymbolAndStringKeysSeparate() {
+    void getValueStringKeyFallsBackToSymbolWhenExactKeyMissing() {
+        Datum.PropList propList = new Datum.PropList();
+        propList.add("top_up", Datum.of(42), true);
+
+        Datum result = PropListMethodDispatcher.dispatch(
+                propList, "getValue", List.of(Datum.of("top_up")));
+
+        assertEquals(42, result.toInt());
+    }
+
+    @Test
+    void findPosStringKeyUsesCompatibleSymbolKey() {
+        Datum.PropList propList = new Datum.PropList();
+        propList.add("top_up", Datum.of(42), true);
+
+        Datum result = PropListMethodDispatcher.dispatch(
+                propList, "findPos", List.of(Datum.of("top_up")));
+
+        assertEquals(1, result.toInt());
+    }
+
+    @Test
+    void setPropStringKeyUpdatesCompatibleSymbolKeyWhenExactStringMissing() {
+        Datum.PropList propList = new Datum.PropList();
+        propList.add("top_up", Datum.of(1), true);
+
+        PropListMethodDispatcher.dispatch(
+                propList, "setProp", List.of(Datum.of("top_up"), Datum.of(2)));
+
+        assertEquals(1, propList.size());
+        assertTrue(propList.getKeyDatum(0) instanceof Datum.Symbol);
+        assertEquals(2, propList.getAtOrDefault(Datum.symbol("top_up"), Datum.VOID).toInt());
+    }
+
+    @Test
+    void getAtReturnsFirstCompatibleDuplicateInPhysicalOrder() {
         Datum.PropList propList = new Datum.PropList();
         propList.add("key", Datum.of(1), true);   // symbol #key
         propList.add("key", Datum.of(2), false);   // string "key"
@@ -177,7 +216,7 @@ class PropListMethodDispatcherTest {
                 propList, "getAt", List.of(Datum.of("key")));
 
         assertEquals(1, symResult.toInt());
-        assertEquals(2, strResult.toInt());
+        assertEquals(1, strResult.toInt());
     }
 
     @Test
@@ -291,7 +330,7 @@ class PropListMethodDispatcherTest {
     }
 
     @Test
-    void setAPropUpdatesFirstSameTypeSymbolOrStringKeyAndPreservesKeyToken() {
+    void setAPropUpdatesFirstCompatibleSymbolOrStringKeyAndPreservesKeyToken() {
         Datum.PropList propList = new Datum.PropList();
         propList.add("door", Datum.of("first"), false);
         propList.add("door", Datum.of("second"), true);
@@ -300,8 +339,8 @@ class PropListMethodDispatcherTest {
                 propList, "setAProp", List.of(Datum.symbol("door"), Datum.of("updated")));
 
         assertTrue(propList.getKeyDatum(0) instanceof Datum.Str);
-        assertEquals("first", propList.getValue(0).toStr());
-        assertEquals("updated", propList.getValue(1).toStr());
+        assertEquals("updated", propList.getValue(0).toStr());
+        assertEquals("second", propList.getValue(1).toStr());
     }
 
     @Test
@@ -438,7 +477,7 @@ class PropListMethodDispatcherTest {
     }
 
     @Test
-    void deletePropRemovesMatchingSymbolOrStringKeyOnly() {
+    void deletePropRemovesFirstCompatibleSymbolOrStringKey() {
         Datum.PropList propList = new Datum.PropList();
         propList.add("room_interface", Datum.of(1), true);   // symbol #room_interface
         propList.add("room_interface", Datum.of(2), false);  // string "room_interface"
@@ -447,8 +486,19 @@ class PropListMethodDispatcherTest {
                 propList, "deleteProp", List.of(Datum.of("room_interface")));
 
         assertEquals(1, propList.size());
-        assertTrue(propList.entries().getFirst().isSymbolKey());
-        assertEquals(1, propList.entries().getFirst().value().toInt());
+        assertTrue(propList.entries().getFirst().keyDatum() instanceof Datum.Str);
+        assertEquals(2, propList.entries().getFirst().value().toInt());
+    }
+
+    @Test
+    void deletePropStringKeyRemovesCompatibleSymbolWhenTextMatchesExactly() {
+        Datum.PropList propList = new Datum.PropList();
+        propList.add("top_up", Datum.of(1), true);
+
+        PropListMethodDispatcher.dispatch(
+                propList, "deleteProp", List.of(Datum.of("top_up")));
+
+        assertEquals(0, propList.size());
     }
 
     @Test
