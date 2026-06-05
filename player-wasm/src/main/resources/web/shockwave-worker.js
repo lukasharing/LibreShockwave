@@ -19,14 +19,21 @@ function _relayWorkerLog(type, args) {
             || msg.indexOf('Lingo call stack:') >= 0
             || msg.indexOf('[Player]') >= 0
             || msg.indexOf('[CastLib]') >= 0
+            || msg.indexOf('[CastLoad]') >= 0
             || msg.indexOf('[NetManager]') >= 0
             || msg.indexOf('[MUS]') >= 0
+            || msg.indexOf('[MUSBridge]') >= 0
+            || msg.indexOf('[MultiuserXtra]') >= 0
+            || msg.indexOf('[BobbaXtra]') >= 0
+            || msg.indexOf('[QueuedNet]') >= 0
+            || msg.indexOf('[FetchOrder]') >= 0
             || msg.indexOf('[EH]') >= 0
             || msg.indexOf('[MouseHit]') >= 0
             || msg.indexOf('[InputDispatch]') >= 0
             || msg.indexOf('[TextFocus]') >= 0
             || msg.indexOf('[EventHandler]') >= 0
             || msg.indexOf('[EventBroker]') >= 0
+            || msg.indexOf('[UICall]') >= 0
             || msg.indexOf('[FrameActor]') >= 0
             || msg.indexOf('[EventDispatcher]') >= 0
             || msg.indexOf('[HitTest]') >= 0
@@ -118,6 +125,11 @@ var _musSecureHosts = Object.create(null); // optional host allow-list for defau
 var _musSockets = {};      // instanceId -> WebSocket
 var _musInbound = {};      // instanceId -> [Uint8Array] (raw MUS TCP chunks)
 var _musPendingSends = {}; // instanceId -> [Uint8Array] waiting for WebSocket.OPEN
+var _musSocketUrls = {};   // instanceId -> resolved WebSocket URL
+var _musOutstandingSends = {}; // instanceId -> latest send sequence awaiting inbound bytes
+var _musSendSeq = 0;
+var _musImmediateDeferred = false;
+var _musCallbackDeferred = false;
 
 var _musConnected = {};    // instanceId -> true (pending connect notifications)
 var _musDisconnected = {}; // instanceId -> true (pending disconnect notifications)
@@ -133,6 +145,8 @@ function _musClearInstanceState(instId) {
     delete _musErrorDetails[instId];
     delete _musInbound[instId];
     delete _musPendingSends[instId];
+    delete _musSocketUrls[instId];
+    delete _musOutstandingSends[instId];
 }
 
 function _musCloseAllSockets() {
@@ -155,6 +169,10 @@ function _musCloseAllSockets() {
     _musErrors = {};
     _musDisconnectDetails = {};
     _musErrorDetails = {};
+    _musSocketUrls = {};
+    _musOutstandingSends = {};
+    _musImmediateDeferred = false;
+    _musCallbackDeferred = false;
 }
 
 // --- Non-blocking fetch delivery queue ---
@@ -162,6 +180,7 @@ var _fetchQueue = [];   // [{taskId, data: ArrayBuffer}] or [{taskId, error: num
 var _fetchInFlight = 0;
 var _fetchInFlightByKey = {};
 var _fetchResponseCache = {};
+var _fetchOrderSeq = 0;
 var _jpegDecodeQueue = []; // [{id, width, height, data: Uint8Array}]
 var _jpegDecodeInFlight = {}; // id -> true
 var _jpegDecodeSeq = 0; // increments per movie load to ignore stale async decodes
@@ -174,6 +193,12 @@ var _sharedFrameSeq = 0;
 // --- Cross-origin fetch relay (main thread fetches on behalf of worker) ---
 var _fetchRelayMap = {};  // relayId -> { engine, taskId, url, fallbacks }
 var _fetchRelayCounter = 0;
+
+function _fetchOrderLog(msg) {
+    if (_debugLogsEnabled) {
+        console.log('[FetchOrder] ' + msg);
+    }
+}
 
 // --- Fetch with timeout (prevents hanging requests on mobile) ---
 function _fetchWithTimeout(url, opts, timeoutMs) {
@@ -241,9 +266,15 @@ async function _drainStartupFetches(timeoutMs) {
     while (true) {
         try {
             deliveredTotal += _e.deliverQueuedResults({ maxResults: 12, budgetMs: 16 });
-            _e.deliverJpegDecodeResults(4);
         } catch (deliverErr) {
             console.error(_formatWorkerError('[WORKER] startup deliver error', deliverErr));
+            break;
+        }
+        try {
+            deliveredTotal += _e.deliverJpegDecodeResults(4);
+            _e.pumpJpegDecodeRequests();
+        } catch (jpegErr) {
+            console.error(_formatWorkerError('[WORKER] startup JPEG pump error', jpegErr));
             break;
         }
 
@@ -254,7 +285,7 @@ async function _drainStartupFetches(timeoutMs) {
             break;
         }
 
-        if (_fetchInFlight <= 0 && _fetchQueue.length === 0) {
+        if (!_hasStartupAsyncWork()) {
             break;
         }
         if (performance.now() >= deadline) {
@@ -266,12 +297,69 @@ async function _drainStartupFetches(timeoutMs) {
 
     try {
         deliveredTotal += _e.deliverQueuedResults({ maxResults: 12, budgetMs: 16 });
-        _e.deliverJpegDecodeResults(4);
+        deliveredTotal += _e.deliverJpegDecodeResults(4);
+        _e.pumpJpegDecodeRequests();
     } catch (finalDeliverErr) {
         console.error(_formatWorkerError('[WORKER] startup final deliver error', finalDeliverErr));
     }
 
     return { delivered: deliveredTotal, fired: firedTotal, timedOut: timedOut };
+}
+
+async function _drainRequiredStartupFetches(label) {
+    var deliveredTotal = 0;
+    var firedTotal = 0;
+    var startedAt = performance.now();
+    var lastLogAt = startedAt;
+
+    while (true) {
+        var drained = await _drainStartupFetches(1000);
+        deliveredTotal += drained.delivered;
+        firedTotal += drained.fired;
+
+        if (!_hasStartupAsyncWork()) {
+            break;
+        }
+
+        var now = performance.now();
+        if (now - lastLogAt >= 5000) {
+            console.log('[WORKER] ' + label + ' waiting for startup fetches: '
+                    + 'inFlight=' + _fetchInFlight
+                    + ' queued=' + _fetchQueue.length
+                    + ' jpegInFlight=' + Object.keys(_jpegDecodeInFlight).length
+                    + ' jpegQueued=' + _jpegDecodeQueue.length
+                    + ' jpegPending=' + _pendingJpegDecodeCount()
+                    + ' elapsed=' + Math.round(now - startedAt) + 'ms');
+            lastLogAt = now;
+        }
+        await _sleep(10);
+    }
+
+    return {
+        delivered: deliveredTotal,
+        fired: firedTotal,
+        timedOut: false,
+        totalMs: Math.round(performance.now() - startedAt)
+    };
+}
+
+function _hasStartupAsyncWork() {
+    return _fetchInFlight > 0
+        || _fetchQueue.length > 0
+        || _jpegDecodeQueue.length > 0
+        || Object.keys(_jpegDecodeInFlight).length > 0
+        || _pendingJpegDecodeCount() > 0;
+}
+
+function _pendingJpegDecodeCount() {
+    if (!_e || !_e.exports || _e._wasmDead) return 0;
+    try {
+        var count = _e.exports.getPendingJpegDecodeCount();
+        _e._clearEx();
+        return count || 0;
+    } catch (e) {
+        return 0;
+    }
 }
 
 function _relayLastError() {
@@ -382,6 +470,53 @@ function _pumpAfterInputEvent(label) {
         _e.pumpMusRequests();
     } catch (musErr) {
         console.error(_formatWorkerError('[WORKER] input MUS pump error' + (label ? ' ' + label : ''), musErr));
+    }
+}
+
+function _pendingMusEventSummary() {
+    var inboundInstances = 0;
+    var inboundMessages = 0;
+    var inboundBytes = 0;
+    for (var mid in _musInbound) {
+        var msgs = _musInbound[mid];
+        if (!msgs || msgs.length === 0) continue;
+        inboundInstances++;
+        inboundMessages += msgs.length;
+        for (var i = 0; i < msgs.length; i++) {
+            inboundBytes += msgs[i] ? msgs[i].length : 0;
+        }
+    }
+    var connected = Object.keys(_musConnected).length;
+    var errors = Object.keys(_musErrors).length;
+    var disconnected = Object.keys(_musDisconnected).length;
+    if (!inboundMessages && !connected && !errors && !disconnected) {
+        return '';
+    }
+    return 'inboundInstances=' + inboundInstances
+        + ' inboundMessages=' + inboundMessages
+        + ' inboundBytes=' + inboundBytes
+        + ' connected=' + connected
+        + ' errors=' + errors
+        + ' disconnected=' + disconnected;
+}
+
+function _drainMusBeforeInputEvent(label) {
+    if (!_e || _e._wasmDead) return;
+    var pendingSummary = _pendingMusEventSummary();
+    if (pendingSummary) {
+        _musDebug('drain-before-input ' + (label || 'input') + ' ' + pendingSummary);
+    }
+    try {
+        _e.deliverMusEvents();
+    } catch (musErr) {
+        console.error(_formatWorkerError('[WORKER] input MUS deliver error' + (label ? ' ' + label : ''), musErr));
+        return;
+    }
+    _processMusCallbacks('before-input-' + (label || 'input'));
+    try {
+        _e.pumpMusRequests();
+    } catch (pumpErr) {
+        console.error(_formatWorkerError('[WORKER] input MUS pre-pump error' + (label ? ' ' + label : ''), pumpErr));
     }
 }
 
@@ -765,15 +900,24 @@ WasmEngine.prototype._fetchWithFallbacks = async function(taskId, url, method, p
     }
     for (var j = 0; j < urls.length; j++) {
         var tryUrl = urls[j];
+        _fetchOrderLog('attempt task=' + taskId
+            + ' index=' + j
+            + ' url=' + tryUrl);
         console.log('[WORKER] fetch: ' + tryUrl + (j === 0 && urls.length > 1 ? ' (+' + (urls.length - 1) + ' fallbacks)' : ''));
         try {
             var buf = await this._fetchOnce(tryUrl, method, postData);
             if (_isImportableImageUrl(tryUrl)) {
                 buf = await _decodeImageForImport(buf, tryUrl);
             }
+            _fetchOrderLog('complete task=' + taskId
+                + ' url=' + tryUrl
+                + ' bytes=' + buf.byteLength);
             console.log('[WORKER] fetch OK: ' + tryUrl + ' (' + buf.byteLength + ' bytes)');
             return { data: buf, url: tryUrl, status: 200 };
         } catch (e) {
+            _fetchOrderLog('error task=' + taskId
+                + ' url=' + tryUrl
+                + ' status=' + ((e && e.status) || 'network'));
             console.warn('[WORKER] fetch ERR: ' + tryUrl + ' status=' + ((e && e.status) || 'network'));
         }
     }
@@ -857,15 +1001,23 @@ WasmEngine.prototype.deliverQueuedResults = function(options) {
     var delivered = 0;
     while (_fetchQueue.length > 0 && delivered < limit) {
         var index = 0;
+        var bestPriority = 999;
         for (var i = 0; i < _fetchQueue.length; i++) {
             var queued = _fetchQueue[i];
-            var isCastPayload = queued.data !== undefined && queued.url && _isCastFileUrl(queued.url);
-            if (!isCastPayload) {
+            var priority = _queuedFetchDeliveryPriority(queued);
+            if (priority < bestPriority) {
                 index = i;
-                break;
+                bestPriority = priority;
+                if (priority === 0) break;
             }
         }
         var item = _fetchQueue.splice(index, 1)[0];
+        _fetchOrderLog('deliver seq=' + (item.fetchSeq || 0)
+            + ' task=' + item.taskId
+            + ' type=' + (item.data !== undefined ? 'data' : 'error')
+            + ' url=' + (item.url || '<none>')
+            + ' priority=' + bestPriority
+            + ' remaining=' + _fetchQueue.length);
         if (item.data !== undefined) {
             if (item.url && _isCastFileUrl(item.url) && !this._shouldDeliverFetchData(item.taskId, item.url)) {
                 this._deliverStatus(item.taskId, item.data, item.url);
@@ -883,6 +1035,15 @@ WasmEngine.prototype.deliverQueuedResults = function(options) {
     if (delivered > 0) _flushWasmDiagnostics();
     return delivered;
 };
+
+function _queuedFetchDeliveryPriority(item) {
+    if (!item) return 3;
+    if (item.data === undefined) return 0;
+    if (item.url && _isCastFileUrl(item.url)) {
+        return _isPlaceholderCastUrl(item.url) ? 2 : 0;
+    }
+    return 1;
+}
 
 WasmEngine.prototype.deliverJpegDecodeResults = function(maxResults) {
     if (_jpegDecodeQueue.length === 0) return 0;
@@ -968,6 +1129,16 @@ function _isCastFileUrl(url) {
     return lower.endsWith('.cct') || lower.endsWith('.cst');
 }
 
+function _isPlaceholderCastUrl(url) {
+    if (!url) return false;
+    var lower = url.toLowerCase();
+    var qi = lower.indexOf('?');
+    if (qi > 0) lower = lower.substring(0, qi);
+    var slash = lower.lastIndexOf('/');
+    var fileName = slash >= 0 ? lower.substring(slash + 1) : lower;
+    return fileName === 'empty.cct' || fileName === 'empty.cst';
+}
+
 function _fetchCacheKeys(url) {
     var keys = [];
     if (!url) return keys;
@@ -1047,10 +1218,20 @@ WasmEngine.prototype.pumpNetworkFire = function() {
     var engine = this;
     for (var i = 0; i < reqs.length; i++) {
         let req = reqs[i];
+        let fetchSeq = ++_fetchOrderSeq;
+        _fetchOrderLog('request seq=' + fetchSeq
+            + ' task=' + req.taskId
+            + ' method=' + (req.method || 'GET')
+            + ' url=' + req.url
+            + ' fallbacks=' + ((req.fallbacks && req.fallbacks.length) || 0));
         if ((req.method || 'GET') === 'GET') {
             let cachedData = _cachedFetchResponse(req.url, req.fallbacks || []);
             if (cachedData) {
-                _fetchQueue.push({ taskId: req.taskId, data: cachedData, url: req.url });
+                _fetchOrderLog('queue-cache seq=' + fetchSeq
+                    + ' task=' + req.taskId
+                    + ' url=' + req.url
+                    + ' bytes=' + cachedData.byteLength);
+                _fetchQueue.push({ taskId: req.taskId, data: cachedData, url: req.url, fetchSeq: fetchSeq });
                 continue;
             }
         }
@@ -1058,6 +1239,10 @@ WasmEngine.prototype.pumpNetworkFire = function() {
         let pendingFetch = _fetchInFlightByKey[fetchKey];
         if (!pendingFetch) {
             _fetchInFlight++;
+            _fetchOrderLog('start seq=' + fetchSeq
+                + ' task=' + req.taskId
+                + ' url=' + req.url
+                + ' inFlight=' + _fetchInFlight);
             pendingFetch = engine._fetchWithFallbacks(req.taskId, req.url, req.method, req.postData, req.fallbacks || [])
                 .finally(function() {
                     if (_fetchInFlightByKey[fetchKey] === pendingFetch) {
@@ -1066,6 +1251,10 @@ WasmEngine.prototype.pumpNetworkFire = function() {
                     _fetchInFlight = Math.max(0, _fetchInFlight - 1);
                 });
             _fetchInFlightByKey[fetchKey] = pendingFetch;
+        } else {
+            _fetchOrderLog('reuse-inflight seq=' + fetchSeq
+                + ' task=' + req.taskId
+                + ' url=' + req.url);
         }
         pendingFetch
             .then(function(result) {
@@ -1074,14 +1263,29 @@ WasmEngine.prototype.pumpNetworkFire = function() {
                     if (_isCastFileUrl(result.url || req.url)) {
                         _rememberFetchResponse(result.url || req.url, result.data);
                     }
-                    _fetchQueue.push({ taskId: req.taskId, data: result.data, url: result.url || req.url });
+                    _fetchOrderLog('queue-result seq=' + fetchSeq
+                        + ' task=' + req.taskId
+                        + ' url=' + (result.url || req.url)
+                        + ' bytes=' + result.data.byteLength
+                        + ' queueBefore=' + _fetchQueue.length);
+                    _fetchQueue.push({ taskId: req.taskId, data: result.data, url: result.url || req.url, fetchSeq: fetchSeq });
                 } else {
-                    _fetchQueue.push({ taskId: req.taskId, error: result && result.status ? result.status : 0 });
+                    _fetchOrderLog('queue-error seq=' + fetchSeq
+                        + ' task=' + req.taskId
+                        + ' url=' + req.url
+                        + ' status=' + (result && result.status ? result.status : 0)
+                        + ' queueBefore=' + _fetchQueue.length);
+                    _fetchQueue.push({ taskId: req.taskId, error: result && result.status ? result.status : 0, fetchSeq: fetchSeq });
                 }
             })
             .catch(function(e) {
                 if (seq !== _networkSeq) return;
-                _fetchQueue.push({ taskId: req.taskId, error: e && e.status ? e.status : 0 });
+                _fetchOrderLog('queue-throw seq=' + fetchSeq
+                    + ' task=' + req.taskId
+                    + ' url=' + req.url
+                    + ' status=' + (e && e.status ? e.status : 0)
+                    + ' queueBefore=' + _fetchQueue.length);
+                _fetchQueue.push({ taskId: req.taskId, error: e && e.status ? e.status : 0, fetchSeq: fetchSeq });
             });
     }
     return reqs.length;
@@ -1153,10 +1357,14 @@ WasmEngine.prototype.pumpMusRequests = function() {
 function _musSendOrQueue(instId, data, dataLen) {
     var ws = _musSockets[instId];
     if (ws && ws.readyState === WebSocket.OPEN) {
+        _musDebug('send instance=' + instId + ' bytes=' + dataLen
+            + ' url=' + (_musSocketUrls[instId] || '<unknown>')
+            + ' readyState=' + ws.readyState);
         _musPacketDebug('send instance=' + instId + ' bytes=' + dataLen + _musPreview(data));
         ws.send(data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
             ? data.buffer
             : data.slice().buffer);
+        _musTrackOutstandingSend(instId, dataLen);
         return;
     }
 
@@ -1166,7 +1374,8 @@ function _musSendOrQueue(instId, data, dataLen) {
             || (ws && (ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED));
         _musDebug((terminalKnown ? 'send ignored after terminal state instance=' : 'send dropped instance=') + instId
             + ' readyState=' + (ws ? ws.readyState : 'missing')
-            + ' bytes=' + dataLen);
+            + ' bytes=' + dataLen
+            + ' url=' + (_musSocketUrls[instId] || '<unknown>'));
         if (terminalKnown) {
             return;
         }
@@ -1189,7 +1398,8 @@ function _musSendOrQueue(instId, data, dataLen) {
     _musDebug('send queued instance=' + instId
         + ' readyState=' + (ws ? ws.readyState : 'missing')
         + ' queued=' + queue.length
-        + ' bytes=' + dataLen);
+        + ' bytes=' + dataLen
+        + ' url=' + (_musSocketUrls[instId] || '<unknown>'));
 }
 
 function _musFlushQueuedSends(instId) {
@@ -1201,14 +1411,35 @@ function _musFlushQueuedSends(instId) {
     _musDebug('flush queued sends instance=' + instId + ' count=' + queue.length);
     while (queue.length > 0 && ws.readyState === WebSocket.OPEN) {
         var data = queue.shift();
+        _musDebug('send queued instance=' + instId + ' bytes=' + data.length
+            + ' url=' + (_musSocketUrls[instId] || '<unknown>')
+            + ' readyState=' + ws.readyState);
         _musPacketDebug('send instance=' + instId + ' bytes=' + data.length + _musPreview(data));
         ws.send(data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
             ? data.buffer
             : data.slice().buffer);
+        _musTrackOutstandingSend(instId, data.length);
     }
     if (queue.length === 0) {
         delete _musPendingSends[instId];
     }
+}
+
+function _musTrackOutstandingSend(instId, dataLen) {
+    if (!_debugLogsEnabled) return;
+    var seq = ++_musSendSeq;
+    _musOutstandingSends[instId] = seq;
+    var url = _musSocketUrls[instId] || '<unknown>';
+    setTimeout(function() {
+        if (_musOutstandingSends[instId] !== seq) {
+            return;
+        }
+        var ws = _musSockets[instId];
+        _musDebug('no inbound after send instance=' + instId
+            + ' ms=2000 bytes=' + dataLen
+            + ' readyState=' + (ws ? ws.readyState : 'missing')
+            + ' url=' + url);
+    }, 2000);
 }
 
 function _buildMusWebSocketUrl(host, port) {
@@ -1266,9 +1497,13 @@ function _shouldUseSecureMusWebSocket(host, port) {
 
 /**
  * Open a WebSocket and wire up event handlers.
- * Messages are queued in JS and delivered to WASM during the next tick.
+ * Messages are staged into the bridge from socket events; the Director-facing
+ * Multiuser Xtra callback is then pumped outside active score ticks.
  */
-WasmEngine.prototype._musConnect = function(instId, wsUrl) {
+WasmEngine.prototype._musConnect = function(instId, wsUrl, notifyConnected) {
+    if (notifyConnected === undefined) {
+        notifyConnected = true;
+    }
     // Close any existing connection for this instance
     if (_musSockets[instId]) {
         var oldSocket = _musSockets[instId];
@@ -1290,11 +1525,14 @@ WasmEngine.prototype._musConnect = function(instId, wsUrl) {
     }
     ws.binaryType = 'arraybuffer';
     _musSockets[instId] = ws;
+    _musSocketUrls[instId] = wsUrl;
     var engine = this;
 
     ws.onopen = function() {
         _musDebug('open instance=' + instId + ' url=' + wsUrl);
-        _musConnected[instId] = true;
+        if (notifyConnected) {
+            _musConnected[instId] = true;
+        }
         _musFlushQueuedSends(instId);
         engine._musPumpImmediate('open');
     };
@@ -1308,22 +1546,32 @@ WasmEngine.prototype._musConnect = function(instId, wsUrl) {
         } else {
             data = new Uint8Array(evt.data);
         }
+        delete _musOutstandingSends[instId];
+        _musDebug('message instance=' + instId + ' bytes=' + data.length
+            + ' url=' + wsUrl);
         _musPacketDebug('message instance=' + instId + ' bytes=' + data.length + _musPreview(data));
         _musInbound[instId].push(data);
         engine._musPumpImmediate('message');
     };
 
     ws.onclose = function(evt) {
-        _musDebug('close instance=' + instId + ' code=' + (evt && evt.code) + ' reason=' + (evt && evt.reason ? evt.reason : '') + ' wasClean=' + (evt && evt.wasClean));
-        _musDisconnected[instId] = true;
-        _musDisconnectDetails[instId] = {
+        var closeDetail = {
             code: evt && evt.code ? evt.code : 0,
             reason: evt && evt.reason ? evt.reason : '',
             wasClean: !!(evt && evt.wasClean),
             url: wsUrl
         };
+        _musDebug('close instance=' + instId + ' code=' + closeDetail.code
+            + ' reason=' + closeDetail.reason
+            + ' wasClean=' + closeDetail.wasClean
+            + ' url=' + wsUrl);
         delete _musSockets[instId];
         delete _musPendingSends[instId];
+        delete _musSocketUrls[instId];
+        delete _musOutstandingSends[instId];
+        _musDisconnected[instId] = true;
+        _musDisconnectDetails[instId] = closeDetail;
+        engine._musPumpImmediate('close');
     };
 
     ws.onerror = function(evt) {
@@ -1331,6 +1579,7 @@ WasmEngine.prototype._musConnect = function(instId, wsUrl) {
         _musErrors[instId] = -2; // network error
         _musErrorDetails[instId] = 'websocket error url=' + wsUrl
             + (evt && evt.message ? ' message=' + evt.message : '');
+        engine._musPumpImmediate('error');
     };
 };
 
@@ -1436,6 +1685,8 @@ WasmEngine.prototype.deliverMusEvents = function() {
             } catch(e) { return; }
             new Uint8Array(this._mem(), strAddr, len).set(msgBytes);
             try {
+                _musDebug('deliver-to-wasm instance=' + iid + ' bytes=' + len
+                    + ' index=' + (i + 1) + '/' + msgs.length);
                 this.exports.musDeliverMessage(iid, len); this._clearEx();
             } catch(e) {
                 self.postMessage({type:'error', msg:'[MUS] musDeliverMessage error: ' + e});
@@ -1509,7 +1760,12 @@ WasmEngine.prototype.deliverMusEvents = function() {
 };
 
 WasmEngine.prototype._musPumpImmediate = function(reason) {
-    if (this._wasmDead || _isTicking) {
+    if (this._wasmDead) {
+        return;
+    }
+    if (_isTicking) {
+        _musImmediateDeferred = true;
+        _musDebug('immediate deferred reason=' + (reason || 'unknown'));
         return;
     }
     try {
@@ -1518,20 +1774,44 @@ WasmEngine.prototype._musPumpImmediate = function(reason) {
         console.error(_formatWorkerError('[WORKER] MUS immediate deliver error', deliverErr));
         return;
     }
-    try {
-        if (this.exports.processXtraCallbacks) {
-            this.exports.processXtraCallbacks(); this._clearEx();
-        }
-    } catch (callbackErr) {
-        console.error(_formatWorkerError('[WORKER] MUS immediate callback error', callbackErr));
-        return;
-    }
+    _processMusCallbacks('immediate-' + (reason || 'unknown'));
     try {
         this.pumpMusRequests();
     } catch (pumpErr) {
         console.error(_formatWorkerError('[WORKER] MUS immediate pump error', pumpErr));
     }
 };
+
+function _processMusCallbacks(reason) {
+    if (!_e || _e._wasmDead || !_e.exports || !_e.exports.processXtraCallbacks) {
+        return;
+    }
+    if (_isTicking) {
+        _musCallbackDeferred = true;
+        _musDebug('callbacks deferred reason=' + (reason || 'unknown'));
+        return;
+    }
+    try {
+        _musDebug('process-callbacks reason=' + (reason || 'unknown'));
+        _e.exports.processXtraCallbacks(); _e._clearEx();
+    } catch (callbackErr) {
+        console.error(_formatWorkerError('[WORKER] MUS callback pump error', callbackErr));
+    }
+}
+
+function _flushDeferredMusImmediate(reason) {
+    if (!_musImmediateDeferred || !_e || _e._wasmDead || _isTicking) {
+        if (_musCallbackDeferred && _e && !_e._wasmDead && !_isTicking) {
+            _musCallbackDeferred = false;
+            _processMusCallbacks(reason || 'deferred-callbacks');
+            try { _e.pumpMusRequests(); }
+            catch (pumpErr) { console.error(_formatWorkerError('[WORKER] MUS deferred callback pump error', pumpErr)); }
+        }
+        return;
+    }
+    _musImmediateDeferred = false;
+    _e._musPumpImmediate(reason || 'deferred');
+}
 
 // ============================================================
 // URL helpers
@@ -1592,6 +1872,9 @@ self.onmessage = async function(e) {
                 if (_e.exports.setPauseOnAuthoredMajorEnabled) {
                     _e.exports.setPauseOnAuthoredMajorEnabled(msg.pauseOnAuthoredMajor ? 1 : 0);
                 }
+                if (_e.exports.setPropertyTraceEnabled) {
+                    _e.exports.setPropertyTraceEnabled(msg.traceProperties ? 1 : 0);
+                }
                 _e.setPropListSetAtByKeyCompatibility(!!msg.compatPropListSetAtByKey);
                 self.postMessage({ type: 'ready' });
                 break;
@@ -1603,6 +1886,7 @@ self.onmessage = async function(e) {
                 _fetchInFlight = 0;
                 _fetchInFlightByKey = {};
                 _fetchResponseCache = {};
+                _fetchOrderSeq = 0;
                 _musCloseAllSockets();
                 _jpegDecodeSeq++;
                 _jpegDecodeQueue = [];
@@ -1638,6 +1922,9 @@ self.onmessage = async function(e) {
                 }
                 if (_e.exports.setPauseOnAuthoredMajorEnabled && msg.pauseOnAuthoredMajor !== undefined) {
                     _e.exports.setPauseOnAuthoredMajorEnabled(msg.pauseOnAuthoredMajor ? 1 : 0);
+                }
+                if (_e.exports.setPropertyTraceEnabled && msg.traceProperties !== undefined) {
+                    _e.exports.setPropertyTraceEnabled(msg.traceProperties ? 1 : 0);
                 }
                 _e._clearEx();
                 break;
@@ -1677,8 +1964,9 @@ self.onmessage = async function(e) {
                 var fired = _e.pumpNetworkFire();
                 console.log('[WORKER] preloadCasts fired ' + fired + ' async fetches in ' +
                             Math.round(performance.now() - castT0) + 'ms');
-                var preloadWaitMs = n > 0 ? Math.min(15000, Math.max(3000, n * 1500)) : 500;
-                var drained = await _drainStartupFetches(preloadWaitMs);
+                var drained = n > 0
+                    ? await _drainRequiredStartupFetches('preloadCasts')
+                    : await _drainStartupFetches(500);
                 console.log('[WORKER] preloadCasts drained delivered=' + drained.delivered +
                             ' fired=' + drained.fired +
                             ' inFlight=' + _fetchInFlight +
@@ -1721,6 +2009,7 @@ self.onmessage = async function(e) {
                 break;
             case 'mouseDown':
                 if (_e && !_e._wasmDead) try {
+                    _drainMusBeforeInputEvent('mouseDown');
                     _e.mouseDown(msg.x, msg.y, msg.button);
                     _pumpAfterInputEvent('mouseDown');
                 } catch(ie) {
@@ -1729,6 +2018,7 @@ self.onmessage = async function(e) {
                 break;
             case 'mouseUp':
                 if (_e && !_e._wasmDead) try {
+                    _drainMusBeforeInputEvent('mouseUp');
                     _e.mouseUp(msg.x, msg.y, msg.button);
                     _pumpAfterInputEvent('mouseUp');
                 } catch(ie) {
@@ -1737,12 +2027,14 @@ self.onmessage = async function(e) {
                 break;
             case 'keyDown':
                 if (_e && !_e._wasmDead) try {
+                    _drainMusBeforeInputEvent('keyDown');
                     _e.keyDown(msg.keyCode, msg.key || '', msg.modifiers);
                     _pumpAfterInputEvent('keyDown');
                 } catch(ie) { console.error('[WORKER] keyDown error:', ie); }
                 break;
             case 'keyUp':
                 if (_e && !_e._wasmDead) try {
+                    _drainMusBeforeInputEvent('keyUp');
                     _e.keyUp(msg.keyCode, msg.key || '', msg.modifiers);
                     _pumpAfterInputEvent('keyUp');
                 } catch(ie) { console.error('[WORKER] keyUp error:', ie); }
@@ -1750,6 +2042,7 @@ self.onmessage = async function(e) {
 
             case 'paste':
                 if (_e && !_e._wasmDead) try {
+                    _drainMusBeforeInputEvent('paste');
                     _e.pasteText(msg.text);
                     _pumpAfterInputEvent('paste');
                 } catch(e) {}
@@ -1791,18 +2084,22 @@ self.onmessage = async function(e) {
                 if (!relay) break;
                 delete _fetchRelayMap[msg.relayId];
                 if (msg.error) {
+                    _fetchOrderLog('relay-error url=' + relay.url
+                        + ' status=' + (msg.status || 0));
                     console.log('[WORKER] relay ERR: ' + relay.url + ' status=' + (msg.status || 0));
                     if (relay.reject) {
                         relay.reject({ status: msg.status || 0 });
                     } else {
-                        _fetchQueue.push({ taskId: relay.taskId, error: msg.status || 0 });
+                        _fetchQueue.push({ taskId: relay.taskId, error: msg.status || 0, fetchSeq: 0 });
                     }
                 } else {
+                    _fetchOrderLog('relay-complete url=' + relay.url
+                        + ' bytes=' + msg.data.byteLength);
                     console.log('[WORKER] relay OK: ' + relay.url + ' (' + msg.data.byteLength + ' bytes)');
                     if (relay.resolve) {
                         relay.resolve(msg.data);
                     } else {
-                        _fetchQueue.push({ taskId: relay.taskId, data: msg.data, url: relay.url });
+                        _fetchQueue.push({ taskId: relay.taskId, data: msg.data, url: relay.url, fetchSeq: 0 });
                     }
                 }
                 break;
@@ -2039,6 +2336,7 @@ self.onmessage = async function(e) {
 
                 } finally {
                     _isTicking = false;
+                    _flushDeferredMusImmediate('deferred-after-tick');
                 }
                 break;
             }

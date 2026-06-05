@@ -210,24 +210,40 @@ class WasmMultiuserBridgeTest {
     }
 
     @Test
-    void cleanWebSocketCloseQueuesConnectionProblem() {
+    void cleanWebSocketCloseDoesNotQueueConnectionProblem() {
         WasmMultiuserBridge bridge = new WasmMultiuserBridge();
 
         bridge.notifyConnected(1);
         bridge.pollMessages(1);
-        bridge.notifyDisconnected(1, 3333, true,
-                "close code=3333 wasClean=true url=ws://127.0.0.1:4173/mus-ws");
+        bridge.notifyDisconnected(1, 1000, true,
+                "close code=1000 wasClean=true url=ws://127.0.0.1:4173/mus-ws");
 
         List<MultiuserNetBridge.NetMessage> messages = bridge.pollMessages(1);
-        assertEquals(1, messages.size());
-        assertEquals(-2, messages.get(0).errorCode());
-        assertEquals("ConnectionProblem", messages.get(0).subject());
-        assertEquals(true, messages.get(0).content().toStr().contains("wasClean=true"));
+        assertEquals(List.of(), messages);
         assertEquals(false, bridge.isConnected(1));
     }
 
     @Test
-    void cleanCloseKeepsAlreadyQueuedApplicationDataBeforeTerminalError() {
+    void cleanCloseAfterApplicationDataKeepsDataUsableBeforeTerminalState() {
+        WasmMultiuserBridge bridge = new WasmMultiuserBridge();
+
+        bridge.requestConnect(1, "example.test", 1234, 1);
+        bridge.drainPendingRequests();
+        bridge.notifyConnected(1);
+        bridge.pollMessages(1);
+        bridge.deliverMessage(1, 0, "", "", "strip-response");
+        bridge.notifyDisconnected(1, 1000, true, "close code=1000");
+
+        List<MultiuserNetBridge.NetMessage> applicationMessages = bridge.pollMessages(1);
+        assertEquals(1, applicationMessages.size());
+        assertEquals("strip-response", applicationMessages.get(0).content().toStr());
+
+        assertEquals(List.of(), bridge.pollMessages(1));
+        assertEquals(false, bridge.isConnected(1));
+    }
+
+    @Test
+    void uncleanCloseKeepsAlreadyQueuedApplicationDataBeforeTerminalError() {
         WasmMultiuserBridge bridge = new WasmMultiuserBridge();
 
         bridge.requestConnect(1, "example.test", 1234, 1);
@@ -235,7 +251,7 @@ class WasmMultiuserBridgeTest {
         bridge.notifyConnected(1);
         bridge.pollMessages(1);
         bridge.deliverMessage(1, 0, "", "", "@@article-list");
-        bridge.notifyDisconnected(1, 1000, true, "close code=1000");
+        bridge.notifyDisconnected(1, 1006, false, "close code=1006");
 
         List<MultiuserNetBridge.NetMessage> applicationMessages = bridge.pollMessages(1);
         assertEquals(1, applicationMessages.size());
@@ -245,7 +261,7 @@ class WasmMultiuserBridgeTest {
         assertEquals(1, terminalMessages.size());
         assertEquals(-2, terminalMessages.get(0).errorCode());
         assertEquals("ConnectionProblem", terminalMessages.get(0).subject());
-        assertEquals(true, terminalMessages.get(0).content().toStr().contains("closeCode=1000"));
+        assertEquals(true, terminalMessages.get(0).content().toStr().contains("closeCode=1006"));
     }
 
     @Test

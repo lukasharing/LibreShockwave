@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class MultiuserXtraTest {
 
     @Test
-    void automaticCallbacksDeliverPendingBurstInOneTick() {
+    void tickPollsPendingBurstAndInvokesCallbacks() {
         FakeBridge bridge = new FakeBridge();
         AtomicInteger callbacks = new AtomicInteger();
         AtomicReference<MultiuserXtra> xtraRef = new AtomicReference<>();
@@ -33,12 +33,14 @@ class MultiuserXtraTest {
         bridge.queue.add(new MultiuserNetBridge.NetMessage(0, "", "B", Datum.of("two")));
 
         xtra.tick();
+
         assertEquals(2, callbacks.get());
         assertEquals(List.of("A", "B"), subjects);
+        assertEquals(0, xtra.callHandler(1, "getNumberWaitingNetMessages", List.of()).toInt());
     }
 
     @Test
-    void automaticCallbacksDrainLargeNetworkBurstInOneTick() {
+    void checkNetMessagesDrainsLargePolledNetworkBurst() {
         FakeBridge bridge = new FakeBridge();
         AtomicInteger callbacks = new AtomicInteger();
         AtomicReference<MultiuserXtra> xtraRef = new AtomicReference<>();
@@ -59,8 +61,10 @@ class MultiuserXtraTest {
                     0, "", "msg-" + i, Datum.of("payload-" + i)));
         }
 
-        xtra.tick();
+        assertEquals(32, xtra.callHandler(1, "getNumberWaitingNetMessages", List.of()).toInt());
+        Datum processed = xtra.callHandler(1, "checkNetMessages", List.of(Datum.of(32)));
 
+        assertEquals(32, processed.toInt());
         assertEquals(32, callbacks.get());
         assertEquals("msg-0", subjects.get(0));
         assertEquals("msg-31", subjects.get(31));

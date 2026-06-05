@@ -399,8 +399,8 @@ public class WasmEntry {
 
     /**
      * Process pending Xtra callbacks without advancing the score.
-     * Browser socket events use this after delivering MUS events so authored
-     * Multiuser callbacks can answer or tear down the connection immediately.
+     * Browser socket events stage data first, then use this pump to run
+     * Director-facing Xtra callbacks outside active score ticks.
      */
     @Export(name = "processXtraCallbacks")
     public static void processXtraCallbacks() {

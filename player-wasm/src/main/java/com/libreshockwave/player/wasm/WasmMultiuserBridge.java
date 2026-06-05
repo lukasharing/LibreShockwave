@@ -199,6 +199,15 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
                     + formatCloseDetail(closeCode, wasClean, detail));
             return;
         }
+        if (closeCode == 1000 && wasClean) {
+            terminalInstances.add(instanceId);
+            terminalMessages.remove(instanceId);
+            terminalDeferredForHandler.remove(instanceId);
+            transports.remove(instanceId);
+            debug("clean disconnected ignored instance=" + instanceId
+                    + formatCloseDetail(closeCode, wasClean, detail));
+            return;
+        }
         if (terminalInstances.contains(instanceId) || terminalMessages.containsKey(instanceId)) {
             debug("disconnected ignored for terminal instance=" + instanceId
                     + formatCloseDetail(closeCode, wasClean, detail));

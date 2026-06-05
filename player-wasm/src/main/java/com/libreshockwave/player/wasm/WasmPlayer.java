@@ -106,7 +106,8 @@ public class WasmPlayer {
 
     /**
      * Process asynchronous Xtra callbacks without advancing the score.
-     * Used by host socket events that arrive between rendered frames.
+     * WebSocket delivery stages data into the bridge first; this pump runs the
+     * registered Xtra callbacks without advancing the score.
      */
     public void processXtraCallbacks() {
         if (player == null) return;

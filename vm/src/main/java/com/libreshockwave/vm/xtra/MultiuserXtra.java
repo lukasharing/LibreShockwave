@@ -24,8 +24,6 @@ import java.util.Map;
  */
 public class MultiuserXtra implements Xtra {
 
-    private static final int MAX_AUTOMATIC_CALLBACKS_PER_TICK = 1024;
-
     private final MultiuserNetBridge netBridge;
     private final ScriptCallback scriptCallback;
     private final Map<Integer, InstanceState> instances = new HashMap<>();
@@ -91,10 +89,13 @@ public class MultiuserXtra implements Xtra {
     }
 
     /**
-     * Auto-process pending messages for instances with registered handlers.
-     * Called each frame by the Player via XtraManager.tickAll().
-     * This emulates Director's behavior where setNetMessageHandler callbacks
-     * fire automatically when messages arrive, without explicit checkNetMessages calls.
+     * Run Multiuser callbacks during the normal Director tick.
+     *
+     * Some movies poll explicitly with getNumberWaitingNetMessages() and
+     * checkNetMessages(), while others rely on the registered net message
+     * handler being called automatically. Host transports stage data into the
+     * bridge first; Player may then call this from a score tick or an explicit
+     * callback pump that does not advance the score.
      */
     @Override
     public void tick() {
@@ -116,24 +117,7 @@ public class MultiuserXtra implements Xtra {
                         + " handler=" + state.callbackHandler);
             }
 
-            // Drain a whole network burst in this movie tick. Network packets
-            // describe one simulation step; spreading them over frames can make
-            // authored keepalives and follow-up responses arrive out of phase.
-            for (int processed = 0;
-                 !state.messageQueue.isEmpty()
-                         && processed < MAX_AUTOMATIC_CALLBACKS_PER_TICK
-                         && state.callbackHandler != null
-                         && state.callbackTarget != null;
-                 processed++) {
-                state.currentMessage = state.messageQueue.remove(0);
-                try {
-                    traceCallback(instanceId, state, "auto");
-                    scriptCallback.invoke(state.callbackTarget, state.callbackHandler, List.of());
-                } catch (Exception e) {
-                    System.err.println("[MultiuserXtra] Auto-callback error: " + e.getMessage());
-                }
-            }
-            state.currentMessage = null;
+            drainCallbacks(instanceId, state, state.messageQueue.size(), "tick");
         }
     }
 
@@ -159,10 +143,13 @@ public class MultiuserXtra implements Xtra {
                 // or explicit disconnect/destroy paths, not by handler routing.
                 state.callbackHandler = null;
                 state.callbackTarget = null;
+                debug("handler cleared");
             } else {
                 state.callbackHandler = handlerArg instanceof Datum.Symbol sym
                         ? sym.name() : handlerArg.toStr();
                 state.callbackTarget = targetArg;
+                debug("handler set handler=" + state.callbackHandler
+                        + " target=" + preview(targetArg));
             }
         }
         return Datum.ZERO; // 0 = success
@@ -178,6 +165,10 @@ public class MultiuserXtra implements Xtra {
             state.port = port;
             state.currentMessage = null;
             state.messageQueue.clear();
+            debug("connect instance=" + instanceId
+                    + " host=" + host
+                    + " port=" + port
+                    + " mode=" + modeFlag);
             netBridge.requestConnect(instanceId, host, port, modeFlag);
         }
         return Datum.ZERO;
@@ -226,6 +217,10 @@ public class MultiuserXtra implements Xtra {
                     + " handler=" + state.callbackHandler);
         }
 
+        return Datum.of(drainCallbacks(instanceId, state, count, "check"));
+    }
+
+    private int drainCallbacks(int instanceId, InstanceState state, int count, String mode) {
         int processed = 0;
         for (int i = 0; i < count && !state.messageQueue.isEmpty(); i++) {
             state.currentMessage = state.messageQueue.remove(0);
@@ -234,7 +229,7 @@ public class MultiuserXtra implements Xtra {
             // Fire the registered callback
             if (state.callbackHandler != null && state.callbackTarget != null) {
                 try {
-                    traceCallback(instanceId, state, "check");
+                    traceCallback(instanceId, state, mode);
                     scriptCallback.invoke(state.callbackTarget, state.callbackHandler, List.of());
                 } catch (Exception e) {
                     System.err.println("[MultiuserXtra] Callback error: " + e.getMessage());
@@ -243,7 +238,7 @@ public class MultiuserXtra implements Xtra {
         }
 
         state.currentMessage = null;
-        return Datum.of(processed);
+        return processed;
     }
 
     private Datum getNumberWaitingNetMessages(int instanceId, InstanceState state) {
