@@ -780,10 +780,14 @@ public final class ImageMethodDispatcher {
                 : Integer.MIN_VALUE;
         boolean remapToAlphaMask = false;
         boolean grayscaleColorized = false;
+        boolean explicitBgColorIsSourceBackground = ink == Palette.InkMode.BACKGROUND_TRANSPARENT
+                && bgColorRemap >= 0
+                && rgbLooksLikeRegionBackground(src, srcRect, bgColorRemap);
         boolean darkenBgTintCandidate = ink == Palette.InkMode.DARKEN
                 && colorizeBgColorRemap >= 0
                 && colorRemap < 0;
         if ((colorRemap >= 0 || colorizeBgColorRemap >= 0)
+                && !explicitBgColorIsSourceBackground
                 && (!src.hasNativeMatteAlpha() || darkenBgTintCandidate)) {
             // Sample source pixels to check if they're grayscale (safe to remap)
             boolean isGrayscale = isMostlyGrayscale(src, srcRect);

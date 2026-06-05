@@ -614,4 +614,28 @@ class ImageMethodDispatcherTest {
                 "explicit bgColor remains the transparent key when it is the source background");
         assertEquals(0xFFFF0000, dest.getPixel(1, 1));
     }
+
+    @Test
+    void backgroundTransparentDoesNotRecolorAlreadyRenderedTextWithExplicitBgColor() {
+        Bitmap source = new Bitmap(8, 4, 32);
+        source.fill(0xFF6A6A6A);
+        source.setPixel(3, 1, 0xFFFCFCFC);
+        source.setPixel(4, 1, 0xFFFCFCFC);
+
+        Bitmap dest = new Bitmap(8, 4, 32);
+        dest.fill(0xFF222222);
+        Datum.PropList props = new Datum.PropList();
+        props.add("ink", Datum.of(36), true);
+        props.add("color", new Datum.Color(0xFC, 0xFC, 0xFC), true);
+        props.add("bgColor", new Datum.Color(0x6A, 0x6A, 0x6A), true);
+
+        ImageMethodDispatcher.dispatch(new Datum.ImageRef(dest), "copyPixels",
+                List.of(new Datum.ImageRef(source), new Datum.Rect(0, 0, 8, 4),
+                        new Datum.Rect(0, 0, 8, 4), props));
+
+        assertEquals(0xFF222222, dest.getPixel(0, 0),
+                "the explicit source background should key out instead of being recolored");
+        assertEquals(0xFFFCFCFC, dest.getPixel(3, 1),
+                "already rendered white glyph pixels should copy unchanged");
+    }
 }
