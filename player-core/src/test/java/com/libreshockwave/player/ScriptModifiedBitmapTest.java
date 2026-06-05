@@ -1967,6 +1967,31 @@ public class ScriptModifiedBitmapTest {
     }
 
     @Test
+    void copyPixelsLowDepthMaskUsesIndexRampBeforeSystemPaletteColorization() {
+        Bitmap src = new Bitmap(2, 1, 2);
+        src.setImagePalette(Palette.SYSTEM_MAC_PALETTE);
+        src.fillRectPaletteIndex(0, 0, 1, 1, 0, 0xFFFFFFFF);
+        src.fillRectPaletteIndex(1, 0, 1, 1, 3, 0xFFFFFF66);
+
+        Bitmap dest = new Bitmap(2, 1, 32);
+        dest.fill(0xFF777777);
+
+        Datum.PropList props = inkProps(36);
+        props.add("palette", Datum.symbol("systemWin"), true);
+        props.add("color", new Datum.Color(0, 0, 0), true);
+        props.add("bgColor", new Datum.Color(255, 255, 255), true);
+
+        ImageMethodDispatcher.dispatch(new Datum.ImageRef(dest), "copyPixels",
+                List.of(new Datum.ImageRef(src), new Datum.Rect(0, 0, 2, 1),
+                        new Datum.Rect(0, 0, 2, 1), props));
+
+        assertEquals(0xFF777777, dest.getPixel(0, 0),
+                "index 0 remains the background-transparent key");
+        assertEquals(0xFF000000, dest.getPixel(1, 0),
+                "low-depth mask foreground must use #color, not systemWin's blue index 3");
+    }
+
+    @Test
     void quadCopiedPalettedSourceDoesNotMakeRgbWrapperIndexed() {
         Palette sourcePalette = new Palette(new int[]{0xFFFFFF, 0xFF808080, 0xFF000000}, "shade-ramp");
         Bitmap src = new Bitmap(2, 3, 8, new int[]{

@@ -747,7 +747,10 @@ public final class ImageMethodDispatcher {
             }
         }
 
-        if (copyPaletteRef != null && copyPaletteRef.palette() != null) {
+        Bitmap indexedMaskRampSource = src;
+        boolean useIndexedMaskRampForColorRemap = shouldUseIndexedMaskRampForColorRemap(
+                src, srcRect, copyPaletteRef, colorRemap, bgColorRemap);
+        if (copyPaletteRef != null && copyPaletteRef.palette() != null && !useIndexedMaskRampForColorRemap) {
             src = copyWithPaletteRef(src, copyPaletteRef);
         }
         if (src.hasNativeMatteAlpha()) {
@@ -792,7 +795,7 @@ public final class ImageMethodDispatcher {
             // Sample source pixels to check if they're grayscale (safe to remap)
             boolean isGrayscale = isMostlyGrayscale(src, srcRect);
 
-            if (isGrayscale) {
+            if (isGrayscale || useIndexedMaskRampForColorRemap) {
                 int fgR = colorRemap >= 0 ? (colorRemap >> 16) & 0xFF : 0;
                 int fgG = colorRemap >= 0 ? (colorRemap >> 8) & 0xFF : 0;
                 int fgB = colorRemap >= 0 ? colorRemap & 0xFF : 0;
@@ -807,6 +810,12 @@ public final class ImageMethodDispatcher {
                         && sourcePaletteIndices.length >= src.getWidth() * src.getHeight()
                         ? new byte[srcW * srcH]
                         : null;
+                byte[] indexedMaskRampIndices = useIndexedMaskRampForColorRemap
+                        ? indexedMaskRampSource.getPaletteIndicesUnsafe()
+                        : null;
+                int indexedMaskMax = useIndexedMaskRampForColorRemap
+                        ? Math.max(1, (1 << Math.min(8, Math.max(1, indexedMaskRampSource.getBitDepth()))) - 1)
+                        : 1;
                 for (int y = 0; y < srcH; y++) {
                     for (int x = 0; x < srcW; x++) {
                         int sourceX = srcRect.left() + x;
@@ -817,6 +826,14 @@ public final class ImageMethodDispatcher {
                         int g = (pixel >> 8) & 0xFF;
                         int b = pixel & 0xFF;
                         int gray = r;
+                        if (indexedMaskRampIndices != null
+                                && sourceX >= 0 && sourceX < indexedMaskRampSource.getWidth()
+                                && sourceY >= 0 && sourceY < indexedMaskRampSource.getHeight()
+                                && indexedMaskRampIndices.length >= indexedMaskRampSource.getWidth() * indexedMaskRampSource.getHeight()) {
+                            int index = indexedMaskRampIndices[sourceY * indexedMaskRampSource.getWidth() + sourceX] & indexedMaskMax;
+                            gray = 255 - ((index * 255 + indexedMaskMax / 2) / indexedMaskMax);
+                            alpha = 0xFF;
+                        }
                         if (effectivePaletteIndices != null
                                 && sourceX >= 0 && sourceX < src.getWidth()
                                 && sourceY >= 0 && sourceY < src.getHeight()) {
@@ -1087,6 +1104,45 @@ public final class ImageMethodDispatcher {
         if (dest != null) {
             dest.clearPaletteIndices();
         }
+    }
+
+    private static boolean shouldUseIndexedMaskRampForColorRemap(
+            Bitmap src, Datum.Rect srcRect, ResolvedPalette copyPaletteRef,
+            int colorRemap, int bgColorRemap) {
+        if (src == null || srcRect == null
+                || copyPaletteRef == null || copyPaletteRef.palette() == null
+                || (colorRemap < 0 && bgColorRemap < 0)
+                || src.getPaletteIndicesUnsafe() == null
+                || src.getBitDepth() <= 0 || src.getBitDepth() >= 8) {
+            return false;
+        }
+        int maxIndex = (1 << Math.min(8, src.getBitDepth())) - 1;
+        int left = clamp(Math.min(srcRect.left(), srcRect.right()), 0, src.getWidth());
+        int top = clamp(Math.min(srcRect.top(), srcRect.bottom()), 0, src.getHeight());
+        int right = clamp(Math.max(srcRect.left(), srcRect.right()), 0, src.getWidth());
+        int bottom = clamp(Math.max(srcRect.top(), srcRect.bottom()), 0, src.getHeight());
+        if (left >= right || top >= bottom) {
+            return false;
+        }
+        byte[] indices = src.getPaletteIndicesUnsafe();
+        if (indices.length < src.getWidth() * src.getHeight()) {
+            return false;
+        }
+        boolean sawMin = false;
+        boolean sawMax = false;
+        for (int y = top; y < bottom; y++) {
+            for (int x = left; x < right; x++) {
+                int index = indices[y * src.getWidth() + x] & 0xFF;
+                if (index == 0) {
+                    sawMin = true;
+                } else if (index == maxIndex) {
+                    sawMax = true;
+                } else {
+                    return false;
+                }
+            }
+        }
+        return sawMin && sawMax;
     }
 
     private static Bitmap copyWithPaletteRef(Bitmap src, ResolvedPalette paletteRef) {
