@@ -22,6 +22,8 @@ import com.libreshockwave.vm.util.LingoValueParser;
 import com.libreshockwave.vm.util.StringChunkUtils;
 
 import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
@@ -118,6 +120,7 @@ public class CastMember {
     private String textFontStyle = "plain";
     private String textAlignment = "left";
     private int textColor = 0xFF000000; // ARGB black
+    private final List<TextRenderer.ColorRun> textColorRuns = new ArrayList<>();
     private int textBgColor = 0xFFFFFFFF; // ARGB white
     private boolean textBgColorExplicit;
     private boolean textWordWrap = false;
@@ -569,6 +572,7 @@ public class CastMember {
      */
     public void setDynamicText(String text) {
         this.dynamicText = text;
+        clearTextColorRuns();
         this.textImageDirty = true;
         invalidateParsedTextCache();
         notifyMemberVisualChanged();
@@ -953,10 +957,13 @@ public class CastMember {
             case "fontsize" -> Datum.of(textFontSize);
             case "fontstyle" -> Datum.of(textFontStyle);
             case "alignment" -> Datum.symbol(textAlignment);
-            case "color", "txtcolor" -> new Datum.Color(
-                    (textColor >> 16) & 0xFF,
-                    (textColor >> 8) & 0xFF,
-                    textColor & 0xFF);
+            case "color", "txtcolor" -> {
+                int color = effectiveTextColorAt(0);
+                yield new Datum.Color(
+                        (color >> 16) & 0xFF,
+                        (color >> 8) & 0xFF,
+                        color & 0xFF);
+            }
             case "bgcolor", "txtbgcolor", "palette" -> new Datum.Color(
                     (textBgColor >> 16) & 0xFF,
                     (textBgColor >> 8) & 0xFF,
@@ -1023,9 +1030,11 @@ public class CastMember {
     }
 
     private Bitmap getTextMemberImageForImageRef() {
-        if (textRenderedImage != null && !textImageDirty) {
-            return textRenderedImage;
-        }
+        // member.image has its own Director semantics: the member's authored
+        // backing, or transparent backing when no bgColor was explicitly set.
+        // A previous sprite render may have cached the same text against a
+        // sprite backColor; renderTextToImage() will reuse the cache only when
+        // the member-image dimensions and background actually match.
         return renderTextMemberImage();
     }
 
@@ -1115,7 +1124,7 @@ public class CastMember {
                 alignment, textColor, bgColor,
                 textWordWrap, effectiveTextAntialias(),
                 textFixedLineSpace, textTopSpacing,
-                textKerning, textKerningThreshold);
+                textKerning, textKerningThreshold, textColorRuns);
         textRenderedImageScriptMutated = false;
         attachTextImageMutationCallback(textRenderedImage);
         if (textRenderedImage != null && ((((bgColor >>> 24) & 0xFF) < 0xFF)
@@ -1262,6 +1271,7 @@ public class CastMember {
         if (isTextLike()
                 && (value instanceof Datum.Str || value instanceof Datum.Symbol)) {
             this.dynamicText = value.toStr();
+            clearTextColorRuns();
             this.textImageDirty = true;
             invalidateParsedTextCache();
             this.state = State.LOADED;
@@ -1284,6 +1294,8 @@ public class CastMember {
             this.textFontStyle = source.textFontStyle;
             this.textAlignment = source.textAlignment;
             this.textColor = source.textColor;
+            this.textColorRuns.clear();
+            this.textColorRuns.addAll(source.textColorRuns);
             this.textBgColor = source.textBgColor;
             this.textBgColorExplicit = source.textBgColorExplicit;
             this.textWordWrap = source.textWordWrap;
@@ -1371,6 +1383,7 @@ public class CastMember {
         switch (prop) {
             case "text" -> {
                 this.dynamicText = value.toStr();
+                clearTextColorRuns();
                 textImageDirty = true;
                 invalidateParsedTextCache();
                 notifyMemberVisualChanged();
@@ -1380,6 +1393,7 @@ public class CastMember {
                 // Strip HTML tags for now (basic support)
                 String html = value.toStr();
                 this.dynamicText = html.replaceAll("<[^>]*>", "");
+                clearTextColorRuns();
                 textImageDirty = true;
                 invalidateParsedTextCache();
                 notifyMemberVisualChanged();
@@ -1417,19 +1431,22 @@ public class CastMember {
                 // Director ignores VOID — keeps the current color
                 if (!value.isVoid()) {
                     this.textColor = Datum.datumToArgb(value);
+                    clearTextColorRuns();
                     textImageDirty = true;
                     notifyMemberVisualChanged();
                 }
                 return true;
             }
             case "bgcolor", "txtbgcolor", "palette" -> {
-                // Director ignores VOID — keeps the current bgColor (default white)
-                if (!value.isVoid()) {
+                if (value.isVoid()) {
+                    this.textBgColor = 0x00FFFFFF;
+                    this.textBgColorExplicit = false;
+                } else {
                     this.textBgColor = Datum.datumToArgb(value);
                     this.textBgColorExplicit = true;
-                    textImageDirty = true;
-                    notifyMemberVisualChanged();
                 }
+                textImageDirty = true;
+                notifyMemberVisualChanged();
                 return true;
             }
             case "wordwrap" -> {
@@ -1526,6 +1543,7 @@ public class CastMember {
                     this.textRenderedHeight = this.bitmap.getHeight();
                     this.textRenderedBgColor = Integer.MIN_VALUE;
                     this.textRenderedImageScriptMutated = true;
+                    clearTextColorRuns();
                     attachTextImageMutationCallback(this.textRenderedImage);
                     this.textImageDirty = false;
                     notifyMemberVisualChanged();
@@ -1596,6 +1614,10 @@ public class CastMember {
             return false;
         }
 
+        if ("color".equals(prop) || "txtcolor".equals(prop)) {
+            return applyTextRangeColor(chunkType, start, end, value);
+        }
+
         String text = getTextContent();
         int length = text != null ? text.length() : 0;
         if (!coversWholeTextRange(chunkType, start, end, length)) {
@@ -1606,6 +1628,49 @@ public class CastMember {
         }
 
         return setTextProp(prop, value);
+    }
+
+    private boolean applyTextRangeColor(String chunkType, int start, int end, Datum value) {
+        if (value == null || value.isVoid()) {
+            return true;
+        }
+        int[] bounds = resolveTextRangeBounds(chunkType, start, end);
+        if (bounds == null || bounds[1] <= bounds[0]) {
+            return true;
+        }
+
+        textColorRuns.add(new TextRenderer.ColorRun(bounds[0], bounds[1], Datum.datumToArgb(value)));
+        textImageDirty = true;
+        notifyMemberVisualChanged();
+        return true;
+    }
+
+    private int[] resolveTextRangeBounds(String chunkType, int start, int end) {
+        String text = getTextContent();
+        String normalizedType = chunkType != null ? chunkType.toLowerCase() : "char";
+        StringChunkType type;
+        try {
+            type = StringChunkType.fromName(normalizedType);
+        } catch (IllegalArgumentException ex) {
+            type = StringChunkType.CHAR;
+        }
+        return StringChunkUtils.getChunkRangeBounds(
+                text,
+                type,
+                start,
+                end,
+                MoviePropertyProvider.ItemDelimiterCache._char);
+    }
+
+    private void clearTextColorRuns() {
+        textColorRuns.clear();
+    }
+
+    private int effectiveTextColorAt(int charIndex) {
+        if (getTextContent().isEmpty()) {
+            return textColor;
+        }
+        return TextRenderer.colorForChar(textColorRuns, Math.max(0, charIndex), textColor);
     }
 
     private boolean applyPartialTextFontStyle(Datum value) {
@@ -1793,6 +1858,7 @@ public class CastMember {
         textFontStyle = "plain";
         textAlignment = "left";
         textColor = 0xFF000000;
+        clearTextColorRuns();
         textBgColor = 0xFFFFFFFF;
         textBgColorExplicit = false;
         textWordWrap = false;
@@ -1827,38 +1893,57 @@ public class CastMember {
      */
     public Datum callMethod(String methodName, java.util.List<Datum> args) {
         String method = methodName.toLowerCase();
-        return switch (method) {
-            case "getprop", "getpropref" -> {
-                // Director: member.getProp(#propName, index)
-                // Returns a sub-element of a compound property (e.g., Point, Rect)
-                // or a styled text chunk reference (e.g., member.line[1]).
-                if (args.size() < 2) yield Datum.VOID;
-                String propSymbol = args.get(0) instanceof Datum.Symbol sym
-                        ? sym.name() : args.get(0).toStr();
-                int index = args.get(1).toInt();
-                if (isTextLike() && isTextChunkProp(propSymbol)) {
-                    int end = args.size() >= 3 ? args.get(2).toInt() : index;
-                    yield new Datum.TextMemberRangeRef(
-                            castLibId.value(),
-                            memberId.value(),
-                            propSymbol.toLowerCase(),
-                            index,
-                            end);
-                }
-                Datum propValue = getProp(propSymbol.toLowerCase());
-                if (propValue instanceof Datum.Point p) {
-                    yield Datum.of(index == 1 ? p.x() : p.y());
-                } else if (propValue instanceof Datum.Rect r) {
-                    yield switch (index) {
-                        case 1 -> Datum.of(r.left());
-                        case 2 -> Datum.of(r.top());
-                        case 3 -> Datum.of(r.right());
-                        case 4 -> Datum.of(r.bottom());
-                        default -> Datum.VOID;
-                    };
-                }
-                yield propValue;
+        if (isTextChunkProp(method)) {
+            if (!isTextLike()) {
+                return Datum.VOID;
             }
+            if (args == null || args.isEmpty()) {
+                return new Datum.TextMemberChunkAccessor(
+                        castLibId.value(),
+                        memberId.value(),
+                        method);
+            }
+            int start = args.get(0).toInt();
+            int end = args.size() >= 2 ? args.get(1).toInt() : start;
+            return new Datum.TextMemberRangeRef(
+                    castLibId.value(),
+                    memberId.value(),
+                    method,
+                    start,
+                    end);
+        }
+        if ("getprop".equals(method) || "getpropref".equals(method)) {
+            // Director: member.getProp(#propName, index)
+            // Returns a sub-element of a compound property (e.g., Point, Rect)
+            // or a styled text chunk reference (e.g., member.line[1]).
+            if (args.size() < 2) return Datum.VOID;
+            String propSymbol = args.get(0) instanceof Datum.Symbol sym
+                    ? sym.name() : args.get(0).toStr();
+            int index = args.get(1).toInt();
+            if (isTextLike() && isTextChunkProp(propSymbol)) {
+                int end = args.size() >= 3 ? args.get(2).toInt() : index;
+                return new Datum.TextMemberRangeRef(
+                        castLibId.value(),
+                        memberId.value(),
+                        propSymbol.toLowerCase(),
+                        index,
+                        end);
+            }
+            Datum propValue = getProp(propSymbol.toLowerCase());
+            if (propValue instanceof Datum.Point p) {
+                return Datum.of(index == 1 ? p.x() : p.y());
+            } else if (propValue instanceof Datum.Rect r) {
+                return switch (index) {
+                    case 1 -> Datum.of(r.left());
+                    case 2 -> Datum.of(r.top());
+                    case 3 -> Datum.of(r.right());
+                    case 4 -> Datum.of(r.bottom());
+                    default -> Datum.VOID;
+                };
+            }
+            return propValue;
+        }
+        return switch (method) {
             case "charposttoloc", "charpostoloc" -> {
                 // charPosToLoc(charIndex) → point(x, y)
                 if (args.isEmpty()) yield new Datum.Point(0, 0);
@@ -1926,10 +2011,10 @@ public class CastMember {
         if (propName == null) {
             return false;
         }
-        return switch (propName.toLowerCase()) {
-            case "char", "word", "item", "line" -> true;
-            default -> false;
-        };
+        return "char".equalsIgnoreCase(propName)
+                || "word".equalsIgnoreCase(propName)
+                || "item".equalsIgnoreCase(propName)
+                || "line".equalsIgnoreCase(propName);
     }
 
     @Override

@@ -14,6 +14,30 @@ import java.util.function.ToIntFunction;
  * to implement charPosToLoc() measurements.
  */
 public interface TextRenderer {
+    final class ColorRun {
+        private final int startInclusive;
+        private final int endExclusive;
+        private final int color;
+
+        public ColorRun(int startInclusive, int endExclusive, int color) {
+            this.startInclusive = startInclusive;
+            this.endExclusive = endExclusive;
+            this.color = color;
+        }
+
+        public int startInclusive() {
+            return startInclusive;
+        }
+
+        public int endExclusive() {
+            return endExclusive;
+        }
+
+        public int color() {
+            return color;
+        }
+    }
+
 
     /**
      * Render text content to a bitmap image.
@@ -36,6 +60,33 @@ public interface TextRenderer {
                 fontName, fontSize, fontStyle,
                 alignment, textColor, bgColor,
                 wordWrap, antialias, fixedLineSpace, topSpacing);
+    }
+
+    default Bitmap renderText(String text, int width, int height,
+                              String fontName, int fontSize, String fontStyle,
+                              String alignment, int textColor, int bgColor,
+                              boolean wordWrap, boolean antialias,
+                              int fixedLineSpace, int topSpacing,
+                              boolean kerning, int kerningThreshold,
+                              List<ColorRun> colorRuns) {
+        return renderText(text, width, height,
+                fontName, fontSize, fontStyle,
+                alignment, textColor, bgColor,
+                wordWrap, antialias, fixedLineSpace, topSpacing,
+                kerning, kerningThreshold);
+    }
+
+    static int colorForChar(List<ColorRun> colorRuns, int charIndex, int fallbackColor) {
+        if (colorRuns == null || colorRuns.isEmpty()) {
+            return fallbackColor;
+        }
+        for (int i = colorRuns.size() - 1; i >= 0; i--) {
+            ColorRun run = colorRuns.get(i);
+            if (charIndex >= run.startInclusive() && charIndex < run.endExclusive()) {
+                return run.color();
+            }
+        }
+        return fallbackColor;
     }
 
     /**

@@ -183,6 +183,47 @@ public final class CallOpcodes {
         if (target instanceof Datum.ChunkRef chunkRef) {
             return handleChunkRefMethod(ctx, chunkRef, methodName, args);
         }
+        if (target instanceof Datum.CastMemberRef cmr) {
+            CastLibProvider provider = CastLibProvider.getProvider();
+            if (provider != null) {
+                return provider.callMemberMethod(cmr.castLibNum(), cmr.memberNum(), methodName, args);
+            }
+            return Datum.VOID;
+        }
+        if (target instanceof Datum.Str str) {
+            return StringMethodDispatcher.dispatch(str, methodName, args);
+        }
+        if (target instanceof Datum.FieldText fieldText) {
+            return StringMethodDispatcher.dispatch(fieldText, methodName, args);
+        }
+        if (target instanceof Datum.List list) {
+            return ListMethodDispatcher.dispatch(list, methodName, args);
+        }
+        if (target instanceof Datum.PropList propList) {
+            return PropListMethodDispatcher.dispatch(propList, methodName, args);
+        }
+        if (target instanceof Datum.ScriptInstance instance) {
+            return ScriptInstanceMethodDispatcher.dispatch(ctx, instance, methodName, args);
+        }
+        if (target instanceof Datum.ImageRef imageRef) {
+            return ImageMethodDispatcher.dispatch(imageRef, methodName, args);
+        }
+        if (target instanceof Datum.CastLibRef clr) {
+            if (("getpropref".equalsIgnoreCase(methodName) || "getprop".equalsIgnoreCase(methodName))
+                    && args.size() >= 2
+                    && "member".equalsIgnoreCase(args.get(0).toKeyName())) {
+                CastLibProvider provider = CastLibProvider.getProvider();
+                if (provider == null) {
+                    return Datum.VOID;
+                }
+                Datum key = args.get(1);
+                if (key instanceof Datum.Int i) {
+                    return provider.getMember(clr.castLibNum(), i.value());
+                }
+                return provider.getMemberByName(clr.castLibNum(), key.toStr());
+            }
+            return Datum.VOID;
+        }
 
         return switch (target) {
             case Datum.List list -> ListMethodDispatcher.dispatch(list, methodName, args);

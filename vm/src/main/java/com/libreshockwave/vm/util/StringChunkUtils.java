@@ -156,6 +156,41 @@ public final class StringChunkUtils {
     }
 
     /**
+     * Return the underlying Java string range [start, end) for a Director chunk range.
+     * The returned range is suitable for styled text runs, where the original
+     * member text must be preserved and only the visual attributes change.
+     */
+    public static int[] getChunkRangeBounds(String str, StringChunkType chunkType,
+                                            int start, int end, char itemDelimiter) {
+        if (str == null) {
+            return null;
+        }
+        int count = countChunks(str, chunkType, itemDelimiter);
+        int normalizedStart = start < 0 ? count : (start == 0 ? 1 : start);
+        int normalizedEnd = end < 0 ? count : (end == 0 ? normalizedStart : end);
+        if (normalizedStart < 1 || normalizedEnd < normalizedStart) {
+            return null;
+        }
+
+        if (chunkType == StringChunkType.CHAR) {
+            if (normalizedStart > str.length()) {
+                return null;
+            }
+            return new int[]{normalizedStart - 1, Math.min(normalizedEnd, str.length())};
+        }
+        if (chunkType == StringChunkType.ITEM) {
+            return getItemRangeBounds(str, normalizedStart, normalizedEnd, itemDelimiter);
+        }
+        if (chunkType == StringChunkType.WORD) {
+            return getWordRangeBounds(str, normalizedStart, normalizedEnd);
+        }
+        if (chunkType == StringChunkType.LINE) {
+            return getLineRangeBounds(str, normalizedStart, normalizedEnd);
+        }
+        return null;
+    }
+
+    /**
      * Count the number of chunks in a string.
      * Returns 1 for empty strings when chunk type is ITEM or LINE.
      */
@@ -311,6 +346,85 @@ public final class StringChunkUtils {
             return getLineRangeDirect(str, startIdx, endIdx);
         }
         return "";
+    }
+
+    private static int[] getItemRangeBounds(String str, int startIdx, int endIdx, char delimiter) {
+        int chunkNum = 1;
+        int chunkStart = 0;
+        int rangeStart = -1;
+
+        for (int i = 0; i <= str.length(); i++) {
+            if (i == str.length() || isItemDelimiterAt(str, i, delimiter)) {
+                if (chunkNum == startIdx) {
+                    rangeStart = chunkStart;
+                }
+                if (chunkNum == endIdx) {
+                    return rangeStart >= 0 ? new int[]{rangeStart, i} : null;
+                }
+                if (chunkNum > endIdx) {
+                    break;
+                }
+                int width = i < str.length() ? itemDelimiterWidth(str, i, delimiter) : 1;
+                chunkNum++;
+                chunkStart = i + width;
+                i += width - 1;
+            }
+        }
+        return rangeStart >= 0 ? new int[]{rangeStart, str.length()} : null;
+    }
+
+    private static int[] getWordRangeBounds(String str, int startIdx, int endIdx) {
+        int wordNum = 0;
+        int wordStart = 0;
+        int rangeStart = -1;
+        boolean inWord = false;
+
+        for (int i = 0; i <= str.length(); i++) {
+            boolean isSpace = i == str.length() || str.charAt(i) <= ' ';
+            if (!isSpace && !inWord) {
+                wordNum++;
+                wordStart = i;
+                inWord = true;
+                if (wordNum == startIdx) {
+                    rangeStart = wordStart;
+                }
+            } else if (isSpace && inWord) {
+                if (wordNum == endIdx) {
+                    return rangeStart >= 0 ? new int[]{rangeStart, i} : null;
+                }
+                inWord = false;
+            }
+        }
+        return null;
+    }
+
+    private static int[] getLineRangeBounds(String str, int startIdx, int endIdx) {
+        int lineNum = 1;
+        int lineStart = 0;
+        int rangeStart = startIdx == 1 ? 0 : -1;
+        int i = 0;
+        int limit = lineContentLength(str);
+
+        while (i < limit) {
+            if (isLineDelimiterAt(str, i)) {
+                if (lineNum == endIdx) {
+                    return rangeStart >= 0 ? new int[]{rangeStart, i} : null;
+                }
+                int width = lineDelimiterWidth(str, i);
+                lineNum++;
+                i += width;
+                lineStart = i;
+                if (lineNum == startIdx) {
+                    rangeStart = lineStart;
+                }
+            } else {
+                i++;
+            }
+        }
+        if (lineNum == endIdx && rangeStart >= 0) {
+            return new int[]{rangeStart, limit};
+        }
+        return null;
     }
 
     // ========================================================================

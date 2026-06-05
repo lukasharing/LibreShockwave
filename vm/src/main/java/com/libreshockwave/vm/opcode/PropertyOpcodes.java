@@ -143,6 +143,27 @@ public final class PropertyOpcodes {
     }
 
     private static Datum getObjectProperty(Datum obj, String propName, ExecutionContext ctx) {
+        if (obj instanceof Datum.CastMemberRef cmr) {
+            return getCastMemberProp(cmr, propName);
+        }
+        if (obj instanceof Datum.TextMemberRangeRef range) {
+            return getTextMemberRangeProp(range, propName);
+        }
+        if (obj instanceof Datum.TextMemberChunkAccessor accessor) {
+            return getTextMemberChunkAccessorProp(accessor, propName);
+        }
+        if (obj instanceof Datum.PropList pl) {
+            return getPropListProp(pl, propName);
+        }
+        if (obj instanceof Datum.Str str) {
+            return getStringProp(str.toStr(), propName);
+        }
+        if (obj instanceof Datum.FieldText fieldText) {
+            return getStringProp(fieldText.toStr(), propName);
+        }
+        if (obj instanceof Datum.ImageRef ir) {
+            return ImageMethodDispatcher.getProperty(ir, propName);
+        }
         return switch (obj) {
             case Datum.CastLibRef clr -> {
                 if ("member".equalsIgnoreCase(propName)) {
@@ -311,6 +332,37 @@ public final class PropertyOpcodes {
         String propName = ctx.resolveName(ctx.getArgument());
         Datum value = ctx.pop();
         Datum obj = ctx.pop();
+
+        if (obj instanceof Datum.CastMemberRef cmr) {
+            setCastMemberProp(cmr, propName, value);
+            return true;
+        }
+        if (obj instanceof Datum.TextMemberRangeRef range) {
+            setTextMemberRangeProp(range, propName, value);
+            return true;
+        }
+        if (obj instanceof Datum.TextMemberChunkAccessor accessor) {
+            setTextMemberRangeProp(
+                    new Datum.TextMemberRangeRef(accessor.castLibNum(), accessor.memberNum(),
+                            accessor.chunkType(), 1, -1),
+                    propName,
+                    value);
+            return true;
+        }
+        if (obj instanceof Datum.ScriptInstance si) {
+            traceScriptInstanceOpcodeWrite("SET_OBJ_PROP", si, propName, value);
+            AncestorChainWalker.setProperty(si, propName, value);
+            ctx.tracePropertySet(propName, value);
+            return true;
+        }
+        if (obj instanceof Datum.PropList pl) {
+            pl.put(propName, true, value);
+            return true;
+        }
+        if (obj instanceof Datum.ImageRef ir) {
+            ImageMethodDispatcher.setProperty(ir, propName, value);
+            return true;
+        }
 
         switch (obj) {
             case Datum.CastLibRef clr -> setCastLibProp(clr, propName, value);
@@ -820,6 +872,27 @@ public final class PropertyOpcodes {
             isNumericIndex = true;
         } catch (NumberFormatException e) {
             // Not numeric
+        }
+
+        if (obj instanceof Datum.CastMemberRef cmr) {
+            ctx.push(getCastMemberProp(cmr, propName));
+            return true;
+        }
+        if (obj instanceof Datum.TextMemberRangeRef range) {
+            ctx.push(getTextMemberRangeProp(range, propName));
+            return true;
+        }
+        if (obj instanceof Datum.TextMemberChunkAccessor accessor) {
+            ctx.push(getTextMemberChunkAccessorProp(accessor, propName));
+            return true;
+        }
+        if (obj instanceof Datum.StringChunkAccessor accessor) {
+            ctx.push(getStringChunkAccessorProp(accessor, propName));
+            return true;
+        }
+        if (obj instanceof Datum.ImageRef ir) {
+            ctx.push(ImageMethodDispatcher.getProperty(ir, propName));
+            return true;
         }
 
         Datum result = switch (obj) {

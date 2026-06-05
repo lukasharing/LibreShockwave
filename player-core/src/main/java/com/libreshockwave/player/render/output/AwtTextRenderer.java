@@ -32,6 +32,34 @@ public class AwtTextRenderer implements TextRenderer {
                              String alignment, int textColor, int bgColor,
                              boolean wordWrap, boolean antialias,
                              int fixedLineSpace, int topSpacing) {
+        return renderTextWithColorRuns(text, width, height,
+                fontName, fontSize, fontStyle,
+                alignment, textColor, bgColor,
+                wordWrap, antialias, fixedLineSpace, topSpacing,
+                null);
+    }
+
+    @Override
+    public Bitmap renderText(String text, int width, int height,
+                             String fontName, int fontSize, String fontStyle,
+                             String alignment, int textColor, int bgColor,
+                             boolean wordWrap, boolean antialias,
+                             int fixedLineSpace, int topSpacing,
+                             boolean kerning, int kerningThreshold,
+                             List<TextRenderer.ColorRun> colorRuns) {
+        return renderTextWithColorRuns(text, width, height,
+                fontName, fontSize, fontStyle,
+                alignment, textColor, bgColor,
+                wordWrap, antialias, fixedLineSpace, topSpacing,
+                colorRuns);
+    }
+
+    private Bitmap renderTextWithColorRuns(String text, int width, int height,
+                                           String fontName, int fontSize, String fontStyle,
+                                           String alignment, int textColor, int bgColor,
+                                           boolean wordWrap, boolean antialias,
+                                           int fixedLineSpace, int topSpacing,
+                                           List<TextRenderer.ColorRun> colorRuns) {
         if (text == null) text = "";
         if (width <= 0) width = 200;
         if (height <= 0) height = 20;
@@ -84,13 +112,23 @@ public class AwtTextRenderer implements TextRenderer {
 
         // Word wrap if enabled
         List<String> lines = new ArrayList<>();
+        List<Integer> lineStarts = new ArrayList<>();
         if (wordWrap) {
-            for (String rawLine : rawLines) {
+            for (int rawLineIndex = 0; rawLineIndex < rawLines.length; rawLineIndex++) {
+                String rawLine = rawLines[rawLineIndex];
+                int before = lines.size();
                 TextRenderer.wrapLine(rawLine, fm::stringWidth, width, lines);
+                int rawLineStart = TextRenderer.lineStartIndex(text, rawLineIndex);
+                for (int i = before; i < lines.size(); i++) {
+                    lineStarts.add(rawLineStart);
+                    rawLineStart += lines.get(i).length();
+                }
             }
         } else {
-            for (String rawLine : rawLines) {
+            for (int rawLineIndex = 0; rawLineIndex < rawLines.length; rawLineIndex++) {
+                String rawLine = rawLines[rawLineIndex];
                 lines.add(rawLine);
+                lineStarts.add(TextRenderer.lineStartIndex(text, rawLineIndex));
             }
         }
 
@@ -115,12 +153,17 @@ public class AwtTextRenderer implements TextRenderer {
 
         // Draw lines
         int y = ascent + topSpacing;
-        for (String line : lines) {
+        for (int lineIndex = 0; lineIndex < lines.size(); lineIndex++) {
+            String line = lines.get(lineIndex);
             if (y > height) break;
 
             int x = renderAlignmentOffset(alignment, width, fm.stringWidth(line));
 
-            g2d.drawString(line, x, y);
+            if (colorRuns == null || colorRuns.isEmpty()) {
+                g2d.drawString(line, x, y);
+            } else {
+                drawStringWithColorRuns(g2d, fm, line, lineStarts.get(lineIndex), x, y, textColor, colorRuns);
+            }
             y += lineAdvance;
         }
 
@@ -133,6 +176,25 @@ public class AwtTextRenderer implements TextRenderer {
         bitmap.markScriptModified();
         bitmap.markTextRenderedImage(bgColor);
         return bitmap;
+    }
+
+    private static void drawStringWithColorRuns(Graphics2D g2d, FontMetrics fm,
+                                                String line, int lineStart,
+                                                int x, int y, int fallbackColor,
+                                                List<TextRenderer.ColorRun> colorRuns) {
+        int runStart = 0;
+        while (runStart < line.length()) {
+            int color = TextRenderer.colorForChar(colorRuns, lineStart + runStart, fallbackColor);
+            int runEnd = runStart + 1;
+            while (runEnd < line.length()
+                    && TextRenderer.colorForChar(colorRuns, lineStart + runEnd, fallbackColor) == color) {
+                runEnd++;
+            }
+            String segment = line.substring(runStart, runEnd);
+            g2d.setColor(new Color(color, true));
+            g2d.drawString(segment, x + fm.stringWidth(line.substring(0, runStart)), y);
+            runStart = runEnd;
+        }
     }
 
     @Override
