@@ -786,16 +786,24 @@ public final class ImageMethodDispatcher {
         boolean explicitBgColorIsSourceBackground = ink == Palette.InkMode.BACKGROUND_TRANSPARENT
                 && bgColorRemap >= 0
                 && rgbLooksLikeRegionBackground(src, srcRect, bgColorRemap);
+        boolean backgroundTransparentColorizableMask = ink == Palette.InkMode.BACKGROUND_TRANSPARENT
+                && (useIndexedMaskRampForColorRemap
+                || isBackgroundTransparentColorizableMask(src, srcRect, bgColorRemap));
+        boolean skipColorizationForExactBackground = explicitBgColorIsSourceBackground
+                && !backgroundTransparentColorizableMask;
         boolean darkenBgTintCandidate = ink == Palette.InkMode.DARKEN
                 && colorizeBgColorRemap >= 0
                 && colorRemap < 0;
         if ((colorRemap >= 0 || colorizeBgColorRemap >= 0)
-                && !explicitBgColorIsSourceBackground
+                && !skipColorizationForExactBackground
                 && (!src.hasNativeMatteAlpha() || darkenBgTintCandidate)) {
             // Sample source pixels to check if they're grayscale (safe to remap)
             boolean isGrayscale = isMostlyGrayscale(src, srcRect);
 
-            if (isGrayscale || useIndexedMaskRampForColorRemap) {
+            if ((isGrayscale
+                    && (ink != Palette.InkMode.BACKGROUND_TRANSPARENT
+                    || backgroundTransparentColorizableMask))
+                    || useIndexedMaskRampForColorRemap) {
                 int fgR = colorRemap >= 0 ? (colorRemap >> 16) & 0xFF : 0;
                 int fgG = colorRemap >= 0 ? (colorRemap >> 8) & 0xFF : 0;
                 int fgB = colorRemap >= 0 ? colorRemap & 0xFF : 0;
@@ -877,7 +885,7 @@ public final class ImageMethodDispatcher {
             backgroundKey = useIndexedBackgroundKey
                     ? Drawing.BackgroundTransparentKey.paletteIndex(bgColorPaletteIndexKey)
                     : Drawing.BackgroundTransparentKey.rgb(resolveBackgroundTransparentKey(
-                            effectiveSrc, effectiveSrcRect, bgColorRemap, grayscaleColorized));
+                            effectiveSrc, effectiveSrcRect, bgColorRemap));
         }
 
         if (ink == Palette.InkMode.BACKGROUND_TRANSPARENT
@@ -1525,13 +1533,8 @@ public final class ImageMethodDispatcher {
         return Math.max(min, Math.min(max, value));
     }
 
-    private static int resolveBackgroundTransparentKey(Bitmap src, Datum.Rect srcRect, int explicitBgColorRemap,
-                                                       boolean sourceWasColorized) {
-        if (explicitBgColorRemap >= 0
-                && (sourceWasColorized
-                || (src != null && src.getBitDepth() <= 8)
-                || explicitBgColorRemap == 0xFFFFFF
-                || rgbLooksLikeRegionBackground(src, srcRect, explicitBgColorRemap))) {
+    private static int resolveBackgroundTransparentKey(Bitmap src, Datum.Rect srcRect, int explicitBgColorRemap) {
+        if (explicitBgColorRemap >= 0) {
             return explicitBgColorRemap & 0xFFFFFF;
         }
         int textBackgroundRgb = src != null ? src.getOpaqueTextRenderBackgroundRgb() : -1;
@@ -1817,6 +1820,59 @@ public final class ImageMethodDispatcher {
             }
         }
         return true;
+    }
+
+    private static boolean isBackgroundTransparentColorizableMask(Bitmap src, Datum.Rect srcRect,
+                                                                  int explicitBgColorRemap) {
+        if (src == null || srcRect == null) {
+            return false;
+        }
+        int keyRgb = explicitBgColorRemap >= 0 ? (explicitBgColorRemap & 0xFFFFFF) : 0xFFFFFF;
+        boolean whiteBackedMask = keyRgb == 0xFFFFFF;
+        boolean blackBackedMask = keyRgb == 0x000000;
+        if (!whiteBackedMask && !blackBackedMask) {
+            return false;
+        }
+
+        int left = clamp(Math.min(srcRect.left(), srcRect.right()), 0, src.getWidth());
+        int top = clamp(Math.min(srcRect.top(), srcRect.bottom()), 0, src.getHeight());
+        int right = clamp(Math.max(srcRect.left(), srcRect.right()), 0, src.getWidth());
+        int bottom = clamp(Math.max(srcRect.top(), srcRect.bottom()), 0, src.getHeight());
+        if (left >= right || top >= bottom) {
+            return false;
+        }
+
+        boolean sawKey = false;
+        boolean sawForeground = false;
+        for (int y = top; y < bottom; y++) {
+            for (int x = left; x < right; x++) {
+                int pixel = src.getPixel(x, y);
+                if (((pixel >>> 24) & 0xFF) == 0) {
+                    continue;
+                }
+                int rgb = pixel & 0xFFFFFF;
+                if (rgb == keyRgb) {
+                    sawKey = true;
+                    continue;
+                }
+                if (!isLowSaturationRgb(rgb)) {
+                    return false;
+                }
+                int luma = grayscaleLuma(rgb);
+                if ((whiteBackedMask && luma >= 250) || (blackBackedMask && luma <= 5)) {
+                    return false;
+                }
+                sawForeground = true;
+            }
+        }
+        return sawKey && sawForeground;
+    }
+
+    private static int grayscaleLuma(int rgb) {
+        int r = (rgb >> 16) & 0xFF;
+        int g = (rgb >> 8) & 0xFF;
+        int b = rgb & 0xFF;
+        return ((77 * r) + (150 * g) + (29 * b) + 128) >> 8;
     }
 
     private static boolean isInverseWhiteAlphaMask(Bitmap src, int srcX, int srcY, int width, int height) {

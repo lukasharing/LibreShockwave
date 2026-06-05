@@ -532,7 +532,7 @@ class ImageMethodDispatcherTest {
     }
 
     @Test
-    void backgroundTransparentDoesNotTreatMismatchedBgColorAsCalendarGridBackground() {
+    void backgroundTransparentUsesExplicitBgColorAsExactKey() {
         Bitmap calendar = new Bitmap(169, 145, 32);
         calendar.fill(0xFFFFFFFF);
         Datum.ImageRef calendarRef = new Datum.ImageRef(calendar);
@@ -563,10 +563,10 @@ class ImageMethodDispatcherTest {
                 List.of(calendarRef, new Datum.Rect(0, 0, 169, 145),
                         new Datum.Rect(0, 0, 169, 145), windowParams));
 
-        assertEquals(0xFF000000, windowBuffer.getPixel(24, 12),
-                "a window bgColor must not make drawn black calendar grid lines transparent");
-        assertEquals(0xFFEFEFEF, windowBuffer.getPixel(12, 12),
-                "the real white calendar background should still key through to the window buffer");
+        assertEquals(0xFFEFEFEF, windowBuffer.getPixel(24, 12),
+                "Director #ink:36 keys the explicit #bgColor before copying survivors");
+        assertEquals(0xFFFFFFFF, windowBuffer.getPixel(12, 12),
+                "pixels that do not match the explicit key must copy through");
         assertEquals(0xFF66BB22, windowBuffer.getPixel(30, 11),
                 "colored event strips should remain opaque");
     }
@@ -635,6 +635,30 @@ class ImageMethodDispatcherTest {
 
         assertEquals(0xFF222222, dest.getPixel(0, 0),
                 "the explicit source background should key out instead of being recolored");
+        assertEquals(0xFFFCFCFC, dest.getPixel(3, 1),
+                "already rendered white glyph pixels should copy unchanged");
+    }
+
+    @Test
+    void backgroundTransparentDoesNotApproximateQuantizedLowDepthBackgroundForExplicitBgColor() {
+        Bitmap source = new Bitmap(8, 4, 8);
+        source.fill(0xFF666666);
+        source.setPixel(3, 1, 0xFFFCFCFC);
+        source.setPixel(4, 1, 0xFFFCFCFC);
+
+        Bitmap dest = new Bitmap(8, 4, 32);
+        dest.fill(0xFF222222);
+        Datum.PropList props = new Datum.PropList();
+        props.add("ink", Datum.of(36), true);
+        props.add("color", new Datum.Color(0xFC, 0xFC, 0xFC), true);
+        props.add("bgColor", new Datum.Color(0x6A, 0x6A, 0x6A), true);
+
+        ImageMethodDispatcher.dispatch(new Datum.ImageRef(dest), "copyPixels",
+                List.of(new Datum.ImageRef(source), new Datum.Rect(0, 0, 8, 4),
+                        new Datum.Rect(0, 0, 8, 4), props));
+
+        assertEquals(0xFF666666, dest.getPixel(0, 0),
+                "Director keys #ink:36 against the source's effective RGB, not a nearby authored RGB");
         assertEquals(0xFFFCFCFC, dest.getPixel(3, 1),
                 "already rendered white glyph pixels should copy unchanged");
     }
