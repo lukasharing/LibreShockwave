@@ -375,6 +375,16 @@ class DatumTest {
     }
 
     @Test
+    void rgbBuiltinAcceptsQuotedHexColorStrings() {
+        LingoVM vm = new LingoVM(null);
+
+        assertEquals(new Datum.Color(0xFC, 0xFC, 0xFC),
+                vm.callHandler("rgb", List.of(Datum.of("\"#FCFCFC\""))));
+        assertEquals(new Datum.Color(0xEE, 0xEE, 0xEE),
+                vm.callHandler("rgb", List.of(Datum.of("'#EEEEEE'"))));
+    }
+
+    @Test
     void testNumericOperations() {
         Datum a = Datum.of(10);
         Datum b = Datum.of(3);

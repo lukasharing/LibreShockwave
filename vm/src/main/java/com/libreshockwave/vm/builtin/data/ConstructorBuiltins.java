@@ -231,21 +231,21 @@ public final class ConstructorBuiltins {
         if (first instanceof Datum.Color c && args.size() == 1) {
             return c;
         }
-        // rgb("#RRGGBB") - hex string
-        if (first.isString()) {
-            String hex = first.toStr().trim();
+        // rgb("#RRGGBB") - hex string/symbol
+        String hexText = rgbTextValue(first);
+        if (hexText != null) {
+            String hex = stripOptionalStringQuotes(hexText.trim());
             if (hex.startsWith("#")) {
                 hex = hex.substring(1);
             }
-            try {
-                int colorVal = Integer.parseInt(hex, 16);
+            Integer colorVal = parseHexColor(hex);
+            if (colorVal != null) {
                 int r = (colorVal >> 16) & 0xFF;
                 int g = (colorVal >> 8) & 0xFF;
                 int b = colorVal & 0xFF;
                 return new Datum.Color(r, g, b);
-            } catch (NumberFormatException e) {
-                return new Datum.Color(0, 0, 0);
             }
+            return new Datum.Color(0, 0, 0);
         }
         // rgb(r, g, b) - three integer components
         if (args.size() >= 3) {
@@ -254,6 +254,57 @@ public final class ConstructorBuiltins {
         // rgb(paletteIndex) - single integer, treat as grayscale or palette
         int val = first.toInt();
         return new Datum.Color((val >> 16) & 0xFF, (val >> 8) & 0xFF, val & 0xFF);
+    }
+
+    private static String rgbTextValue(Datum value) {
+        return switch (value) {
+            case Datum.Str s -> s.value();
+            case Datum.FieldText ft -> ft.value();
+            case Datum.BinaryData b -> b.value();
+            case Datum.StringChunkAccessor sca -> sca.value();
+            case Datum.Symbol s -> s.name();
+            default -> null;
+        };
+    }
+
+    private static Integer parseHexColor(String hex) {
+        if (hex == null || hex.isEmpty() || hex.length() > 6) {
+            return null;
+        }
+        int color = 0;
+        for (int i = 0; i < hex.length(); i++) {
+            int nibble = hexNibble(hex.charAt(i));
+            if (nibble < 0) {
+                return null;
+            }
+            color = (color << 4) | nibble;
+        }
+        return color;
+    }
+
+    private static int hexNibble(char c) {
+        if (c >= '0' && c <= '9') {
+            return c - '0';
+        }
+        if (c >= 'A' && c <= 'F') {
+            return 10 + (c - 'A');
+        }
+        if (c >= 'a' && c <= 'f') {
+            return 10 + (c - 'a');
+        }
+        return -1;
+    }
+
+    private static String stripOptionalStringQuotes(String value) {
+        if (value == null || value.length() < 2) {
+            return value;
+        }
+        char first = value.charAt(0);
+        char last = value.charAt(value.length() - 1);
+        if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
+            return value.substring(1, value.length() - 1).trim();
+        }
+        return value;
     }
 
     /**
