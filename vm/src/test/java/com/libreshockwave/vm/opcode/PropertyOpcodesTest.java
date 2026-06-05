@@ -139,6 +139,19 @@ class PropertyOpcodesTest {
     }
 
     @Test
+    void propListObjectPropertiesUseDirectorPropertyNameLookup() throws Exception {
+        Datum.PropList stringKeyedMetrics = new Datum.PropList();
+        stringKeyedMetrics.add("color", new Datum.Color(238, 238, 238), false);
+
+        assertEquals(0xFFEEEEEE, Datum.datumToArgb(getObjectProperty(stringKeyedMetrics, "color")));
+
+        Datum.PropList hashPrefixedStringKey = new Datum.PropList();
+        hashPrefixedStringKey.putTyped("#color", false, Datum.of("not-a-symbol-key"));
+
+        assertEquals(Datum.VOID, getObjectProperty(hashPrefixedStringKey, "color"));
+    }
+
+    @Test
     void propListIlkPropertyCanExposeAuthoredStructMarker() throws Exception {
         Datum.PropList structLike = new Datum.PropList();
         structLike.add("ilk", Datum.symbol("struct"), true);

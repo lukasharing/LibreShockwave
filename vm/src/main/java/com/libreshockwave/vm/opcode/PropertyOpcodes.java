@@ -271,9 +271,9 @@ public final class PropertyOpcodes {
     private static Datum getPropListProp(Datum.PropList pl, String propName) {
         if ("count".equalsIgnoreCase(propName) || "length".equalsIgnoreCase(propName)) return Datum.of(pl.size());
         // Property-list object access can be used as authored struct access.
-        // Habbo Origins stores #ilk:#struct and checks "the ilk of tStruct";
+        // Authored structs may store #ilk:#struct and check "the ilk of tStruct";
         // keep the real type query on ilk(value) / list.ilk().
-        Datum value = pl.get(propName, true);
+        Datum value = pl.get(propName);
         if (value != null) return value;
         if ("ilk".equalsIgnoreCase(propName)) return Datum.symbol("propList");
         return Datum.VOID;
