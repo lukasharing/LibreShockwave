@@ -1253,6 +1253,15 @@ class LingoVMTest {
     }
 
     @Test
+    void charToNumTreatsEmptyStringAsZero() {
+        LingoVM vm = new LingoVM(null);
+
+        Datum result = vm.callHandler("charToNum", List.of(Datum.EMPTY_STRING));
+
+        assertEquals(0, result.toInt());
+    }
+
+    @Test
     void testBuiltinNumToChar() {
         LingoVM vm = new LingoVM(null);
 
@@ -1408,6 +1417,30 @@ class LingoVMTest {
                 () -> vm.callHandler("setAt", List.of(propList, Datum.of(42), Datum.of("roller"))));
 
         assertEquals(0, propList.size());
+    }
+
+    @Test
+    void testBuiltinPropListGetAtUsesNumericKeyOutOfRangeWhenCompatibilityEnabled() {
+        LingoVM vm = new LingoVM(null);
+        vm.setPropListSetAtByKeyCompatibilityEnabled(true);
+        Datum.PropList propList = new Datum.PropList();
+        propList.add(Datum.of(2147418112), Datum.of("sandbox"));
+
+        Datum result = vm.callHandler("getAt", List.of(propList, Datum.of(2147418112)));
+
+        assertEquals("sandbox", result.toStr());
+    }
+
+    @Test
+    void testBuiltinPropListSetAtCreatesNumericKeyWhenCompatibilityEnabled() {
+        LingoVM vm = new LingoVM(null);
+        vm.setPropListSetAtByKeyCompatibilityEnabled(true);
+        Datum.PropList propList = new Datum.PropList();
+
+        vm.callHandler("setAt", List.of(propList, Datum.of(2147418112), Datum.of("chair")));
+
+        assertEquals(1, propList.size());
+        assertEquals("chair", vm.callHandler("getaProp", List.of(propList, Datum.of(2147418112))).toStr());
     }
 
     @Test

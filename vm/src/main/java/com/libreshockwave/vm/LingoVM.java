@@ -118,6 +118,10 @@ public class LingoVM {
         this.propListSetAtByKeyCompatibility = enabled;
     }
 
+    public static LingoVM getCurrentVm() {
+        return currentVm;
+    }
+
     public LingoVM(DirectorFile file) {
         this.file = file;
         this.globals = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);

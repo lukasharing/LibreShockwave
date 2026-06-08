@@ -218,10 +218,12 @@ public class InputHandler {
 
         if (currentRollover != previousRolloverSprite) {
             if (previousRolloverSprite > 0) {
+                dispatcher.resetEventStopped();
                 dispatcher.dispatchSpriteEvent(previousRolloverSprite, PlayerEvent.MOUSE_LEAVE, List.of());
                 dispatched = true;
             }
             if (currentRollover > 0) {
+                dispatcher.resetEventStopped();
                 dispatcher.dispatchSpriteEvent(currentRollover, PlayerEvent.MOUSE_ENTER, List.of());
                 dispatched = true;
             }
@@ -230,6 +232,7 @@ public class InputHandler {
 
         // mouseWithin fires every frame while mouse is over a sprite
         if (currentRollover > 0) {
+            dispatcher.resetEventStopped();
             dispatcher.dispatchSpriteEvent(currentRollover, PlayerEvent.MOUSE_WITHIN, List.of());
             dispatched = true;
         }
@@ -246,6 +249,7 @@ public class InputHandler {
                 int hitSprite = hitTestInteractive(event.stageX(), event.stageY());
                 int clickOnSprite = hitTestClickOn(event.stageX(), event.stageY());
                 traceMouseHit("down", event.stageX(), event.stageY(), hitSprite, clickOnSprite);
+                inputState.setRolloverSprite(hitSprite);
                 // Director D6+: if the previously clicked sprite is different from
                 // the current one, send mouseUpOutSide to the old sprite (ScummVM behavior).
                 if (pressedEventSprite > 0 && pressedEventSprite != hitSprite) {
@@ -270,6 +274,7 @@ public class InputHandler {
                 int releaseSprite = hitTestInteractive(event.stageX(), event.stageY());
                 int clickOnSprite = inputState.getClickOnSprite();
                 traceMouseHit("up", event.stageX(), event.stageY(), releaseSprite, clickOnSprite);
+                inputState.setRolloverSprite(releaseSprite);
                 dispatcher.resetEventStopped();
                 boolean releaseSpriteHandled = false;
                 if (releaseSprite > 0
@@ -414,7 +419,24 @@ public class InputHandler {
         if (sprite.getType() == RenderSprite.SpriteType.BUTTON) {
             return true;
         }
+        if (isEditableTextClickOnTarget(sprite)) {
+            return true;
+        }
         return dispatcher != null && dispatcher.isSpriteMouseInteractive(sprite.getChannel());
+    }
+
+    private boolean isEditableTextClickOnTarget(RenderSprite renderSprite) {
+        if (renderSprite == null || renderSprite.getType() != RenderSprite.SpriteType.TEXT) {
+            return false;
+        }
+        SpriteState sprite = stageRenderer.getSpriteRegistry().get(renderSprite.getChannel());
+        CastMember member = renderSprite.getDynamicMember();
+        if (member == null && sprite != null && sprite.getEffectiveCastMember() > 0) {
+            member = castLibManager.getDynamicMember(
+                    sprite.getEffectiveCastLib(),
+                    sprite.getEffectiveCastMember());
+        }
+        return isEditableTextLikeSprite(sprite, member);
     }
 
     private int hitTestInteractive(int stageX, int stageY) {
@@ -525,9 +547,22 @@ public class InputHandler {
         if (dispatcher == null) {
             return "";
         }
+        List<Integer> visualHits = hitTestAllVisual(stageX, stageY);
         List<Integer> exactHits = getInteractiveHits(stageX, stageY, dispatcher, false);
         List<Integer> boundsHits = getInteractiveHits(stageX, stageY, dispatcher, true);
-        return " exact=" + abbreviateChannels(exactHits) + " bounds=" + abbreviateChannels(boundsHits);
+        return " visual=" + abbreviateChannels(visualHits)
+                + " exact=" + abbreviateChannels(exactHits)
+                + " bounds=" + abbreviateChannels(boundsHits)
+                + " top=" + describeChannels(visualHits, dispatcher);
+    }
+
+    private List<Integer> hitTestAllVisual(int stageX, int stageY) {
+        return HitTester.hitTestAll(
+                stageRenderer,
+                currentFrameSupplier.getAsInt(),
+                stageX,
+                stageY,
+                NEVER_FORCE_BOUNDING_BOX);
     }
 
     private static String abbreviateChannels(List<Integer> channels) {
@@ -547,6 +582,78 @@ public class InputHandler {
         }
         out.append(']');
         return out.toString();
+    }
+
+    private String describeChannels(List<Integer> channels, EventDispatcher dispatcher) {
+        if (channels == null || channels.isEmpty()) {
+            return "[]";
+        }
+        StringBuilder out = new StringBuilder("[");
+        int limit = Math.min(4, channels.size());
+        for (int i = 0; i < limit; i++) {
+            if (i > 0) {
+                out.append(" | ");
+            }
+            out.append(describeChannel(channels.get(i), dispatcher));
+        }
+        if (channels.size() > limit) {
+            out.append(" | +").append(channels.size() - limit);
+        }
+        out.append(']');
+        return out.toString();
+    }
+
+    private String describeChannel(int channel, EventDispatcher dispatcher) {
+        RenderSprite renderSprite = findLastBakedSprite(channel);
+        SpriteState sprite = stageRenderer.getSpriteRegistry().get(channel);
+        StringBuilder out = new StringBuilder();
+        out.append("ch=").append(channel);
+        if (renderSprite != null) {
+            out.append(" type=").append(renderSprite.getType())
+                    .append(" rect=").append(renderSprite.getX()).append(',').append(renderSprite.getY())
+                    .append(',').append(renderSprite.getWidth()).append('x').append(renderSprite.getHeight())
+                    .append(" z=").append(renderSprite.getLocZ())
+                    .append(" ink=").append(renderSprite.getInk());
+            if (renderSprite.getCastMember() != null) {
+                out.append(" cast=\"").append(renderSprite.getCastMember().name()).append('"');
+            }
+            if (renderSprite.getDynamicMember() != null) {
+                CastMember member = renderSprite.getDynamicMember();
+                out.append(" dyn=").append(member.getCastLibNumber()).append(':').append(member.getMemberNumber())
+                        .append(" \"").append(member.getName()).append('"')
+                        .append(" ").append(member.getMemberType());
+            }
+        }
+        if (sprite != null) {
+            out.append(" member=").append(sprite.getEffectiveCastLib()).append(':').append(sprite.getEffectiveCastMember())
+                    .append(" cursor=").append(sprite.getCursor())
+                    .append(" scripts=").append(sprite.getScriptInstanceList().size());
+        }
+        if (dispatcher != null) {
+            out.append(" handlers=")
+                    .append(dispatcher.spriteHasHandler(channel, PlayerEvent.MOUSE_DOWN.getHandlerName()) ? 'D' : '-')
+                    .append(dispatcher.spriteHasHandler(channel, PlayerEvent.MOUSE_UP.getHandlerName()) ? 'U' : '-')
+                    .append(dispatcher.spriteHasHandler(channel, PlayerEvent.MOUSE_ENTER.getHandlerName()) ? 'E' : '-')
+                    .append(dispatcher.spriteHasHandler(channel, PlayerEvent.MOUSE_LEAVE.getHandlerName()) ? 'L' : '-')
+                    .append(dispatcher.spriteHasHandler(channel, PlayerEvent.MOUSE_WITHIN.getHandlerName()) ? 'W' : '-');
+        }
+        return out.toString();
+    }
+
+    private RenderSprite findLastBakedSprite(int channel) {
+        List<RenderSprite> sprites = stageRenderer.getLastBakedSprites();
+        if (sprites == null || sprites.isEmpty()) {
+            sprites = stageRenderer.getSpritesForFrame(currentFrameSupplier.getAsInt());
+        }
+        if (sprites == null) {
+            return null;
+        }
+        for (RenderSprite sprite : sprites) {
+            if (sprite != null && sprite.getChannel() == channel) {
+                return sprite;
+            }
+        }
+        return null;
     }
 
     // --- Text editing ---

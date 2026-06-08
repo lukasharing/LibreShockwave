@@ -96,6 +96,20 @@ public class XtraManager {
     }
 
     /**
+     * Give Xtras with an explicit Director msgTable a chance to recover the
+     * public handler name when protected casts resolve an OBJ_CALL selector
+     * through a different Lnam table.
+     */
+    public String resolveHandlerName(Datum.XtraInstance instance, String handlerName,
+                                     List<String> candidateNames) {
+        Xtra xtra = getXtra(instance.xtraName());
+        if (xtra == null) {
+            return handlerName;
+        }
+        return xtra.resolveHandlerName(instance.instanceId(), handlerName, candidateNames);
+    }
+
+    /**
      * Get a property from an Xtra instance.
      */
     public Datum getProperty(Datum.XtraInstance instance, String propertyName) {

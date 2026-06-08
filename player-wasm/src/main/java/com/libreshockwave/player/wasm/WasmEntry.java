@@ -6,12 +6,15 @@ import org.teavm.interop.Export;
 import com.libreshockwave.DirectorFile;
 import com.libreshockwave.bitmap.Bitmap;
 import com.libreshockwave.chunks.CastMemberChunk;
+import com.libreshockwave.cast.MemberType;
 import com.libreshockwave.player.cast.CastMember;
+import com.libreshockwave.player.debug.StageInspector;
 import com.libreshockwave.player.render.pipeline.FrameRenderPipeline;
 import com.libreshockwave.player.render.pipeline.RenderSprite;
 import com.libreshockwave.util.FileUtil;
 import com.libreshockwave.vm.DebugConfig;
 import com.libreshockwave.vm.datum.Datum;
+import com.libreshockwave.vm.xtra.BobbaXtra;
 
 import java.io.OutputStream;
 import java.io.PrintStream;
@@ -56,7 +59,7 @@ public class WasmEntry {
     private static final int MAX_DEBUG_MESSAGE_CHARS = 8192;
 
     private static boolean isDebugLoggingEnabled() {
-        return DebugConfig.isDebugPlaybackEnabled();
+        return DebugConfig.isDebugPlaybackEnabled() || DebugConfig.isMusTraceEnabled();
     }
 
     private static void appendDebug(String msg) {
@@ -213,7 +216,10 @@ public class WasmEntry {
                     String baseName = FileUtil.getFileNameWithoutExtension(
                             FileUtil.getFileName(fileName));
                     var castLibManager = wasmPlayer.getPlayer().getCastLibManager();
-                    byte[] cached = castLibManager.getCachedExternalData(baseName);
+                    byte[] cached = castLibManager.getCachedExternalData(fileName);
+                    if (cached == null) {
+                        cached = castLibManager.getCachedExternalData(baseName);
+                    }
                     if (cached != null) {
                         try {
                             if (wasmPlayer.getPlayer().loadExternalCastFromCachedData(
@@ -300,6 +306,19 @@ public class WasmEntry {
         }
     }
 
+    @Export(name = "setMusTraceEnabled")
+    public static void setMusTraceEnabled(int enabled) {
+        DebugConfig.setMusTraceEnabled(enabled != 0);
+    }
+
+    @Export(name = "setBobbaMachineSeed")
+    public static void setBobbaMachineSeed(int seedLen) {
+        String seed = seedLen > 0
+                ? new String(stringBuffer, 0, Math.min(seedLen, stringBuffer.length), StandardCharsets.UTF_8)
+                : "";
+        BobbaXtra.setRuntimeMachineSeed(seed);
+    }
+
     /**
      * Pause the browser tick loop when a script/authored error is reported.
      * This is a debug-only trap used to preserve the original failure context.
@@ -355,6 +374,17 @@ public class WasmEntry {
             return wasmPlayer.preloadCasts();
         } catch (Throwable e) {
             captureError("preloadCasts", e);
+            return 0;
+        }
+    }
+
+    @Export(name = "prefetchExternalCasts")
+    public static int prefetchExternalCasts() {
+        if (wasmPlayer == null) return 0;
+        try {
+            return wasmPlayer.prefetchExternalCasts();
+        } catch (Throwable e) {
+            captureError("prefetchExternalCasts", e);
             return 0;
         }
     }
@@ -795,7 +825,10 @@ public class WasmEntry {
     public static void pasteText(int textLen) {
         if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return;
         String text = textLen > 0 ? new String(stringBuffer, 0, Math.min(textLen, stringBuffer.length)) : "";
-        if (!text.isEmpty()) wasmPlayer.getPlayer().getInputHandler().onPasteText(text);
+        if (!text.isEmpty()) {
+            wasmPlayer.getPlayer().getInputHandler().onPasteText(text);
+            wasmPlayer.processInputEvents();
+        }
     }
 
     // === Copy text (JS reads selected text from WASM) ===
@@ -896,6 +929,14 @@ public class WasmEntry {
         return writeToStringBuffer(req.fallbacks[actualIndex]);
     }
 
+    @Export(name = "isPendingFetchInternalPrefetch")
+    public static int isPendingFetchInternalPrefetch(int index) {
+        QueuedNetProvider net = netProvider();
+        if (net == null) return 0;
+        QueuedNetProvider.PendingRequest req = net.getRequest(index);
+        return req != null && req.internalPrefetch ? 1 : 0;
+    }
+
     /**
      * Clear pending requests after JS has read them.
      */
@@ -946,13 +987,12 @@ public class WasmEntry {
 
     /**
      * Deliver a successful fetch result.
-     * Data must already be written to netBuffer.
-     * If the fetched URL is a cast file (.cct/.cst), the data is also
-     * cached and parsed in CastLibManager so it's available immediately
-     * when Lingo later sets castLib.fileName.
+     * Data must already be written to netBuffer. The completed URL is written
+     * to stringBuffer so Java can keep Director's requested URL and the actual
+     * fallback URL associated with the same preloadNetThing task.
      */
     @Export(name = "deliverFetchResult")
-    public static void deliverFetchResult(int taskId, int dataSize) {
+    public static void deliverFetchResult(int taskId, int urlLen, int dataSize) {
         try {
             lastError = null;
             QueuedNetProvider net = netProvider();
@@ -960,11 +1000,31 @@ public class WasmEntry {
 
             byte[] data = new byte[dataSize];
             System.arraycopy(netBuffer, 0, data, 0, dataSize);
-            // onFetchComplete fires the fetchCompleteCallback which routes
-            // cast files to Player.onNetFetchComplete → CastLibManager
-            net.onFetchComplete(taskId, data);
+            String url = urlLen > 0 ? new String(stringBuffer, 0, urlLen, StandardCharsets.UTF_8) : null;
+            net.onFetchComplete(taskId, url, data);
         } catch (Throwable e) {
             captureError("deliverFetchResult", e);
+        }
+    }
+
+    @Export(name = "deliverPrefetchResult")
+    public static void deliverPrefetchResult(int requestedUrlLen, int completedUrlLen, int dataSize) {
+        try {
+            lastError = null;
+            QueuedNetProvider net = netProvider();
+            if (net == null || netBuffer == null) return;
+
+            byte[] data = new byte[dataSize];
+            System.arraycopy(netBuffer, 0, data, 0, dataSize);
+            String requestedUrl = requestedUrlLen > 0
+                    ? new String(stringBuffer, 0, requestedUrlLen, StandardCharsets.UTF_8)
+                    : null;
+            String completedUrl = completedUrlLen > 0
+                    ? new String(stringBuffer, requestedUrlLen, completedUrlLen, StandardCharsets.UTF_8)
+                    : null;
+            net.onPrefetchComplete(requestedUrl, completedUrl, data);
+        } catch (Throwable e) {
+            captureError("deliverPrefetchResult", e);
         }
     }
 
@@ -1217,6 +1277,7 @@ public class WasmEntry {
         if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return;
         markRenderCacheDirty();
         wasmPlayer.getPlayer().getInputHandler().onMouseDown(stageX, stageY, button == 2);
+        wasmPlayer.processInputEvents();
     }
 
     /**
@@ -1228,6 +1289,13 @@ public class WasmEntry {
         if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return;
         markRenderCacheDirty();
         wasmPlayer.getPlayer().getInputHandler().onMouseUp(stageX, stageY, button == 2);
+        wasmPlayer.processInputEvents();
+    }
+
+    @Export(name = "inspectStageAt")
+    public static int inspectStageAt(int stageX, int stageY) {
+        if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return 0;
+        return writeToStringBuffer(StageInspector.inspect(wasmPlayer.getPlayer(), stageX, stageY));
     }
 
     /**
@@ -1237,6 +1305,7 @@ public class WasmEntry {
     public static void blur() {
         if (wasmPlayer == null || wasmPlayer.getPlayer() == null) return;
         wasmPlayer.getPlayer().getInputHandler().onBlur();
+        wasmPlayer.processInputEvents();
     }
 
     /**
@@ -1253,6 +1322,7 @@ public class WasmEntry {
         int directorCode = com.libreshockwave.player.input.DirectorKeyCodes.fromBrowserKeyCode(browserKeyCode);
         wasmPlayer.getPlayer().getInputHandler().onKeyDown(directorCode, keyChar,
                 (modifiers & 1) != 0, (modifiers & 2) != 0, (modifiers & 4) != 0);
+        wasmPlayer.processInputEvents();
     }
 
     /**
@@ -1269,6 +1339,7 @@ public class WasmEntry {
         int directorCode = com.libreshockwave.player.input.DirectorKeyCodes.fromBrowserKeyCode(browserKeyCode);
         wasmPlayer.getPlayer().getInputHandler().onKeyUp(directorCode, keyChar,
                 (modifiers & 1) != 0, (modifiers & 2) != 0, (modifiers & 4) != 0);
+        wasmPlayer.processInputEvents();
     }
 
     // === Diagnostic exports ===
@@ -1372,6 +1443,8 @@ public class WasmEntry {
             Bitmap dynBitmap = dyn != null ? dyn.getBitmap() : null;
             byte[] dynIndices = dynBitmap != null ? dynBitmap.getPaletteIndices() : null;
             PixelStats dynStats = countPixels(dynBitmap);
+            String dynText = dyn != null && dyn.getMemberType() == MemberType.TEXT
+                    ? diagnosticText(dyn.getTextContent()) : "";
             sb.append("ch=").append(sprite.getChannel())
                     .append(" z=").append(sprite.getLocZ())
                     .append(" loc=").append(sprite.getX()).append(',').append(sprite.getY())
@@ -1390,6 +1463,7 @@ public class WasmEntry {
                     .append(" castId=").append(cast != null ? cast.id().value() : -1)
                     .append(" dynName=").append(dyn != null ? dyn.getName() : "")
                     .append(" dynNum=").append(dyn != null ? dyn.getMemberNumber() : -1)
+                    .append(" dynText=\"").append(dynText).append('"')
                     .append(" dynScript=").append(dynBitmap != null && dynBitmap.isScriptModified())
                     .append(" dynBmp=").append(dynBitmap != null ? dynBitmap.getWidth() : 0)
                     .append('x').append(dynBitmap != null ? dynBitmap.getHeight() : 0)
@@ -1450,6 +1524,17 @@ public class WasmEntry {
 
     private record PixelStats(int white, int black, int transparent, int nonWhite) {}
 
+    private static String diagnosticText(String text) {
+        if (text == null || text.isEmpty()) {
+            return "";
+        }
+        String normalized = text
+                .replace("\r", "\\r")
+                .replace("\n", "\\n")
+                .replace("\"", "\\\"");
+        return normalized.length() <= 120 ? normalized : normalized.substring(0, 120) + "...";
+    }
+
     private static boolean intersects(int x, int y, int w, int h,
                                       int rx, int ry, int rw, int rh) {
         return w > 0 && h > 0
@@ -1505,6 +1590,16 @@ public class WasmEntry {
         return b != null ? b.getPendingRequests().size() : 0;
     }
 
+    /**
+     * Snapshot and clear pending Multiuser requests before JS starts acting on
+     * them. Requests authored during the drain stay queued for the next pump.
+     */
+    @Export(name = "beginMusPendingDrain")
+    public static int beginMusPendingDrain() {
+        WasmMultiuserBridge b = musBridge();
+        return b != null ? b.beginPendingRequestDrain() : 0;
+    }
+
     /** @return request type: 0=connect, 1=send, 2=disconnect */
     @Export(name = "getMusPendingType")
     public static int getMusPendingType(int index) {
@@ -1512,6 +1607,14 @@ public class WasmEntry {
         if (b == null) return -1;
         WasmMultiuserBridge.PendingRequest req = b.getRequest(index);
         return req != null ? req.type : -1;
+    }
+
+    @Export(name = "getMusPendingRequestId")
+    public static int getMusPendingRequestId(int index) {
+        WasmMultiuserBridge b = musBridge();
+        if (b == null) return 0;
+        WasmMultiuserBridge.PendingRequest req = b.getRequest(index);
+        return req != null ? (int) Math.min(Integer.MAX_VALUE, req.requestId) : 0;
     }
 
     @Export(name = "getMusPendingInstanceId")
@@ -1553,6 +1656,12 @@ public class WasmEntry {
     public static void drainMusPending() {
         WasmMultiuserBridge b = musBridge();
         if (b != null) b.drainPendingRequests();
+    }
+
+    @Export(name = "finishMusPendingDrain")
+    public static void finishMusPendingDrain() {
+        WasmMultiuserBridge b = musBridge();
+        if (b != null) b.finishPendingRequestDrain();
     }
 
     /** JS calls this when a WebSocket connection is established. */
@@ -1605,6 +1714,9 @@ public class WasmEntry {
             String data = latin1StringFromStringBuffer(dataLen);
             b.deliverMessage(instanceId, 0, "", "", data);
         } catch (Throwable e) {
+            System.err.println("[MUSBridge] deliver failed instance=" + instanceId
+                    + " bytes=" + dataLen + " error=" + e);
+            e.printStackTrace(System.err);
             captureError("musDeliverMessage", e);
         }
     }

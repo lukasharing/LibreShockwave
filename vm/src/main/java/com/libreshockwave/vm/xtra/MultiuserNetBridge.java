@@ -14,7 +14,25 @@ public interface MultiuserNetBridge {
     /**
      * A received network message.
      */
-    record NetMessage(int errorCode, String senderID, String subject, Datum content) {}
+    record NetMessage(
+            int errorCode,
+            String senderID,
+            String subject,
+            Datum content,
+            List<String> recipients,
+            int timeStamp) {
+
+        public NetMessage(int errorCode, String senderID, String subject, Datum content) {
+            this(errorCode, senderID, subject, content, List.of("*"), 0);
+        }
+
+        public NetMessage {
+            senderID = senderID != null ? senderID : "";
+            subject = subject != null ? subject : "";
+            content = content != null ? content : Datum.VOID;
+            recipients = recipients != null ? List.copyOf(recipients) : List.of("*");
+        }
+    }
 
     /**
      * Request a connection to a server.

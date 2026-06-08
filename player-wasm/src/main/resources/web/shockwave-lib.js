@@ -41,6 +41,79 @@ var LibreShockwave = (function() {
         }
     }
 
+    var _machineSeedMemory = '';
+
+    function _encodeBase64NoPadding(bytes) {
+        var alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+        var out = '';
+        var i = 0;
+        while (i + 2 < bytes.length) {
+            var b0 = bytes[i++];
+            var b1 = bytes[i++];
+            var b2 = bytes[i++];
+            out += alphabet.charAt(b0 >>> 2);
+            out += alphabet.charAt(((b0 & 3) << 4) | (b1 >>> 4));
+            out += alphabet.charAt(((b1 & 15) << 2) | (b2 >>> 6));
+            out += alphabet.charAt(b2 & 63);
+        }
+        var remaining = bytes.length - i;
+        if (remaining === 1) {
+            var c0 = bytes[i];
+            out += alphabet.charAt(c0 >>> 2);
+            out += alphabet.charAt((c0 & 3) << 4);
+        } else if (remaining === 2) {
+            var d0 = bytes[i++];
+            var d1 = bytes[i];
+            out += alphabet.charAt(d0 >>> 2);
+            out += alphabet.charAt(((d0 & 3) << 4) | (d1 >>> 4));
+            out += alphabet.charAt((d1 & 15) << 2);
+        }
+        return out;
+    }
+
+    function _createMachineSeedBytes() {
+        var bytes = new Uint8Array(32);
+        try {
+            var view = _domDocument.defaultView;
+            if (!view && typeof window !== 'undefined') {
+                view = window;
+            }
+            if (view.crypto && typeof view.crypto.getRandomValues === 'function') {
+                view.crypto.getRandomValues(bytes);
+                return bytes;
+            }
+        } catch (e) {}
+        for (var i = 0; i < bytes.length; i++) {
+            bytes[i] = Math.floor(Math.random() * 256) & 255;
+        }
+        return bytes;
+    }
+
+    function _isMachineSeed(value) {
+        return typeof value === 'string' && /^[A-Za-z0-9+/]{43}$/.test(value);
+    }
+
+    function _getOrCreateMachineSeed() {
+        var key = 'dirplayer_bobba_machine_id_seed';
+        try {
+            var saved = localStorage.getItem(key);
+            if (_isMachineSeed(saved)) {
+                return saved;
+            }
+        } catch (e) {}
+        if (_isMachineSeed(_machineSeedMemory)) {
+            return _machineSeedMemory;
+        }
+
+        var seed = _encodeBase64NoPadding(_createMachineSeedBytes());
+        try {
+            localStorage.setItem(key, seed);
+        } catch (e) {
+            _machineSeedMemory = seed;
+        }
+        return seed || _machineSeedMemory;
+    }
+
     // Auto-detect base path from <script src="...shockwave-lib.js">
     var _autoBasePath = '';
     (function() {
@@ -71,9 +144,11 @@ var LibreShockwave = (function() {
      * @param {Function} [options.onLoad]   - Called with { width, height, frameCount, tempo }.
      * @param {Function} [options.onError]  - Called with error message string.
      * @param {Function} [options.onFrame]  - Called with (frame, total) on each frame.
+     * @param {Function} [options.onSpriteInspect] - Called with a read-only JSON stage hit snapshot after clicks.
      * @param {string}   [options.tcpWebSocketUrl] - Optional WebSocket-to-TCP URL template for browser-hosted sockets.
      * @param {string}   [options.musWebSocketUrl] - Compatibility alias for tcpWebSocketUrl.
      * @param {string[]} [options.musSecureHosts] - Hostnames that should default to wss:// for Multiuser sockets.
+     * @param {boolean}  [options.traceMusFrames] - Include WebSocket frame bridge diagnostics with MUS trace URLs.
      * @param {number}   [options.vmHandlerTimeoutMs] - Per-Lingo-handler wall timeout. 0 disables it.
      * @param {boolean}  [options.compatPropListSetAtByKey] - Compatibility mode for legacy setAt(propList, key, value) bytecode.
      * @param {number}   [options.fastBootstrapMinTicks] - Minimum startup ticks before normal scheduling.
@@ -97,6 +172,10 @@ var LibreShockwave = (function() {
         this._musWebSocketUrl = opts.tcpWebSocketUrl || opts.musWebSocketUrl || '';
         this._musSecureHosts = Array.isArray(opts.musSecureHosts) ? opts.musSecureHosts.slice(0) : [];
         this._traceMusPackets = !!opts.traceMusPackets;
+        this._traceMusFrames = !!opts.traceMusFrames;
+        this._traceProperties = !!opts.traceProperties;
+        this._traceInputEvents = !!opts.traceInputEvents;
+        this._traceUiEvents = !!opts.traceUiEvents;
         this._vmHandlerTimeoutMs = Math.max(0, Number(opts.vmHandlerTimeoutMs == null ? 0 : opts.vmHandlerTimeoutMs) || 0);
         this._compatPropListSetAtByKey = !!opts.compatPropListSetAtByKey;
         this._pauseOnScriptError = !!opts.pauseOnScriptError;
@@ -439,6 +518,11 @@ var LibreShockwave = (function() {
                 + ' focused=' + !!self._canvasFocused);
         }
 
+        function requestSpriteInspect(x, y, phase) {
+            if (!self._opts.onSpriteInspect || !self._worker || !self._workerReady) return;
+            self._worker.postMessage({ type: 'inspectStageAt', x: x, y: y, phase: phase || '' });
+        }
+
         canvas.addEventListener('mousemove', function(e) {
             var pt = getCanvasPoint(e.clientX, e.clientY);
             var x = pt.x;
@@ -460,6 +544,7 @@ var LibreShockwave = (function() {
             traceBrowserInput('mouseDown', x, y, e.button);
             if (!self._worker || !self._workerReady) return;
             self._worker.postMessage({ type: 'mouseDown', x: x, y: y, button: e.button });
+            requestSpriteInspect(x, y, 'mouseDown');
         });
 
         canvas.addEventListener('mouseup', function(e) {
@@ -468,7 +553,10 @@ var LibreShockwave = (function() {
             var x = pt.x;
             var y = pt.y;
             traceBrowserInput('mouseUp', x, y, e.button);
-            if (!self._canvasFocused) return;
+            if (!self._canvasFocused) {
+                traceBrowserInput('mouseUpBlockedCanvasFocus', x, y, e.button);
+                return;
+            }
             if (!self._worker || !self._workerReady) return;
             self._worker.postMessage({ type: 'mouseUp', x: x, y: y, button: e.button });
         });
@@ -502,6 +590,7 @@ var LibreShockwave = (function() {
             if (!self._worker || !self._workerReady) return;
             self._worker.postMessage({ type: 'mouseMove', x: x, y: y });
             self._worker.postMessage({ type: 'mouseDown', x: x, y: y, button: 0 });
+            requestSpriteInspect(x, y, 'touchStart');
         }, { passive: false });
 
         canvas.addEventListener('touchmove', function(e) {
@@ -576,10 +665,15 @@ var LibreShockwave = (function() {
                 musWebSocketUrl: self._musWebSocketUrl,
                 musSecureHosts: self._musSecureHosts,
                 traceMusPackets: self._traceMusPackets,
+                traceMusFrames: self._traceMusFrames,
+                traceProperties: self._traceProperties,
+                traceInputEvents: self._traceInputEvents,
+                traceUiEvents: self._traceUiEvents,
                 vmHandlerTimeoutMs: self._vmHandlerTimeoutMs,
                 pauseOnScriptError: self._pauseOnScriptError,
                 pauseOnAuthoredMajor: self._pauseOnAuthoredMajor,
-                compatPropListSetAtByKey: self._compatPropListSetAtByKey
+                compatPropListSetAtByKey: self._compatPropListSetAtByKey,
+                machineSeed: _getOrCreateMachineSeed()
             };
             self._initSharedFrameTransport(initMessage);
             // Send init with absolute base path so importScripts/fetch work from the worker.
@@ -648,6 +742,12 @@ var LibreShockwave = (function() {
                     this._opts.onDebugLog(msg.msg);
                 } else {
                     console.log(msg.msg);
+                }
+                break;
+
+            case 'spriteInspect':
+                if (this._opts.onSpriteInspect) {
+                    this._opts.onSpriteInspect(msg.json || '', msg);
                 }
                 break;
 
@@ -1105,6 +1205,11 @@ var LibreShockwave = (function() {
             type: 'setDebugPlayback',
             enabled: dbg,
             lingoEnabled: !!this._opts.lingoDebugPlayback,
+            traceMusPackets: !!this._traceMusPackets,
+            traceMusFrames: !!this._traceMusFrames,
+            traceProperties: !!this._traceProperties,
+            traceInputEvents: !!this._traceInputEvents,
+            traceUiEvents: !!this._traceUiEvents,
             pauseOnScriptError: this._pauseOnScriptError,
             pauseOnAuthoredMajor: this._pauseOnAuthoredMajor
         });
@@ -1300,6 +1405,11 @@ var LibreShockwave = (function() {
                 type: 'setDebugPlayback',
                 enabled: enabled,
                 lingoEnabled: !!this._opts.lingoDebugPlayback,
+                traceMusPackets: !!this._traceMusPackets,
+                traceMusFrames: !!this._traceMusFrames,
+                traceProperties: !!this._traceProperties,
+                traceInputEvents: !!this._traceInputEvents,
+                traceUiEvents: !!this._traceUiEvents,
                 pauseOnScriptError: this._pauseOnScriptError,
                 pauseOnAuthoredMajor: this._pauseOnAuthoredMajor
             });

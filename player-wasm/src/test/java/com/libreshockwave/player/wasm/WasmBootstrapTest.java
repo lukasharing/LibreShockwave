@@ -1,6 +1,7 @@
 package com.libreshockwave.player.wasm;
 
 import com.libreshockwave.util.FileUtil;
+import com.libreshockwave.vm.DebugConfig;
 import com.libreshockwave.vm.LingoVM;
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.opcode.dispatch.StringMethodDispatcher;
@@ -65,6 +66,22 @@ class WasmBootstrapTest {
                 "async browser JPEG decode must force the next render to repaint stale placeholders");
         assertTrue(getStaticInt("renderCacheRevision") > 17,
                 "render cache revision must change so SoftwareRenderer does not reuse the old frame");
+    }
+
+    @Test
+    void musTraceEnablesWasmDebugBufferWithoutLingoDebugPlayback() {
+        DebugConfig.setDebugPlaybackEnabled(false);
+        DebugConfig.setMusTraceEnabled(true);
+        try {
+            WasmEntry.debugLog.setLength(0);
+            WasmEntry.log("[MUSBridge] trace-only line");
+
+            assertTrue(WasmEntry.debugLog.toString().contains("trace-only line"));
+        } finally {
+            WasmEntry.debugLog.setLength(0);
+            DebugConfig.setMusTraceEnabled(false);
+            DebugConfig.setDebugPlaybackEnabled(false);
+        }
     }
 
     @Test
@@ -322,8 +339,10 @@ class WasmBootstrapTest {
 
             for (int i = 0; i < pending; i++) {
                 byte[] data = urls[i].endsWith("fuse_client.cct") ? fuseClientBytes : emptyCastBytes;
+                byte[] urlBytes = urls[i].getBytes(StandardCharsets.UTF_8);
+                System.arraycopy(urlBytes, 0, stringBuffer, 0, urlBytes.length);
                 setStaticByteArray("netBuffer", data.clone());
-                WasmEntry.deliverFetchResult(taskIds[i], data.length);
+                WasmEntry.deliverFetchResult(taskIds[i], urlBytes.length, data.length);
             }
         }
     }

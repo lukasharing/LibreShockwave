@@ -84,6 +84,25 @@ class WasmMultiuserBridgeTest {
     }
 
     @Test
+    void pendingDrainSnapshotsRequestsAndLeavesNewRequestsQueued() {
+        WasmMultiuserBridge bridge = new WasmMultiuserBridge();
+
+        bridge.requestSend(1, "0", "0", new Datum.Str("@@FIRST"));
+
+        assertEquals(1, bridge.beginPendingRequestDrain());
+        bridge.requestSend(1, "0", "0", new Datum.Str("@@SECOND"));
+
+        assertEquals("@@FIRST", bridge.getRequest(0).content);
+        assertEquals(1, bridge.getPendingRequests().size());
+        assertEquals("@@SECOND", bridge.getPendingRequests().get(0).content);
+
+        bridge.finishPendingRequestDrain();
+
+        assertEquals(1, bridge.beginPendingRequestDrain());
+        assertEquals("@@SECOND", bridge.getRequest(0).content);
+    }
+
+    @Test
     void smusConnectionEncodesSubjectAndContentForRawTransport() {
         WasmMultiuserBridge bridge = new WasmMultiuserBridge();
 
@@ -162,6 +181,64 @@ class WasmMultiuserBridgeTest {
     }
 
     @Test
+    void contentOnlyConnectionPreservesLargeIncomingBurst() {
+        WasmMultiuserBridge bridge = new WasmMultiuserBridge();
+
+        bridge.requestConnect(1, "example.test", 1234, 1);
+        String first = "A".repeat(666);
+        String second = "B".repeat(3480);
+        String third = "C".repeat(52);
+
+        bridge.deliverMessage(1, 0, "", "", first);
+        bridge.deliverMessage(1, 0, "", "", second);
+        bridge.deliverMessage(1, 0, "", "", third);
+
+        List<MultiuserNetBridge.NetMessage> messages = bridge.pollMessages(1);
+        assertEquals(3, messages.size());
+        assertEquals(first, messages.get(0).content().toStr());
+        assertEquals(second, messages.get(1).content().toStr());
+        assertEquals(third, messages.get(2).content().toStr());
+    }
+
+    @Test
+    void multipleContentOnlyInstancesKeepMessagesAndSendsIsolated() {
+        WasmMultiuserBridge bridge = new WasmMultiuserBridge();
+
+        bridge.requestConnect(1, "first.example.test", 1001, 1);
+        bridge.requestConnect(2, "second.example.test", 1002, 1);
+        bridge.drainPendingRequests();
+
+        bridge.deliverMessage(1, 0, "", "", "first-in");
+        bridge.deliverMessage(2, 0, "", "", "second-in");
+
+        assertEquals("first-in", bridge.pollMessages(1).get(0).content().toStr());
+        assertEquals("second-in", bridge.pollMessages(2).get(0).content().toStr());
+
+        bridge.requestSend(2, "0", "0", new Datum.Str("second-out"));
+        bridge.requestSend(1, "0", "0", new Datum.Str("first-out"));
+
+        List<WasmMultiuserBridge.PendingRequest> requests = bridge.getPendingRequests();
+        assertEquals(2, requests.size());
+        assertEquals(2, requests.get(0).instanceId);
+        assertEquals("second-out", requests.get(0).content);
+        assertEquals(1, requests.get(1).instanceId);
+        assertEquals("first-out", requests.get(1).content);
+    }
+
+    @Test
+    void connectNotificationUsesVoidContentLikeDirectorMultiuserXtra() {
+        WasmMultiuserBridge bridge = new WasmMultiuserBridge();
+
+        bridge.notifyConnected(1);
+
+        List<MultiuserNetBridge.NetMessage> messages = bridge.pollMessages(1);
+        assertEquals(1, messages.size());
+        assertEquals(0, messages.get(0).errorCode());
+        assertEquals("ConnectToNetServer", messages.get(0).subject());
+        assertEquals(true, messages.get(0).content().isVoid());
+    }
+
+    @Test
     void expectedDisconnectDoesNotQueueConnectionProblem() {
         WasmMultiuserBridge bridge = new WasmMultiuserBridge();
 
@@ -210,7 +287,7 @@ class WasmMultiuserBridgeTest {
     }
 
     @Test
-    void cleanWebSocketCloseDoesNotQueueConnectionProblem() {
+    void cleanWebSocketCloseQueuesConnectionProblem() {
         WasmMultiuserBridge bridge = new WasmMultiuserBridge();
 
         bridge.notifyConnected(1);
@@ -219,12 +296,16 @@ class WasmMultiuserBridgeTest {
                 "close code=1000 wasClean=true url=ws://127.0.0.1:4173/mus-ws");
 
         List<MultiuserNetBridge.NetMessage> messages = bridge.pollMessages(1);
-        assertEquals(List.of(), messages);
+        assertEquals(1, messages.size());
+        assertEquals(-2, messages.get(0).errorCode());
+        assertEquals("ConnectionProblem", messages.get(0).subject());
+        assertEquals(true, messages.get(0).content().toStr().contains("closeCode=1000"));
+        assertEquals(true, messages.get(0).content().toStr().contains("wasClean=true"));
         assertEquals(false, bridge.isConnected(1));
     }
 
     @Test
-    void cleanCloseAfterApplicationDataKeepsDataUsableBeforeTerminalState() {
+    void cleanCloseKeepsAlreadyQueuedApplicationDataBeforeTerminalError() {
         WasmMultiuserBridge bridge = new WasmMultiuserBridge();
 
         bridge.requestConnect(1, "example.test", 1234, 1);
@@ -238,7 +319,11 @@ class WasmMultiuserBridgeTest {
         assertEquals(1, applicationMessages.size());
         assertEquals("strip-response", applicationMessages.get(0).content().toStr());
 
-        assertEquals(List.of(), bridge.pollMessages(1));
+        List<MultiuserNetBridge.NetMessage> terminalMessages = bridge.pollMessages(1);
+        assertEquals(1, terminalMessages.size());
+        assertEquals(-2, terminalMessages.get(0).errorCode());
+        assertEquals("ConnectionProblem", terminalMessages.get(0).subject());
+        assertEquals(true, terminalMessages.get(0).content().toStr().contains("closeCode=1000"));
         assertEquals(false, bridge.isConnected(1));
     }
 
@@ -307,6 +392,40 @@ class WasmMultiuserBridgeTest {
         assertEquals(2, requests.size());
         assertEquals(WasmMultiuserBridge.REQ_CONNECT, requests.get(0).type);
         assertEquals("@@BCD", requests.get(1).content);
+    }
+
+    @Test
+    void reconnectDropsStalePendingSendsForSameInstance() {
+        WasmMultiuserBridge bridge = new WasmMultiuserBridge();
+
+        bridge.requestConnect(1, "old.example.test", 1111, 1);
+        bridge.requestSend(1, "0", "0", new Datum.Str("old-packet"));
+        bridge.requestConnect(1, "new.example.test", 2222, 1);
+        bridge.requestSend(1, "0", "0", new Datum.Str("new-packet"));
+
+        List<WasmMultiuserBridge.PendingRequest> requests = bridge.getPendingRequests();
+        assertEquals(2, requests.size());
+        assertEquals(WasmMultiuserBridge.REQ_CONNECT, requests.get(0).type);
+        assertEquals("new.example.test", requests.get(0).host);
+        assertEquals(2222, requests.get(0).port);
+        assertEquals(WasmMultiuserBridge.REQ_SEND, requests.get(1).type);
+        assertEquals("new-packet", requests.get(1).content);
+    }
+
+    @Test
+    void reconnectDuringPendingDrainDropsStaleSnapshotRequestsForSameInstance() {
+        WasmMultiuserBridge bridge = new WasmMultiuserBridge();
+
+        bridge.requestSend(1, "0", "0", new Datum.Str("old-packet"));
+        assertEquals(1, bridge.beginPendingRequestDrain());
+
+        bridge.requestConnect(1, "new.example.test", 2222, 1);
+
+        assertEquals(WasmMultiuserBridge.REQ_CONNECT, bridge.getRequest(0).type);
+        assertEquals("new.example.test", bridge.getRequest(0).host);
+        assertEquals(1, bridge.getPendingRequests().size());
+        assertEquals(WasmMultiuserBridge.REQ_CONNECT, bridge.getPendingRequests().get(0).type);
+        assertEquals("new.example.test", bridge.getPendingRequests().get(0).host);
     }
 
     @Test

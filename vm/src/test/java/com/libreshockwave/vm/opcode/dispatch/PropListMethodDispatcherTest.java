@@ -1,9 +1,11 @@
 package com.libreshockwave.vm.opcode.dispatch;
 
+import com.libreshockwave.vm.LingoVM;
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.datum.LingoException;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -209,6 +211,7 @@ class PropListMethodDispatcherTest {
         Datum.PropList propList = new Datum.PropList();
         propList.add("key", Datum.of(1), true);   // symbol #key
         propList.add("key", Datum.of(2), false);   // string "key"
+        propList.add("key", Datum.of(3), true);   // symbol #key duplicate
 
         Datum symResult = PropListMethodDispatcher.dispatch(
                 propList, "getAt", List.of(new Datum.Symbol("key")));
@@ -365,6 +368,42 @@ class PropListMethodDispatcherTest {
     }
 
     @Test
+    void methodGetAtIntegerOutOfRangeUsesNumericKeyWhenCompatibilityEnabled() throws Exception {
+        LingoVM vm = new LingoVM(null);
+        vm.setPropListSetAtByKeyCompatibilityEnabled(true);
+        setCurrentVm(vm);
+        try {
+            Datum.PropList propList = new Datum.PropList();
+            propList.add(Datum.of(2147418112), Datum.of("sandbox"));
+
+            Datum result = PropListMethodDispatcher.dispatch(
+                    propList, "getAt", List.of(Datum.of(2147418112)));
+
+            assertEquals("sandbox", result.toStr());
+        } finally {
+            clearCurrentVm();
+        }
+    }
+
+    @Test
+    void methodSetAtIntegerOutOfRangeCreatesNumericKeyWhenCompatibilityEnabled() throws Exception {
+        LingoVM vm = new LingoVM(null);
+        vm.setPropListSetAtByKeyCompatibilityEnabled(true);
+        setCurrentVm(vm);
+        try {
+            Datum.PropList propList = new Datum.PropList();
+
+            PropListMethodDispatcher.dispatch(
+                    propList, "setAt", List.of(Datum.of(2147418112), Datum.of("chair")));
+
+            assertEquals(1, propList.size());
+            assertEquals("chair", propList.getAProp(Datum.of(2147418112)).toStr());
+        } finally {
+            clearCurrentVm();
+        }
+    }
+
+    @Test
     void setAtIntegerInRangeKeepsPositionalBehaviorWhenNoNumericKeyExists() {
         Datum.PropList propList = new Datum.PropList();
         propList.add("first", Datum.of("old"), true);
@@ -511,5 +550,17 @@ class PropListMethodDispatcherTest {
 
         assertEquals(1, propList.size());
         assertEquals("numeric", propList.getValue(0).toStr());
+    }
+
+    private static void setCurrentVm(LingoVM vm) throws Exception {
+        Field field = LingoVM.class.getDeclaredField("currentVm");
+        field.setAccessible(true);
+        field.set(null, vm);
+    }
+
+    private static void clearCurrentVm() throws Exception {
+        Field field = LingoVM.class.getDeclaredField("currentVm");
+        field.setAccessible(true);
+        field.set(null, null);
     }
 }

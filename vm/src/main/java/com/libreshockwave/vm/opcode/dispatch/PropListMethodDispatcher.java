@@ -73,7 +73,7 @@ public final class PropListMethodDispatcher {
             }
             case "getat" -> {
                 if (args.isEmpty()) yield Datum.VOID;
-                yield propList.getAtOrDefault(args.get(0), Datum.VOID);
+                yield propList.getAtOrDefault(args.get(0), Datum.VOID, isAssociativeSetAtCompatibilityEnabled());
             }
             case "getvalue" -> {
                 if (args.isEmpty()) yield Datum.VOID;
@@ -92,9 +92,12 @@ public final class PropListMethodDispatcher {
                     if (index >= 0 && index < propList.size()) {
                         propList.setValue(index, value);
                         yield Datum.VOID;
-                    } else {
-                        throw new LingoException("setAt index out of range: " + keyOrIndex.toInt());
                     }
+                    if (isAssociativeSetAtCompatibilityEnabled()) {
+                        propList.put(keyOrIndex, value);
+                        yield Datum.VOID;
+                    }
+                    throw new LingoException("setAt index out of range: " + keyOrIndex.toInt());
                 }
                 // Bytecode for property-list bracket assignment is emitted as an
                 // object-method setAt call: set pList[#key] to value. Director
@@ -170,6 +173,11 @@ public final class PropListMethodDispatcher {
                     propList.deepCopy();
             default -> Datum.VOID;
         };
+    }
+
+    private static boolean isAssociativeSetAtCompatibilityEnabled() {
+        LingoVM vm = LingoVM.getCurrentVM();
+        return vm != null && vm.isPropListSetAtByKeyCompatibilityEnabled();
     }
 
     private static Datum evaluateStoredValue(Datum value) {

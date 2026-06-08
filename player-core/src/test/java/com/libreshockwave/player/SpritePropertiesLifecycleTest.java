@@ -9,9 +9,13 @@ import com.libreshockwave.player.cast.CastMember;
 import com.libreshockwave.player.render.SpriteRegistry;
 import com.libreshockwave.player.sprite.SpriteColorSource;
 import com.libreshockwave.player.sprite.SpriteState;
+import com.libreshockwave.vm.DebugConfig;
 import com.libreshockwave.vm.datum.Datum;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.lang.reflect.Field;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -216,6 +220,93 @@ class SpritePropertiesLifecycleTest {
     }
 
     @Test
+    void replacingEquivalentScriptInstanceListPreservesRuntimeProcedureCallbacks() {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteProperties props = new SpriteProperties(registry);
+
+        SpriteState state = registry.getOrCreateDynamic(21);
+        Datum.ScriptInstance previousBroker = new Datum.ScriptInstance(99, new LinkedHashMap<>());
+        Datum.PropList previousProcedures = new Datum.PropList();
+        previousProcedures.put("mouseDown", true, new Datum.List(List.of(
+                Datum.symbol("eventProcRoom"),
+                Datum.of("room_interface"))));
+        previousBroker.properties().put("pProcList", previousProcedures);
+        state.setScriptInstanceList(List.of(previousBroker));
+
+        Datum.ScriptInstance nextBroker = new Datum.ScriptInstance(99, new LinkedHashMap<>());
+        Datum.PropList defaultProcedures = new Datum.PropList();
+        defaultProcedures.put("mouseDown", true, new Datum.List(List.of(Datum.symbol("null"), Datum.ZERO)));
+        nextBroker.properties().put("pProcList", defaultProcedures);
+
+        assertTrue(props.setSpriteProp(21, "scriptInstanceList",
+                new Datum.List(List.of(nextBroker))));
+
+        assertEquals(List.of(nextBroker), state.getScriptInstanceList());
+        Datum copied = ((Datum.PropList) nextBroker.properties().get("pProcList")).get("mouseDown");
+        assertTrue(copied instanceof Datum.List);
+        Datum.List callback = (Datum.List) copied;
+        assertEquals("eventProcRoom", callback.items().get(0).toKeyName());
+        assertEquals("room_interface", callback.items().get(1).toStr());
+        assertEquals(21, nextBroker.properties().get("spriteNum").toInt());
+    }
+
+    @Test
+    void replacingScriptInstanceListDoesNotPreserveEmptyProcedureTemplates() {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteProperties props = new SpriteProperties(registry);
+
+        SpriteState state = registry.getOrCreateDynamic(22);
+        Datum.ScriptInstance previousBroker = new Datum.ScriptInstance(99, new LinkedHashMap<>());
+        Datum.PropList previousProcedures = new Datum.PropList();
+        previousProcedures.put("mouseDown", true, new Datum.List(List.of(Datum.symbol("null"), Datum.ZERO)));
+        previousBroker.properties().put("pProcList", previousProcedures);
+        state.setScriptInstanceList(List.of(previousBroker));
+
+        Datum.ScriptInstance nextBroker = new Datum.ScriptInstance(99, new LinkedHashMap<>());
+        Datum.PropList defaultProcedures = new Datum.PropList();
+        defaultProcedures.put("mouseDown", true, new Datum.List(List.of(Datum.symbol("null"), Datum.ZERO)));
+        nextBroker.properties().put("pProcList", defaultProcedures);
+
+        assertTrue(props.setSpriteProp(22, "scriptInstanceList",
+                new Datum.List(List.of(nextBroker))));
+
+        Datum kept = ((Datum.PropList) nextBroker.properties().get("pProcList")).get("mouseDown");
+        assertTrue(kept instanceof Datum.List);
+        Datum.List callback = (Datum.List) kept;
+        assertEquals("null", callback.items().get(0).toKeyName());
+        assertEquals(0, callback.items().get(1).toInt());
+    }
+
+    @Test
+    void musTraceDoesNotEnableSpritePropertyLogging() {
+        boolean oldDebugPlayback = DebugConfig.isDebugPlaybackEnabled();
+        boolean oldPropertyTrace = DebugConfig.isPropertyTraceEnabled();
+        boolean oldMusTrace = DebugConfig.isMusTraceEnabled();
+        PrintStream oldOut = System.out;
+        ByteArrayOutputStream captured = new ByteArrayOutputStream();
+
+        try {
+            DebugConfig.setDebugPlaybackEnabled(false);
+            DebugConfig.setPropertyTraceEnabled(false);
+            DebugConfig.setMusTraceEnabled(true);
+            System.setOut(new PrintStream(captured, true, StandardCharsets.UTF_8));
+
+            SpriteRegistry registry = new SpriteRegistry();
+            SpriteProperties props = new SpriteProperties(registry);
+            assertTrue(props.setSpriteProp(17, "puppet", Datum.of(1)));
+            assertTrue(props.setSpriteProp(17, "visible", Datum.of(0)));
+            assertTrue(props.setSpriteProp(17, "loc", new Datum.Point(10, 20)));
+        } finally {
+            System.setOut(oldOut);
+            DebugConfig.setDebugPlaybackEnabled(oldDebugPlayback);
+            DebugConfig.setPropertyTraceEnabled(oldPropertyTrace);
+            DebugConfig.setMusTraceEnabled(oldMusTrace);
+        }
+
+        assertFalse(captured.toString(StandardCharsets.UTF_8).contains("[SpriteProperties]"));
+    }
+
+    @Test
     void disablingPuppetOnEmptySpriteClearsRuntimeBehaviorsAndResetsReleasedChannelState() {
         SpriteRegistry registry = new SpriteRegistry();
         SpriteProperties props = new SpriteProperties(registry);
@@ -304,7 +395,7 @@ class SpritePropertiesLifecycleTest {
     }
 
     @Test
-    void disablingPuppetOnEmptyScoreSpriteClearsRuntimeMemberOverride() {
+    void disablingPuppetOnEmptyScoreSpriteKeepsExplicitEmptyOverrideAndClearsRuntimeBehaviors() {
         SpriteRegistry registry = new SpriteRegistry();
         SpriteProperties props = new SpriteProperties(registry);
 
@@ -314,6 +405,9 @@ class SpritePropertiesLifecycleTest {
                 0, 0, 10, 20, 30, 40,
                 0, 0, 0, 0, 0, 0, 0
         ));
+        Datum.ScriptInstance broker = new Datum.ScriptInstance(99, new LinkedHashMap<>());
+        state.setScriptInstanceList(List.of(broker));
+        state.setVisible(true);
 
         assertTrue(props.setSpriteProp(31, "member", Datum.ZERO));
         assertTrue(state.hasDynamicMember());
@@ -321,7 +415,12 @@ class SpritePropertiesLifecycleTest {
 
         assertTrue(props.setSpriteProp(31, "puppet", Datum.ZERO));
 
-        assertFalse(state.hasDynamicMember());
+        assertTrue(state.hasDynamicMember(),
+                "member(0) before unpuppeting is an explicit empty-channel release, not a request to resurrect the score sprite");
+        assertEquals(0, state.getEffectiveCastMember());
+        assertFalse(state.isVisible());
+        assertEquals(List.of(), state.getScriptInstanceList(),
+                "released window channels must not keep stale registerProcedure brokers");
     }
 
     @Test

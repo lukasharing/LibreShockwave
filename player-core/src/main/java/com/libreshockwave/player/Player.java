@@ -5,6 +5,7 @@ import com.libreshockwave.util.FileUtil;
 import com.libreshockwave.util.IntValueProvider;
 import com.libreshockwave.util.ValueProvider;
 import com.libreshockwave.bitmap.Bitmap;
+import com.libreshockwave.bitmap.Palette;
 import com.libreshockwave.chunks.ScriptChunk;
 import com.libreshockwave.chunks.ScriptNamesChunk;
 import com.libreshockwave.player.behavior.BehaviorManager;
@@ -14,6 +15,7 @@ import com.libreshockwave.player.event.EventDispatcher;
 import com.libreshockwave.player.frame.FrameContext;
 import com.libreshockwave.player.input.InputState;
 import com.libreshockwave.player.net.NetManager;
+import com.libreshockwave.player.net.RawResourcePrefetcher;
 import com.libreshockwave.player.render.pipeline.BitmapCache;
 import com.libreshockwave.player.render.pipeline.FrameRenderPipeline;
 import com.libreshockwave.player.render.pipeline.FrameSnapshot;
@@ -40,6 +42,7 @@ import com.libreshockwave.player.audio.AudioBackend;
 import com.libreshockwave.player.audio.SoundManager;
 import com.libreshockwave.player.debug.LifecycleDiagnostics;
 import com.libreshockwave.player.timeout.TimeoutManager;
+import com.libreshockwave.vm.xtra.BobbaXtra;
 import com.libreshockwave.vm.xtra.CurlXtra;
 import com.libreshockwave.vm.xtra.MultiuserNetBridge;
 import com.libreshockwave.vm.xtra.MultiuserXtra;
@@ -117,16 +120,18 @@ public class Player implements UpdateProvider {
 
     // Debug controller for bytecode debugging
     private DebugControllerApi debugController;
+    private int providerSetupDepth = 0;
 
     // Executor for running VM on background thread (required for debugger blocking)
     // Lazy-initialized to avoid creating threads in environments that don't support them (e.g. TeaVM)
     private ExecutorService vmExecutor;
 
-    // Executor for parsing external cast files off the network thread
-    // Lazy-initialized to avoid pulling in java.util.concurrent in TeaVM environments
-    private ExecutorService castParserExecutor;
-    private Runnable castParserShutdown;  // Shutdown hook, avoids referencing ExecutorService in shutdown()
+    // Optional desktop-only preparser. WASM leaves this null so downloaded casts
+    // still commit through the synchronous Director lifecycle path.
+    private ExternalCastPreparser externalCastPreparser;
     private Runnable vmExecutorShutdown;  // Shutdown hook, avoids referencing ExecutorService in shutdown()
+    private final Map<byte[], ExternalCastPreparser.ParseJob> externalCastParseCache =
+            Collections.synchronizedMap(new IdentityHashMap<>());
     private final java.util.concurrent.atomic.AtomicBoolean vmRunning = new java.util.concurrent.atomic.AtomicBoolean(false);
     private final java.util.List<ExternalCastLoadHandler> externalCastLoadHandlers = new java.util.ArrayList<>();
     private final List<Datum> updatingObjects = new ArrayList<>();
@@ -196,12 +201,10 @@ public class Player implements UpdateProvider {
         registerMultiuserXtra(new SocketMultiuserBridge());
         this.movieProperties = new MovieProperties(this, file);
         this.spriteProperties = new SpriteProperties(stageRenderer.getSpriteRegistry());
-        // Initialize cast parser executor (only needed for desktop player with NetManager)
-        this.castParserExecutor = Executors.newFixedThreadPool(
-            Math.max(2, Runtime.getRuntime().availableProcessors() / 2),
-            r -> { Thread t = new Thread(r, "CastParser"); t.setDaemon(true); return t; }
-        );
-        this.castParserShutdown = () -> castParserExecutor.shutdownNow();
+        // Only the desktop constructor wires background cast parsing. The WASM
+        // constructor does not reference the threaded implementation.
+        this.externalCastPreparser = new BackgroundExternalCastPreparser(
+                Math.max(2, Runtime.getRuntime().availableProcessors() / 2));
 
         // Cast data request callback: when Lingo sets castLib.fileName, load the data from
         // NetManager's cache (already downloaded by preloadNetThing) into the specific cast.
@@ -266,7 +269,10 @@ public class Player implements UpdateProvider {
         com.libreshockwave.vm.opcode.dispatch.ImageMethodDispatcher.setImageMutationCallback(
                 () -> stageRenderer.getSpriteRegistry().bumpRevision());
         com.libreshockwave.player.cast.CastMember.setMemberSlotRetiredCallback(
-                (castLib, memberNum) -> stageRenderer.getSpriteRegistry().clearDynamicMemberBindings(castLib, memberNum));
+                (castLib, memberNum) -> {
+                    stageRenderer.getSpriteRegistry().clearDynamicMemberBindings(castLib, memberNum);
+                    castLibManager.clearHandlerLookupCache();
+                });
 
         // Set base path for network requests from the file location
         if (file != null && file.getBasePath() != null && !file.getBasePath().isEmpty()) {
@@ -336,7 +342,10 @@ public class Player implements UpdateProvider {
         com.libreshockwave.vm.opcode.dispatch.ImageMethodDispatcher.setImageMutationCallback(
                 () -> stageRenderer.getSpriteRegistry().bumpRevision());
         com.libreshockwave.player.cast.CastMember.setMemberSlotRetiredCallback(
-                (castLib, memberNum) -> stageRenderer.getSpriteRegistry().clearDynamicMemberBindings(castLib, memberNum));
+                (castLib, memberNum) -> {
+                    stageRenderer.getSpriteRegistry().clearDynamicMemberBindings(castLib, memberNum);
+                    castLibManager.clearHandlerLookupCache();
+                });
         this.frameContext.setTimeoutManager(timeoutManager);
         this.frameContext.getEventDispatcher().setCastLibManager(castLibManager);
         this.frameContext.getEventDispatcher().setSpriteRegistry(stageRenderer.getSpriteRegistry());
@@ -459,6 +468,7 @@ public class Player implements UpdateProvider {
         xtraManager.registerXtra(new CurlXtra(
                 () -> overrideNetProvider != null ? overrideNetProvider : netManager,
                 scriptCallback("CurlXtra")));
+        xtraManager.registerXtra(new BobbaXtra());
     }
 
     /**
@@ -483,6 +493,32 @@ public class Player implements UpdateProvider {
         try {
             xtraManager.tickAll();
         } finally {
+            flushDeferredVmTasksAndClearProviders();
+        }
+    }
+
+    /**
+     * Dispatch queued input events without advancing the score frame.
+     *
+     * Hosts that receive native mouse/key events between movie ticks can use
+     * this to run the authored Director event turn immediately, then flush any
+     * outgoing Xtra requests at the host boundary. Incoming Xtra callbacks stay
+     * on the normal pump so network data does not re-enter mouse/key handlers.
+     */
+    public void processQueuedInputEvents() {
+        if (state != PlayerState.PLAYING) {
+            return;
+        }
+        setupProviders();
+        long deadlineMs = vm.getTickDeadlineMs();
+        if (deadlineMs > 0) {
+            vm.setTickDeadline(System.currentTimeMillis() + deadlineMs);
+        }
+        try {
+            inputHandler.processInputEvents();
+            processUpdatingObjects();
+        } finally {
+            vm.setTickDeadline(0);
             flushDeferredVmTasksAndClearProviders();
         }
     }
@@ -559,6 +595,13 @@ public class Player implements UpdateProvider {
         return castLibManager;
     }
 
+    public Palette getCurrentPalette() {
+        if (Datum.isPuppetPaletteActive()) {
+            return Datum.getPuppetPalette();
+        }
+        return bitmapResolver != null ? bitmapResolver.getMoviePalette() : null;
+    }
+
     /**
      * Called when a network fetch completes. Cast files are cached as raw
      * bytes and parsed immediately only for slots that Director/Lingo has
@@ -575,7 +618,14 @@ public class Player implements UpdateProvider {
 
         if (!castFile) return;
 
-        handleExternalCastFetch(url, data);
+        java.util.List<Integer> hydratable = castLibManager.getHydratableExternalCastSlots(url);
+        traceCastLoad("netFetchComplete castFile url=" + safeLog(url)
+                + " bytes=" + data.length
+                + " hydratable=" + hydratable);
+        if (hydratable.isEmpty()) {
+            startExternalCastPreparse(url, data);
+        }
+        handleExternalCastFetch(url, data, hydratable);
     }
 
     public SoundManager getSoundManager() {
@@ -668,11 +718,13 @@ public class Player implements UpdateProvider {
         // Director exposes the new cast contents immediately once a slot is
         // fulfilled; deferring the swap breaks movie code that reindexes or
         // initializes the cast on the next line after setting castLib.fileName.
-        return applyExternalCastDataNow(castLibNumber, data, afterLoad);
+        return applyExternalCastDataNow(castLibNumber, data, getReadyPreparsedExternalCast(data), afterLoad);
     }
 
-    private boolean applyExternalCastDataNow(int castLibNumber, byte[] data, Runnable afterLoad) {
-        if (!castLibManager.setExternalCastData(castLibNumber, data)) {
+    private boolean applyExternalCastDataNow(int castLibNumber, byte[] data,
+                                             DirectorFile parsedSource,
+                                             Runnable afterLoad) {
+        if (!castLibManager.setExternalCastData(castLibNumber, data, parsedSource)) {
             return false;
         }
         onSynchronousExternalCastLoad(castLibNumber);
@@ -812,6 +864,40 @@ public class Player implements UpdateProvider {
         return preloadExternalCasts(castLib -> castLib.getPreloadMode() == mode);
     }
 
+    /**
+     * Queue raw external cast downloads without making any Director net task or
+     * cast slot visible. Completed bytes enter the raw cache only; authored
+     * Lingo still has to call preloadNetThing or bind castLib.fileName before a
+     * cast is fetched/loaded.
+     */
+    public int prefetchExternalCastBytes() {
+        NetBuiltins.NetProvider provider = overrideNetProvider != null ? overrideNetProvider : netManager;
+        if (!(provider instanceof RawResourcePrefetcher prefetcher)) {
+            return 0;
+        }
+        java.util.LinkedHashSet<String> requested = new java.util.LinkedHashSet<>();
+        int count = 0;
+        for (var entry : castLibManager.getCastLibs().entrySet()) {
+            var castLib = entry.getValue();
+            if (!castLib.isExternal() || castLib.isLoaded() || castLib.isFetched()
+                    || castLib.isFetching()) {
+                continue;
+            }
+            String requestPath = externalCastRequestPath(castLib.getFileName());
+            if (requestPath == null || requestPath.isEmpty() || !requested.add(requestPath)) {
+                continue;
+            }
+            if (getCachedExternalCastData(requestPath) != null) {
+                continue;
+            }
+            if (prefetcher.prefetchRawResource(requestPath)) {
+                count++;
+            }
+        }
+        traceCastLoad("prefetchExternalCastBytes queued=" + count);
+        return count;
+    }
+
     private int preloadExternalCasts(java.util.function.Predicate<com.libreshockwave.player.cast.CastLib> filter) {
         NetBuiltins.NetProvider provider = overrideNetProvider != null ? overrideNetProvider : netManager;
         if (provider == null) return 0;
@@ -824,8 +910,7 @@ public class Player implements UpdateProvider {
                 if (rawPath != null && !rawPath.isEmpty()) {
                     // Normalize Mac colon-separated paths (e.g. "Sulake:...:mobiles.cct") to just filename
                     String fileName = FileUtil.getFileName(rawPath);
-                    String baseName = FileUtil.getFileNameWithoutExtension(fileName);
-                    byte[] cached = castLibManager.getCachedExternalData(baseName);
+                    byte[] cached = getCachedExternalCastData(fileName);
                     if (cached != null) {
                         castLib.cacheFetchedExternalData(cached);
                         loadExternalCastFromCachedData(castLib.getNumber(), cached);
@@ -838,6 +923,17 @@ public class Player implements UpdateProvider {
             }
         }
         return count;
+    }
+
+    private static String externalCastRequestPath(String rawPath) {
+        if (rawPath == null || rawPath.isEmpty()) {
+            return null;
+        }
+        String trimmed = rawPath.trim();
+        if (trimmed.startsWith("http://") || trimmed.startsWith("https://") || trimmed.startsWith("/")) {
+            return trimmed;
+        }
+        return FileUtil.getFileName(trimmed);
     }
 
     public PlayerState getState() {
@@ -1375,6 +1471,7 @@ public class Player implements UpdateProvider {
      * Set up thread-local providers for builtin functions.
      */
     private void setupProviders() {
+        providerSetupDepth++;
         NetBuiltins.setProvider(overrideNetProvider != null ? overrideNetProvider : netManager);
         XtraBuiltins.setManager(xtraManager);
         MoviePropertyProvider.setProvider(movieProperties);
@@ -1397,6 +1494,11 @@ public class Player implements UpdateProvider {
      * Clear thread-local providers after script execution.
      */
     private void clearProviders() {
+        if (providerSetupDepth > 1) {
+            providerSetupDepth--;
+            return;
+        }
+        providerSetupDepth = 0;
         NetBuiltins.clearProvider();
         XtraBuiltins.clearManager();
         MoviePropertyProvider.clearProvider();
@@ -1701,25 +1803,31 @@ public class Player implements UpdateProvider {
                 return;
             }
         }
-        String baseName = FileUtil.getFileNameWithoutExtension(FileUtil.getFileName(fileName));
-        byte[] cached = castLibManager.getCachedExternalData(baseName);
+        byte[] cached = getCachedExternalCastData(fileName);
         if (cached != null) {
             loadExternalCastFromCachedData(castLibNumber, cached);
         }
     }
 
-    private void handleExternalCastFetch(String url, byte[] data) {
+    private void handleExternalCastFetch(String url, byte[] data, java.util.Collection<Integer> hydratableSlots) {
         try {
             java.util.LinkedHashSet<Integer> castNums = new java.util.LinkedHashSet<>(
-                    castLibManager.getHydratableExternalCastSlots(url));
+                    hydratableSlots != null ? hydratableSlots : castLibManager.getHydratableExternalCastSlots(url));
 
             if (castNums.isEmpty()) {
+                traceCastLoad("externalFetch noHydratableSlot url=" + safeLog(url)
+                        + " bytes=" + (data != null ? data.length : 0));
                 return;
             }
             for (Integer castNum : castNums) {
                 if (castLibManager.hasLoadedExternalCastData(castNum, data)) {
+                    traceCastLoad("externalFetch alreadyLoaded cast=" + castNum
+                            + " url=" + safeLog(url));
                     continue;
                 }
+                traceCastLoad("externalFetch apply cast=" + castNum
+                        + " url=" + safeLog(url)
+                        + " bytes=" + (data != null ? data.length : 0));
                 loadExternalCastFromCachedData(castNum, data);
             }
         } catch (Throwable e) {
@@ -1731,9 +1839,51 @@ public class Player implements UpdateProvider {
         }
     }
 
+    private void startExternalCastPreparse(String url, byte[] data) {
+        if (externalCastPreparser == null || data == null || data.length == 0) {
+            return;
+        }
+
+        ExternalCastPreparser.ParseJob job;
+        synchronized (externalCastParseCache) {
+            if (externalCastParseCache.containsKey(data)) {
+                return;
+            }
+            try {
+                job = externalCastPreparser.submit(data);
+                externalCastParseCache.put(data, job);
+            } catch (Throwable e) {
+                traceCastLoad("externalPreparse startFailed url=" + safeLog(url)
+                        + " error=" + e.getClass().getName());
+                return;
+            }
+        }
+    }
+
+    private DirectorFile getReadyPreparsedExternalCast(byte[] data) {
+        ExternalCastPreparser.ParseJob job;
+        synchronized (externalCastParseCache) {
+            job = externalCastParseCache.get(data);
+        }
+        if (job == null || !job.isDone()) {
+            return null;
+        }
+        DirectorFile parsed = job.getIfReady();
+        if (parsed == null) {
+            synchronized (externalCastParseCache) {
+                externalCastParseCache.remove(data);
+            }
+        }
+        return parsed;
+    }
+
     private void handleCastDataRequest(int castLibNum, String fileName, java.util.function.BiConsumer<Integer, String> fallbackCallback) {
         String baseName = FileUtil.getFileNameWithoutExtension(FileUtil.getFileName(fileName));
-        byte[] cached = castLibManager.getCachedExternalData(baseName);
+        byte[] cached = getCachedExternalCastData(fileName);
+        traceCastLoad("castDataRequest cast=" + castLibNum
+                + " file=" + safeLog(fileName)
+                + " base=" + safeLog(baseName)
+                + " cacheHit=" + (cached != null));
         if (cached != null) {
             loadExternalCastFromCachedData(castLibNum, cached);
             return;
@@ -1741,6 +1891,33 @@ public class Player implements UpdateProvider {
         if (fallbackCallback != null) {
             fallbackCallback.accept(castLibNum, fileName);
         }
+    }
+
+    private byte[] getCachedExternalCastData(String fileNameOrUrl) {
+        byte[] cached = castLibManager.getCachedExternalData(fileNameOrUrl);
+        if (cached != null) {
+            return cached;
+        }
+        String baseName = FileUtil.getFileNameWithoutExtension(FileUtil.getFileName(fileNameOrUrl));
+        return castLibManager.getCachedExternalData(baseName);
+    }
+
+    private static void traceCastLoad(String message) {
+        if (!DebugConfig.isDebugPlaybackEnabled()) {
+            return;
+        }
+        System.out.println("[CastLoad] " + message);
+    }
+
+    private static String safeLog(String value) {
+        if (value == null) {
+            return "<null>";
+        }
+        String sanitized = value.replace('\n', ' ').replace('\r', ' ');
+        if (sanitized.length() > 180) {
+            return '"' + sanitized.substring(0, 180) + "..." + '"';
+        }
+        return '"' + sanitized + '"';
     }
 
     /**
@@ -1787,8 +1964,12 @@ public class Player implements UpdateProvider {
         }
 
         // Shutdown cast parser executor (only exists in desktop player)
-        if (castParserShutdown != null) {
-            castParserShutdown.run();
+        synchronized (externalCastParseCache) {
+            externalCastParseCache.clear();
+        }
+        if (externalCastPreparser != null) {
+            externalCastPreparser.shutdown();
+            externalCastPreparser = null;
         }
 
         // Reset debug controller (releases any blocked threads)

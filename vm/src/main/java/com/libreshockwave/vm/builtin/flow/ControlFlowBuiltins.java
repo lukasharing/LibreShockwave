@@ -180,6 +180,7 @@ public final class ControlFlowBuiltins {
         List<Datum> extraArgs = args.size() > 2 ? args.subList(2, args.size()) : List.of();
 
         traceCall(vm, handlerName, targetList, extraArgs);
+        traceUiCall("call", vm, handlerName, targetList, extraArgs, Datum.VOID);
 
         Datum lastResult = Datum.VOID;
         if (targetList instanceof Datum.ScriptInstance instance) {
@@ -202,6 +203,7 @@ public final class ControlFlowBuiltins {
             // Single non-list target (e.g. sprite channel number)
             lastResult = callOnTarget(vm, targetList, handlerName, extraArgs);
         }
+        traceUiCall("call-done", vm, handlerName, targetList, extraArgs, lastResult);
         return lastResult;
     }
 
@@ -227,6 +229,7 @@ public final class ControlFlowBuiltins {
             var provider = com.libreshockwave.vm.builtin.sprite.SpritePropertyProvider.getProvider();
             if (provider != null) {
                 java.util.List<Datum> scripts = provider.getScriptInstanceList(channel);
+                traceSpriteTargetCall(handlerName, channel, scripts);
                 if (scripts != null && !scripts.isEmpty()) {
                     Datum lastResult = Datum.VOID;
                     for (Datum si : scripts) {
@@ -242,6 +245,36 @@ public final class ControlFlowBuiltins {
         return Datum.VOID;
     }
 
+    private static void traceSpriteTargetCall(String handlerName, int channel, java.util.List<Datum> scripts) {
+        if (!shouldTraceSpriteTargetCall(handlerName)) {
+            return;
+        }
+        int count = scripts != null ? scripts.size() : 0;
+        int responders = 0;
+        if (scripts != null) {
+            for (Datum item : scripts) {
+                if (item instanceof Datum.ScriptInstance instance
+                        && AncestorChainWalker.hasHandler(instance, handlerName)) {
+                    responders++;
+                }
+            }
+        }
+        System.out.println("[UICall] sprite-target handler=#" + handlerName
+                + " channel=" + channel
+                + " scripts=" + count
+                + " responders=" + responders);
+    }
+
+    private static boolean shouldTraceSpriteTargetCall(String handlerName) {
+        if (!DebugConfig.isMusTraceEnabled() && !DebugConfig.isDebugPlaybackEnabled()) {
+            return false;
+        }
+        String normalized = LingoVM.normalizeLookupName(handlerName);
+        return normalized.equals("registerprocedure")
+                || normalized.equals("removeprocedure")
+                || normalized.equals("setid");
+    }
+
     /**
      * Call a handler on a script instance, walking the ancestor chain to find it.
      * Returns the handler's return value, or VOID if the handler was not found or threw.
@@ -251,10 +284,19 @@ public final class ControlFlowBuiltins {
                                                String handlerName, List<Datum> extraArgs) {
         try {
             traceHandlerDispatch(vm, handlerName, instance, extraArgs);
+            traceUiHandlerDispatch("handler", vm, handlerName, instance, extraArgs, Datum.VOID);
             Datum result = AncestorChainWalker.invokeHandlerWithResult(vm, instance, handlerName, extraArgs);
+            traceUiHandlerDispatch("handler-done", vm, handlerName, instance, extraArgs,
+                    result != null ? result : Datum.VOID);
             return result != null ? result : Datum.VOID;
         } catch (Exception e) {
             System.err.println("[callHandlerOnInstance] Exception in '" + handlerName + "': " + e.getMessage());
+            if (DebugConfig.isDebugPlaybackEnabled() || DebugConfig.isMusTraceEnabled()) {
+                if (vm != null) {
+                    System.err.println(vm.formatCallStack());
+                }
+                e.printStackTrace(System.err);
+            }
             return Datum.VOID;
         }
     }
@@ -288,6 +330,71 @@ public final class ControlFlowBuiltins {
         }
         return tracedHandlers.contains("call")
                 || tracedHandlers.contains(LingoVM.normalizeLookupName(handlerName));
+    }
+
+    private static void traceUiCall(String phase, LingoVM vm, String handlerName,
+                                    Datum targetList, List<Datum> extraArgs, Datum result) {
+        if (!shouldTraceUiDispatch(vm, handlerName, targetList, extraArgs)) {
+            return;
+        }
+        System.out.println("[UICall] " + phase
+                + " handler=#" + handlerName
+                + " target=" + DatumFormatter.formatBrief(targetList)
+                + " args=" + formatArgs(extraArgs)
+                + ("call-done".equals(phase) ? " result=" + DatumFormatter.formatBrief(result) : ""));
+    }
+
+    private static void traceUiHandlerDispatch(String phase, LingoVM vm, String handlerName,
+                                               Datum.ScriptInstance receiver, List<Datum> extraArgs,
+                                               Datum result) {
+        if (!shouldTraceUiDispatch(vm, handlerName, receiver, extraArgs)) {
+            return;
+        }
+        System.out.println("[UICall] " + phase
+                + " handler=#" + handlerName
+                + " receiver=<script#" + receiver.scriptId() + ">"
+                + " args=" + formatArgs(extraArgs)
+                + ("handler-done".equals(phase) ? " result=" + DatumFormatter.formatBrief(result) : ""));
+    }
+
+    private static boolean shouldTraceUiDispatch(LingoVM vm, String handlerName,
+                                                 Datum target, List<Datum> extraArgs) {
+        if ((!DebugConfig.isDebugPlaybackEnabled() && !DebugConfig.isMusTraceEnabled()) || vm == null) {
+            return false;
+        }
+        String normalized = LingoVM.normalizeLookupName(handlerName);
+        if (DebugConfig.isMusTraceEnabled() && isMusRelevantHandler(normalized)) {
+            return true;
+        }
+        if (normalized.equals("mouseup")
+                || normalized.equals("redirectevent")
+                || normalized.equals("openclose")
+                || normalized.equals("open")
+                || normalized.equals("send")
+                || normalized.equals("sendnetmessage")
+                || normalized.equals("xtramsghandler")) {
+            return true;
+        }
+        return false;
+    }
+
+    private static boolean isMusRelevantHandler(String normalizedMethod) {
+        return normalizedMethod.equals("xtramsghandler")
+                || normalizedMethod.equals("msghandler")
+                || normalizedMethod.equals("forwardmsg")
+                || normalizedMethod.equals("handleslideobjectbundle")
+                || normalizedMethod.equals("handlestripinfo")
+                || normalizedMethod.equals("handlestripupdated")
+                || normalizedMethod.equals("handleactiveobjects")
+                || normalizedMethod.equals("handleactiveobjectadd")
+                || normalizedMethod.equals("handleactiveobjectupdate")
+                || normalizedMethod.equals("handleactiveobjectremove")
+                || normalizedMethod.equals("handleitems")
+                || normalizedMethod.equals("handlestatus")
+                || normalizedMethod.equals("handlechat")
+                || normalizedMethod.equals("addslideobject")
+                || normalizedMethod.equals("setslideto")
+                || normalizedMethod.equals("animateslide");
     }
 
     private static String formatArgs(List<Datum> args) {

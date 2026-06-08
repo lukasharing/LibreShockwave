@@ -6,6 +6,7 @@ import com.libreshockwave.chunks.*;
 import com.libreshockwave.format.ChunkType;
 import com.libreshockwave.id.CastLibId;
 import com.libreshockwave.id.ChunkId;
+import com.libreshockwave.vm.DebugConfig;
 import com.libreshockwave.vm.builtin.cast.CastLibProvider;
 import com.libreshockwave.vm.datum.Datum;
 
@@ -121,15 +122,22 @@ public class CastLib {
      */
     public void load() {
         if (state == State.LOADED) {
+            traceCastLoad("load-skip alreadyLoaded");
             return;
         }
 
+        traceCastLoad("load-start state=" + state
+                + " external=" + isExternal()
+                + " fetched=" + isFetched()
+                + " source=" + (sourceFile != null)
+                + " fetchedBytes=" + (fetchedExternalData != null ? fetchedExternalData.length : 0));
         state = State.LOADING;
 
         // External casts must be fetched first via preloadNetThing
         // Don't auto-load them here
         if (sourceFile == null) {
             if (fetchedExternalData != null) {
+                traceCastLoad("load-using-fetched-data bytes=" + fetchedExternalData.length);
                 if (setExternalData(fetchedExternalData)) {
                     return;
                 }
@@ -138,9 +146,11 @@ public class CastLib {
                 // External cast not yet fetched - stay in LOADING state but don't block
                 // It will be loaded when preloadNetThing completes
                 state = State.NONE;
+                traceCastLoad("load-waiting-external");
                 return;
             }
             state = State.LOADED;
+            traceCastLoad("load-empty-internal");
             return;
         }
 
@@ -153,11 +163,16 @@ public class CastLib {
             }
             scanXmedFonts(memberChunks.values());
             state = State.LOADED;
+            traceCastLoad("load-done external members=" + memberChunks.size()
+                    + " scripts=" + scripts.size()
+                    + " slots=" + totalSlotCount
+                    + " sourceCasts=" + sourceFile.getCasts().size());
             return;
         }
 
         if (castChunk == null) {
             state = State.LOADED;
+            traceCastLoad("load-done noCastChunk");
             return;
         }
 
@@ -168,6 +183,9 @@ public class CastLib {
 
         scanXmedFonts(memberChunks.values());
         state = State.LOADED;
+        traceCastLoad("load-done internal members=" + memberChunks.size()
+                + " scripts=" + scripts.size()
+                + " slots=" + totalSlotCount);
     }
 
     /**
@@ -820,6 +838,7 @@ public class CastLib {
      */
     public void reloadFromFile(DirectorFile file) {
         if (file == null) return;
+        traceCastLoad("reloadFromFile sourceCasts=" + file.getCasts().size());
         this.sourceFile = file;
         this.state = State.NONE;
         this.memberChunks.clear();
@@ -888,6 +907,8 @@ public class CastLib {
             }
             case "filename" -> {
                 String newFileName = value.toStr();
+                traceCastLoad("setProp fileName old=" + safe(fileName)
+                        + " new=" + safe(newFileName));
                 if (!sameFileBinding(this.fileName, newFileName)) {
                     invalidateFileBackedBinding();
                 }
@@ -921,6 +942,9 @@ public class CastLib {
     }
 
     private void invalidateFileBackedBinding() {
+        traceCastLoad("invalidate-file-binding oldFile=" + safe(fileName)
+                + " members=" + memberChunks.size()
+                + " scripts=" + scripts.size());
         // Swapping castLib.fileName replaces the visible cast contents.
         sourceFile = null;
         fetchedExternalData = null;
@@ -1098,6 +1122,8 @@ public class CastLib {
         }
 
         try {
+            traceCastLoad("setExternalData-start bytes=" + data.length
+                    + " reusedParsed=" + (parsedFile != null));
             fetchedExternalData = data;
             DirectorFile file = parsedFile != null ? parsedFile : DirectorFile.load(data);
             if (file != null) {
@@ -1128,9 +1154,16 @@ public class CastLib {
                 this.scripts.clear();
                 load();
 
+                traceCastLoad("setExternalData-done name=" + safe(name)
+                        + " file=" + safe(fileName)
+                        + " members=" + memberChunks.size()
+                        + " scripts=" + scripts.size()
+                        + " slots=" + totalSlotCount);
                 return true;
             }
         } catch (Throwable e) {
+            traceCastLoad("setExternalData-error " + e.getClass().getName()
+                    + ":" + safe(e.getMessage()));
             System.err.println("[CastLib] Failed to parse external cast " + name + ": " + e.getClass().getName() + ": " + e.getMessage());
             sourceFile = null;
             fetchedExternalData = null;
@@ -1141,6 +1174,28 @@ public class CastLib {
             scripts.clear();
         }
         return false;
+    }
+
+    private void traceCastLoad(String message) {
+        if (!DebugConfig.isDebugPlaybackEnabled()) {
+            return;
+        }
+        System.out.println("[CastLoad] cast=" + castLibId.value()
+                + " name=" + safe(name)
+                + " file=" + safe(fileName)
+                + " authored=" + safe(authoredFileName)
+                + " " + message);
+    }
+
+    private static String safe(String value) {
+        if (value == null) {
+            return "<null>";
+        }
+        String sanitized = value.replace('\n', ' ').replace('\r', ' ');
+        if (sanitized.length() > 160) {
+            return sanitized.substring(0, 160) + "...";
+        }
+        return '"' + sanitized + '"';
     }
 
     /**

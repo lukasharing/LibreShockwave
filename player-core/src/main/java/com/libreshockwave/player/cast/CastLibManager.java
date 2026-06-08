@@ -13,10 +13,12 @@ import com.libreshockwave.id.ChunkId;
 import com.libreshockwave.id.SlotId;
 import com.libreshockwave.util.FileUtil;
 import com.libreshockwave.vm.datum.Datum;
+import com.libreshockwave.vm.DebugConfig;
 import com.libreshockwave.vm.builtin.cast.CastLibProvider;
 import com.libreshockwave.vm.LingoVM;
 
 import java.nio.charset.StandardCharsets;
+import java.net.URI;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
@@ -105,6 +107,12 @@ public class CastLibManager implements CastLibProvider {
                 }
 
                 castLibs.put(castLibNumber, castLib);
+                traceCastLoad("init cast=" + castLibNumber
+                        + " name=" + safe(castLib.getName())
+                        + " file=" + safe(castLib.getFileName())
+                        + " external=" + isExternal
+                        + " preload=" + castLib.getPreloadMode()
+                        + " castChunk=" + (castChunk != null));
             }
         } else if (!casts.isEmpty()) {
             // Fallback: use CastChunks directly if no cast list
@@ -114,6 +122,9 @@ public class CastLibManager implements CastLibProvider {
                 castLib.setBasePath(basePath);
                 castLib.setSourceFile(file);
                 castLibs.put(castLibNumber, castLib);
+                traceCastLoad("init-fallback cast=" + castLibNumber
+                        + " name=" + safe(castLib.getName())
+                        + " file=" + safe(castLib.getFileName()));
             }
         }
     }
@@ -174,6 +185,10 @@ public class CastLibManager implements CastLibProvider {
 
         CastLib castLib = castLibs.get(castLibNumber);
         if (castLib != null && !castLib.isLoaded()) {
+            traceCastLoad("lazy-load-request cast=" + castLibNumber
+                    + " name=" + safe(castLib.getName())
+                    + " file=" + safe(castLib.getFileName())
+                    + " state=" + castLib.getState());
             castLib.load();
         }
         return castLib;
@@ -238,6 +253,15 @@ public class CastLibManager implements CastLibProvider {
         boolean wasRegistryVisible = isRegistryVisibleCast(castLib);
 
         boolean result = castLib.setProp(propName, value);
+        if (result && ("name".equals(normalizedPropName) || "filename".equals(normalizedPropName))) {
+            traceCastLoad("setProp cast=" + castLibNumber
+                    + " prop=" + normalizedPropName
+                    + " oldName=" + safe(oldName)
+                    + " newName=" + safe(castLib.getName())
+                    + " oldFile=" + safe(oldFileName)
+                    + " newFile=" + safe(castLib.getFileName())
+                    + " registryVisible=" + isRegistryVisibleCast(castLib));
+        }
 
         if (result && ("name".equals(normalizedPropName) || "filename".equals(normalizedPropName))) {
             boolean registryChanged = !Objects.equals(oldName, castLib.getName())
@@ -270,6 +294,9 @@ public class CastLibManager implements CastLibProvider {
 
         clearHandlerLookupCache();
         markPendingExternalLoad(castLibNumber, newFileName);
+        traceCastLoad("fileName-request cast=" + castLibNumber
+                + " file=" + safe(newFileName)
+                + " cacheHit=" + (getCachedExternalData(newFileName) != null));
 
         // Player provides a callback that checks its internal caches safely
         // before delegating to system-specific async logic.
@@ -315,8 +342,9 @@ public class CastLibManager implements CastLibProvider {
         if (!isRegistryVisibleCast(castLib)) {
             return false;
         }
+        CastMember cached = castLib.getCachedMember(memberNumber);
         return castLib.findMemberByNumber(memberNumber) != null
-                || castLib.getCachedMember(memberNumber) != null;
+                || (cached != null && !cached.isReusableDynamicSlot());
     }
 
     @Override
@@ -565,6 +593,29 @@ public class CastLibManager implements CastLibProvider {
     }
 
     @Override
+    public boolean updateMember(int castLibNumber, int memberNumber) {
+        CastLib castLib = getCastLib(castLibNumber);
+        if (castLib == null || memberNumber <= 0) {
+            return false;
+        }
+        CastMember cached = castLib.getCachedMember(memberNumber);
+        if (cached == null) {
+            return castLib.findMemberByNumber(memberNumber) != null;
+        }
+        if (!cached.isRuntimeDynamic()) {
+            return true;
+        }
+        cached.erase();
+        clearHandlerLookupCache();
+        return true;
+    }
+
+    @Override
+    public boolean removeMember(int castLibNumber, int memberNumber) {
+        return updateMember(castLibNumber, memberNumber);
+    }
+
+    @Override
     public Datum getMemberTextRangeProp(int castLibNumber, int memberNumber,
                                         String chunkType, int start, int end,
                                         String propName) {
@@ -701,6 +752,9 @@ public class CastLibManager implements CastLibProvider {
         if (targetMember == null) {
             targetMember = targetCastLib.createDynamicMemberAt(
                     targetRef.memberNum(), sourceMember.getMemberType());
+            if (targetMember != null) {
+                clearHandlerLookupCache();
+            }
         }
         if (targetMember == null) {
             return Datum.VOID;
@@ -1028,6 +1082,10 @@ public class CastLibManager implements CastLibProvider {
                 castDataCache.put(key, data);
             }
         }
+        traceCastLoad("cacheExternalData url=" + safe(url)
+                + " bytes=" + (data != null ? data.length : 0)
+                + " requestedSlots=" + getRequestedExternalCastSlots(url)
+                + " registrySlots=" + getRegistryVisibleExternalCastSlots(url));
         for (CastLib castLib : findCastLibsByUrl(url)) {
             if (isRequestedExternalLoad(castLib, url)) {
                 castLib.cacheFetchedExternalData(data);
@@ -1071,8 +1129,18 @@ public class CastLibManager implements CastLibProvider {
         if (url == null || url.isEmpty()) {
             return keys;
         }
+        String normalizedUrl = normalizedDownloadCacheKey(url);
+        if (normalizedUrl != null && !normalizedUrl.isEmpty()) {
+            keys.add(normalizedUrl);
+        }
+        if (hasQuery(url)) {
+            return keys;
+        }
         String fileName = FileUtil.getFileName(url);
         if (fileName == null || fileName.isEmpty()) {
+            return keys;
+        }
+        if (isAmbiguousCacheFileName(fileName)) {
             return keys;
         }
         keys.add(fileName.toLowerCase(Locale.ROOT));
@@ -1081,6 +1149,50 @@ public class CastLibManager implements CastLibProvider {
             keys.add(baseName.toLowerCase(Locale.ROOT));
         }
         return keys;
+    }
+
+    private static boolean isAmbiguousCacheFileName(String fileName) {
+        if (fileName == null || fileName.isEmpty()) {
+            return true;
+        }
+        String clean = fileName;
+        int query = clean.indexOf('?');
+        if (query >= 0) {
+            clean = clean.substring(0, query);
+        }
+        return clean.matches("\\d+");
+    }
+
+    private static String normalizedDownloadCacheKey(String url) {
+        if (url == null || url.isEmpty()) {
+            return null;
+        }
+        if (url.startsWith("http://") || url.startsWith("https://")) {
+            try {
+                URI uri = URI.create(url);
+                String scheme = uri.getScheme();
+                String host = uri.getHost();
+                String path = uri.getPath();
+                if (scheme == null || host == null || path == null || path.isEmpty()) {
+                    return null;
+                }
+                int port = uri.getPort();
+                String authority = port >= 0 ? host + ":" + port : host;
+                String query = uri.getRawQuery();
+                String key = scheme + "://" + authority + path;
+                if (query != null && !query.isEmpty()) {
+                    key = key + "?" + query;
+                }
+                return key.toLowerCase(Locale.ROOT);
+            } catch (Exception ignored) {
+                return null;
+            }
+        }
+        return url.toLowerCase(Locale.ROOT);
+    }
+
+    private static boolean hasQuery(String url) {
+        return url != null && url.indexOf('?') >= 0;
     }
 
     public void clearPendingExternalLoad(int castLibNumber) {
@@ -1118,6 +1230,10 @@ public class CastLibManager implements CastLibProvider {
      * @return true if parsing was successful
      */
     public boolean setExternalCastData(int castLibNumber, byte[] data) {
+        return setExternalCastData(castLibNumber, data, null);
+    }
+
+    public boolean setExternalCastData(int castLibNumber, byte[] data, DirectorFile parsedSource) {
         ensureInitialized();
         CastLib castLib = castLibs.get(castLibNumber);
         if (castLib == null) {
@@ -1126,10 +1242,21 @@ public class CastLibManager implements CastLibProvider {
         if (castLib.isLoaded() && castLib.hasFetchedExternalData(data)) {
             return true;
         }
-        DirectorFile reusableSource = findReusableExternalSource(castLibNumber, data);
+        DirectorFile reusableSource = parsedSource != null
+                ? parsedSource
+                : findReusableExternalSource(castLibNumber, data);
+        traceCastLoad("setExternalCastData cast=" + castLibNumber
+                + " file=" + safe(castLib.getFileName())
+                + " bytes=" + (data != null ? data.length : 0)
+                + " reuse=" + (reusableSource != null));
         boolean loaded = castLib.setExternalData(data, reusableSource);
         if (loaded) {
             clearPendingExternalLoad(castLibNumber);
+            traceCastLoad("setExternalCastData-done cast=" + castLibNumber
+                    + " file=" + safe(castLib.getFileName()));
+        } else {
+            traceCastLoad("setExternalCastData-failed cast=" + castLibNumber
+                    + " file=" + safe(castLib.getFileName()));
         }
         return loaded;
     }
@@ -1249,6 +1376,24 @@ public class CastLibManager implements CastLibProvider {
         return castLib.isFetching() || baseName.equals(pending);
     }
 
+    private static void traceCastLoad(String message) {
+        if (!DebugConfig.isDebugPlaybackEnabled()) {
+            return;
+        }
+        System.out.println("[CastLoad] " + message);
+    }
+
+    private static String safe(String value) {
+        if (value == null) {
+            return "<null>";
+        }
+        String sanitized = value.replace('\n', ' ').replace('\r', ' ');
+        if (sanitized.length() > 160) {
+            return sanitized.substring(0, 160) + "...";
+        }
+        return '"' + sanitized + '"';
+    }
+
     private java.util.List<CastLib> findCastLibsByUrl(String url) {
         String fileNameNoExt = normalizedBaseName(url);
         java.util.List<CastLib> result = new java.util.ArrayList<>();
@@ -1364,6 +1509,7 @@ public class CastLibManager implements CastLibProvider {
         if (member == null) {
             return Datum.VOID;
         }
+        clearHandlerLookupCache();
         return Datum.CastMemberRef.of(castLibNumber, member.getMemberNumber());
     }
 

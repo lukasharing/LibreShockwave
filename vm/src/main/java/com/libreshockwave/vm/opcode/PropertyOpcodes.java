@@ -191,6 +191,12 @@ public final class PropertyOpcodes {
                 yield spriteProvider != null ? spriteProvider.getSpriteProp(sr.channelNum(), propName) : Datum.VOID;
             }
             case Datum.SoundChannel sc -> SoundChannelMethodDispatcher.getProperty(sc, propName);
+            case Datum d when d.isVoid() -> {
+                if ("ilk".equalsIgnoreCase(propName)) {
+                    yield Datum.symbol("void");
+                }
+                yield Datum.VOID;
+            }
             case Datum.Int intVal -> {
                 Datum numericProp = getNumericProp(intVal, propName);
                 if (!numericProp.isVoid()) {
@@ -234,7 +240,6 @@ public final class PropertyOpcodes {
                 if ("ilk".equalsIgnoreCase(propName)) yield Datum.symbol("color");
                 yield Datum.VOID;
             }
-            case Datum d when d.isVoid() -> Datum.VOID;
             default -> {
                 if ("ilk".equalsIgnoreCase(propName)) {
                     yield Datum.symbol(TypeBuiltins.getIlkType(obj));

@@ -104,6 +104,15 @@ public final class XtraBuiltins {
         return manager.callHandler(instance, handlerName, args);
     }
 
+    public static String resolveHandlerName(Datum.XtraInstance instance, String handlerName,
+                                            List<String> candidateNames) {
+        XtraManager manager = currentManager;
+        if (manager == null) {
+            return handlerName;
+        }
+        return manager.resolveHandlerName(instance, handlerName, candidateNames);
+    }
+
     /**
      * Get a property from an Xtra instance.
      */

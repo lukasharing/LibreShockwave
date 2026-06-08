@@ -38,6 +38,17 @@ public interface Xtra {
     Datum callHandler(int instanceId, String handlerName, List<Datum> args);
 
     /**
+     * Resolve a handler name for Xtras that publish an explicit Director
+     * msgTable. Protected movies can carry multiple Lnam tables; if the current
+     * script resolves an OBJ_CALL selector through the wrong table, the same
+     * numeric selector may still resolve to the public Xtra method name in
+     * another loaded table. Xtras with a known msgTable can opt in here.
+     */
+    default String resolveHandlerName(int instanceId, String handlerName, List<String> candidateNames) {
+        return handlerName;
+    }
+
+    /**
      * Get a property from an Xtra instance.
      */
     Datum getProperty(int instanceId, String propertyName);

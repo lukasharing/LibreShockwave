@@ -3,7 +3,6 @@ package com.libreshockwave.vm.opcode.dispatch;
 import com.libreshockwave.chunks.ScriptChunk;
 import com.libreshockwave.vm.DebugConfig;
 import com.libreshockwave.vm.LingoVM;
-import com.libreshockwave.vm.builtin.flow.ControlFlowBuiltins;
 import com.libreshockwave.vm.datum.Datum;
 import com.libreshockwave.vm.datum.DatumFormatter;
 import com.libreshockwave.vm.datum.LingoException;
@@ -28,15 +27,6 @@ public final class ScriptInstanceMethodDispatcher {
         // This matches dirplayer-rs ScriptInstanceHandlers.call()
         String method = LingoVM.normalizeLookupName(methodName);
         LingoVM currentVm = LingoVM.getCurrentVM();
-        if (shouldDeferNumericCloseThread(currentVm, method, args)) {
-            List<Datum> deferredArgs = args;
-            currentVm.deferTask(() -> ControlFlowBuiltins.callHandlerOnInstance(
-                    currentVm,
-                    instance,
-                    methodName,
-                    deferredArgs));
-            return Datum.TRUE;
-        }
 
         MemberRegistryMethodDispatcher.DispatchResult registryResult =
                 MemberRegistryMethodDispatcher.dispatchNormalized(instance, method, args);
@@ -206,7 +196,10 @@ public final class ScriptInstanceMethodDispatcher {
                     if (location != null && location.script() != null && location.handler() != null) {
                         if (location.script() instanceof ScriptChunk script
                                 && location.handler() instanceof ScriptChunk.Handler handler) {
-                            return safeExecuteHandler(ctx, script, handler, args, instance);
+                            traceUiMethodDispatch("dispatch", currentVm, instance, methodName, args, Datum.VOID);
+                            Datum result = safeExecuteHandler(ctx, script, handler, args, instance);
+                            traceUiMethodDispatch("dispatch-done", currentVm, instance, methodName, args, result);
+                            return result;
                         }
                     }
 
@@ -229,23 +222,6 @@ public final class ScriptInstanceMethodDispatcher {
         }
 
         return Datum.VOID;
-    }
-
-    static boolean shouldDeferNumericCloseThread(
-            LingoVM vm,
-            String methodName,
-            List<Datum> args) {
-        if (vm == null
-                || vm.isFlushingDeferredScriptInstanceCalls()
-                || vm.isFlushingDeferredTasks()
-                || !vm.hasActiveCallStack()) {
-            return false;
-        }
-        if (!"closethread".equals(methodName) || args.size() != 1) {
-            return false;
-        }
-        Datum target = args.get(0);
-        return target.isInt() || target.isFloat();
     }
 
     private static String getPropertyName(Datum datum) {
@@ -406,6 +382,65 @@ public final class ScriptInstanceMethodDispatcher {
                 + " args=" + formatArgs(args));
     }
 
+    private static void traceUiMethodDispatch(String phase, LingoVM vm, Datum.ScriptInstance receiver,
+                                              String methodName, List<Datum> args, Datum result) {
+        if (!shouldTraceUiMethod(vm, methodName, receiver, args)) {
+            return;
+        }
+        System.out.println("[UICall] " + phase
+                + " handler=#" + methodName
+                + " receiver=" + describeInstance(receiver)
+                + " args=" + formatArgs(args)
+                + ("dispatch-done".equals(phase)
+                ? " result=" + DatumFormatter.formatBrief(result != null ? result : Datum.VOID) : ""));
+    }
+
+    private static boolean shouldTraceUiMethod(LingoVM vm, String methodName,
+                                               Datum.ScriptInstance receiver, List<Datum> args) {
+        if ((!DebugConfig.isDebugPlaybackEnabled() && !DebugConfig.isMusTraceEnabled()) || vm == null) {
+            return false;
+        }
+        String normalized = LingoVM.normalizeLookupName(methodName);
+        if (DebugConfig.isMusTraceEnabled() && isMusRelevantHandler(normalized)) {
+            return true;
+        }
+        if (normalized.equals("mouseup")
+                || normalized.equals("redirectevent")
+                || normalized.equals("openclose")
+                || normalized.equals("open")
+                || normalized.equals("eventprocroom")
+                || normalized.equals("eventprocactiveobj")
+                || normalized.equals("eventprocroombar")
+                || normalized.equals("send")
+                || normalized.equals("sendnetmessage")
+                || normalized.equals("xtramsghandler")) {
+            return true;
+        }
+        return false;
+    }
+
+    private static boolean isMusRelevantHandler(String normalizedMethod) {
+        return normalizedMethod.equals("xtramsghandler")
+                || normalizedMethod.equals("msghandler")
+                || normalizedMethod.equals("forwardmsg")
+                || normalizedMethod.equals("handleslideobjectbundle")
+                || normalizedMethod.equals("handlestripinfo")
+                || normalizedMethod.equals("handlestripupdated")
+                || normalizedMethod.equals("handleactiveobjects")
+                || normalizedMethod.equals("handleactiveobjectadd")
+                || normalizedMethod.equals("handleactiveobjectupdate")
+                || normalizedMethod.equals("handleactiveobjectremove")
+                || normalizedMethod.equals("handleitems")
+                || normalizedMethod.equals("handlestatus")
+                || normalizedMethod.equals("handlechat")
+                || normalizedMethod.equals("addslideobject")
+                || normalizedMethod.equals("setslideto")
+                || normalizedMethod.equals("animateslide")
+                || normalizedMethod.equals("eventprocroom")
+                || normalizedMethod.equals("eventprocactiveobj")
+                || normalizedMethod.equals("eventprocroombar");
+    }
+
     private static String formatArgs(List<Datum> args) {
         if (args == null || args.isEmpty()) {
             return "[]";
@@ -447,7 +482,7 @@ public final class ScriptInstanceMethodDispatcher {
         try {
             return ctx.executeHandler(script, handler, args, receiver);
         } catch (LingoException e) {
-            if (DebugConfig.isDebugPlaybackEnabled()) {
+            if (DebugConfig.isDebugPlaybackEnabled() || DebugConfig.isMusTraceEnabled()) {
                 System.err.println(e.getMessage());
                 System.err.println(ctx.formatCallStack());
             }

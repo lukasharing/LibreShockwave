@@ -123,6 +123,7 @@ public class CastMember {
     private final List<TextRenderer.ColorRun> textColorRuns = new ArrayList<>();
     private int textBgColor = 0xFFFFFFFF; // ARGB white
     private boolean textBgColorExplicit;
+    private boolean textPresentationOverride;
     private boolean textWordWrap = false;
     private boolean textAntialias = false;
     private int textAntiAliasThreshold = 14;
@@ -573,7 +574,7 @@ public class CastMember {
     public void setDynamicText(String text) {
         this.dynamicText = text;
         clearTextColorRuns();
-        this.textImageDirty = true;
+        invalidateTextRendering();
         invalidateParsedTextCache();
         notifyMemberVisualChanged();
     }
@@ -582,6 +583,15 @@ public class CastMember {
         parsedTextSource = null;
         parsedTextValue = Datum.VOID;
         parsedTextValid = false;
+    }
+
+    private void invalidateTextRendering() {
+        textImageDirty = true;
+        textRenderedImage = null;
+        textRenderedWidth = -1;
+        textRenderedHeight = -1;
+        textRenderedBgColor = Integer.MIN_VALUE;
+        textRenderedImageScriptMutated = false;
     }
 
     public TextRenderer getTextRenderer() { return textRenderer; }
@@ -621,6 +631,8 @@ public class CastMember {
     public int getTextBgColor() { return textBgColor; }
 
     public boolean hasExplicitTextBgColor() { return textBgColorExplicit; }
+
+    public boolean hasTextPresentationOverride() { return textPresentationOverride; }
 
     public boolean isLoaded() {
         return state == State.LOADED;
@@ -1272,7 +1284,7 @@ public class CastMember {
                 && (value instanceof Datum.Str || value instanceof Datum.Symbol)) {
             this.dynamicText = value.toStr();
             clearTextColorRuns();
-            this.textImageDirty = true;
+            invalidateTextRendering();
             invalidateParsedTextCache();
             this.state = State.LOADED;
             notifyMemberVisualChanged();
@@ -1298,6 +1310,7 @@ public class CastMember {
             this.textColorRuns.addAll(source.textColorRuns);
             this.textBgColor = source.textBgColor;
             this.textBgColorExplicit = source.textBgColorExplicit;
+            this.textPresentationOverride = source.textPresentationOverride;
             this.textWordWrap = source.textWordWrap;
             this.textAntialias = source.textAntialias;
             this.textAntiAliasThreshold = source.textAntiAliasThreshold;
@@ -1311,7 +1324,7 @@ public class CastMember {
             this.textFixedLineSpace = source.textFixedLineSpace;
             this.textTopSpacing = source.textTopSpacing;
             this.editable = source.editable;
-            this.textImageDirty = true;
+            invalidateTextRendering();
             this.state = State.LOADED;
             return true;
         }
@@ -1382,9 +1395,10 @@ public class CastMember {
     private boolean setTextProp(String prop, Datum value) {
         switch (prop) {
             case "text" -> {
-                this.dynamicText = value.toStr();
+                String textValue = value.toStr();
+                this.dynamicText = textValue;
                 clearTextColorRuns();
-                textImageDirty = true;
+                invalidateTextRendering();
                 invalidateParsedTextCache();
                 notifyMemberVisualChanged();
                 return true;
@@ -1392,28 +1406,32 @@ public class CastMember {
             case "html" -> {
                 // Strip HTML tags for now (basic support)
                 String html = value.toStr();
-                this.dynamicText = html.replaceAll("<[^>]*>", "");
+                String textValue = html.replaceAll("<[^>]*>", "");
+                this.dynamicText = textValue;
                 clearTextColorRuns();
-                textImageDirty = true;
+                invalidateTextRendering();
                 invalidateParsedTextCache();
                 notifyMemberVisualChanged();
                 return true;
             }
             case "font" -> {
                 this.textFont = value.toStr();
-                textImageDirty = true;
+                textPresentationOverride = true;
+                invalidateTextRendering();
                 notifyMemberVisualChanged();
                 return true;
             }
             case "fontsize" -> {
                 this.textFontSize = value.toInt();
-                textImageDirty = true;
+                textPresentationOverride = true;
+                invalidateTextRendering();
                 notifyMemberVisualChanged();
                 return true;
             }
             case "fontstyle" -> {
                 this.textFontStyle = normalizeFontStyle(value);
-                textImageDirty = true;
+                textPresentationOverride = true;
+                invalidateTextRendering();
                 notifyMemberVisualChanged();
                 return true;
             }
@@ -1423,7 +1441,8 @@ public class CastMember {
                 } else {
                     this.textAlignment = value.toStr().toLowerCase();
                 }
-                textImageDirty = true;
+                textPresentationOverride = true;
+                invalidateTextRendering();
                 notifyMemberVisualChanged();
                 return true;
             }
@@ -1432,7 +1451,8 @@ public class CastMember {
                 if (!value.isVoid()) {
                     this.textColor = Datum.datumToArgb(value);
                     clearTextColorRuns();
-                    textImageDirty = true;
+                    textPresentationOverride = true;
+                    invalidateTextRendering();
                     notifyMemberVisualChanged();
                 }
                 return true;
@@ -1445,43 +1465,50 @@ public class CastMember {
                     this.textBgColor = Datum.datumToArgb(value);
                     this.textBgColorExplicit = true;
                 }
-                textImageDirty = true;
+                textPresentationOverride = true;
+                invalidateTextRendering();
                 notifyMemberVisualChanged();
                 return true;
             }
             case "wordwrap" -> {
                 this.textWordWrap = value.toInt() != 0;
-                textImageDirty = true;
+                textPresentationOverride = true;
+                invalidateTextRendering();
                 notifyMemberVisualChanged();
                 return true;
             }
             case "antialias" -> {
                 this.textAntialias = value.toInt() != 0;
-                textImageDirty = true;
+                textPresentationOverride = true;
+                invalidateTextRendering();
                 notifyMemberVisualChanged();
                 return true;
             }
             case "antialiasthreshold" -> {
                 this.textAntiAliasThreshold = Math.max(0, value.toInt());
-                textImageDirty = true;
+                textPresentationOverride = true;
+                invalidateTextRendering();
                 notifyMemberVisualChanged();
                 return true;
             }
             case "kerning" -> {
                 this.textKerning = value.toInt() != 0;
-                textImageDirty = true;
+                textPresentationOverride = true;
+                invalidateTextRendering();
                 notifyMemberVisualChanged();
                 return true;
             }
             case "kerningthreshold" -> {
                 this.textKerningThreshold = Math.max(0, value.toInt());
-                textImageDirty = true;
+                textPresentationOverride = true;
+                invalidateTextRendering();
                 notifyMemberVisualChanged();
                 return true;
             }
             case "boxtype" -> {
                 this.textBoxType = textBoxTypeFromDatum(value);
-                textImageDirty = true;
+                textPresentationOverride = true;
+                invalidateTextRendering();
                 notifyMemberVisualChanged();
                 return true;
             }
@@ -1491,7 +1518,8 @@ public class CastMember {
                     this.textRectTop = r.top();
                     this.textRectRight = r.right();
                     this.textRectBottom = r.bottom();
-                    textImageDirty = true;
+                    textPresentationOverride = true;
+                    invalidateTextRendering();
                     notifyMemberVisualChanged();
                     return true;
                 }
@@ -1499,19 +1527,22 @@ public class CastMember {
             }
             case "width" -> {
                 this.textRectRight = this.textRectLeft + value.toInt();
-                textImageDirty = true;
+                textPresentationOverride = true;
+                invalidateTextRendering();
                 notifyMemberVisualChanged();
                 return true;
             }
             case "height" -> {
                 this.textRectBottom = this.textRectTop + value.toInt();
-                textImageDirty = true;
+                textPresentationOverride = true;
+                invalidateTextRendering();
                 notifyMemberVisualChanged();
                 return true;
             }
             case "fixedlinespace" -> {
                 this.textFixedLineSpace = value.toInt();
-                textImageDirty = true;
+                textPresentationOverride = true;
+                invalidateTextRendering();
                 notifyMemberVisualChanged();
                 return true;
             }
@@ -1519,13 +1550,15 @@ public class CastMember {
                 int lineHeight = Math.max(1, value.toInt());
                 this.textFixedLineSpace = lineHeight;
                 this.textTopSpacing = 0;
-                textImageDirty = true;
+                textPresentationOverride = true;
+                invalidateTextRendering();
                 notifyMemberVisualChanged();
                 return true;
             }
             case "topspacing" -> {
                 this.textTopSpacing = value.toInt();
-                textImageDirty = true;
+                textPresentationOverride = true;
+                invalidateTextRendering();
                 notifyMemberVisualChanged();
                 return true;
             }
@@ -1640,7 +1673,8 @@ public class CastMember {
         }
 
         textColorRuns.add(new TextRenderer.ColorRun(bounds[0], bounds[1], Datum.datumToArgb(value)));
-        textImageDirty = true;
+        textPresentationOverride = true;
+        invalidateTextRendering();
         notifyMemberVisualChanged();
         return true;
     }
@@ -1689,7 +1723,8 @@ public class CastMember {
         appendFontStyle(out, current[1], "italic");
         appendFontStyle(out, current[2], "underline");
         textFontStyle = out.length() > 0 ? out.toString() : "plain";
-        textImageDirty = true;
+        textPresentationOverride = true;
+        invalidateTextRendering();
         notifyMemberVisualChanged();
         return true;
     }
@@ -1845,6 +1880,7 @@ public class CastMember {
         script = null;
         textContent = "";
         dynamicText = null;
+        textPresentationOverride = false;
         invalidateParsedTextCache();
         dynamicPalette = null;
         regPointX = 0;
@@ -1873,11 +1909,7 @@ public class CastMember {
         textRectBottom = 480;
         textFixedLineSpace = 0;
         textTopSpacing = 0;
-        textImageDirty = true;
-        textRenderedImage = null;
-        textRenderedWidth = -1;
-        textRenderedHeight = -1;
-        textRenderedBgColor = Integer.MIN_VALUE;
+        invalidateTextRendering();
 
         paletteRefCastLib = -1;
         paletteRefMemberNum = -1;

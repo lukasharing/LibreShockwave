@@ -31,6 +31,18 @@ public final class NetBuiltins {
         int netError(Integer taskId);
         String getStreamStatus(Integer taskId);
 
+        default byte[] netBytesResult(Integer taskId) {
+            String result = netTextResult(taskId);
+            return result != null
+                    ? result.getBytes(java.nio.charset.StandardCharsets.UTF_8)
+                    : null;
+        }
+
+        default void aliasCachedResult(Integer taskId, String alias) {
+            // Optional: providers with download caches can publish completed
+            // bytes under Director file aliases such as Curl destinationFile.
+        }
+
         /**
          * Get stream status as a PropList with #bytesSoFar, #bytesTotal, #state, #error keys.
          * Director's getStreamStatus() returns a PropList, not a string.

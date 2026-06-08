@@ -230,6 +230,17 @@ public final class ExecutionContext {
         return scriptNames != null ? scriptNames.getName(nameId) : getScript().resolveName(nameId);
     }
 
+    public List<String> resolveNameCandidates(int nameId) {
+        if (getScript() != null && getScript().file() != null) {
+            List<String> candidates = getScript().file().getScriptNameCandidates(nameId);
+            if (!candidates.isEmpty()) {
+                return candidates;
+            }
+        }
+        String resolved = resolveName(nameId);
+        return resolved == null || resolved.isEmpty() ? List.of() : List.of(resolved);
+    }
+
     // Script/handler access
 
     public ScriptChunk getScript() {

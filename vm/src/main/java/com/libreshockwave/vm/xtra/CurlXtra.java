@@ -54,12 +54,12 @@ public final class CurlXtra implements Xtra {
             return Datum.VOID;
         }
 
-        return switch (handlerName.toLowerCase()) {
-            case "setoption" -> setOption(state, args);
-            case "setdestinationfile" -> setDestinationFile(state, args);
-            case "setprogresscallback" -> setProgressCallback(state, args);
-            case "execasync" -> execAsync(state, args);
-            case "close" -> close(state);
+        return switch (normalizeHandlerName(handlerName)) {
+            case "setoption", "setopt", "2216" -> setOption(state, args);
+            case "setdestinationfile", "2217" -> setDestinationFile(state, args);
+            case "setprogresscallback", "2219" -> setProgressCallback(state, args);
+            case "execasync", "perform", "2221" -> execAsync(state, args);
+            case "close", "cleanup", "palignment" -> close(state);
             default -> Datum.VOID;
         };
     }
@@ -118,6 +118,10 @@ public final class CurlXtra implements Xtra {
             if (error == 0 && state.streamResult) {
                 result = Datum.of(normalizeDirectorText(provider.netTextResult(state.taskId)));
             } else {
+                if (error == 0 && !state.streamResult
+                        && state.destinationFile != null && !state.destinationFile.isEmpty()) {
+                    provider.aliasCachedResult(state.taskId, state.destinationFile);
+                }
                 result = Datum.of(error);
             }
             fireDone(state, result);
@@ -173,6 +177,14 @@ public final class CurlXtra implements Xtra {
         state.running = false;
         state.completed = true;
         return Datum.ZERO;
+    }
+
+    private static String normalizeHandlerName(String handlerName) {
+        if (handlerName == null) {
+            return "";
+        }
+        String normalized = handlerName.toLowerCase();
+        return normalized.startsWith("#") ? normalized.substring(1) : normalized;
     }
 
     private void fireProgress(InstanceState state, int total, int now) {

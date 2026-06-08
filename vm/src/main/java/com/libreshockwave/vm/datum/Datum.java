@@ -288,10 +288,18 @@ public sealed interface Datum {
          * first compatible property-name lookup.
          */
         public Datum getAtOrDefault(Datum keyOrIndex, Datum defaultVal) {
+            return getAtOrDefault(keyOrIndex, defaultVal, false);
+        }
+
+        public Datum getAtOrDefault(Datum keyOrIndex, Datum defaultVal, boolean allowNumericKeyFallback) {
             if (keyOrIndex instanceof Int || keyOrIndex instanceof Float) {
                 int index = keyOrIndex.toInt() - 1;
                 if (index >= 0 && index < size()) {
                     return getValue(index);
+                }
+                if (allowNumericKeyFallback) {
+                    Datum keyedValue = get(keyOrIndex);
+                    return keyedValue != null ? keyedValue : defaultVal;
                 }
                 return defaultVal;
             }

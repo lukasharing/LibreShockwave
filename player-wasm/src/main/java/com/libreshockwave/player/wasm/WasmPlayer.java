@@ -119,6 +119,18 @@ public class WasmPlayer {
     }
 
     /**
+     * Dispatch queued Director input events between score ticks.
+     */
+    public void processInputEvents() {
+        if (player == null) return;
+        try {
+            player.processQueuedInputEvents();
+        } catch (Throwable e) {
+            WasmEntry.log("input event pump error: " + e.getClass().getName() + ": " + e.getMessage());
+        }
+    }
+
+    /**
      * Queue fetch requests for casts that Director marks as required before
      * frame one. After-frame casts are intentionally left to the normal player
      * lifecycle so startup does not parse large external casts before the movie
@@ -127,6 +139,11 @@ public class WasmPlayer {
     public int preloadCasts() {
         if (player == null) return 0;
         return player.preloadExternalCastsByMode(2);
+    }
+
+    public int prefetchExternalCasts() {
+        if (player == null) return 0;
+        return player.prefetchExternalCastBytes();
     }
 
     public void play() {

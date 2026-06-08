@@ -11,6 +11,7 @@ public final class DebugConfig {
     private static boolean pauseOnScriptErrorEnabled = false;
     private static boolean pauseOnAuthoredMajorEnabled = false;
     private static boolean propertyTraceEnabled = false;
+    private static boolean musTraceEnabled = false;
 
     private DebugConfig() {}
 
@@ -28,6 +29,14 @@ public final class DebugConfig {
 
     public static void setPropertyTraceEnabled(boolean enabled) {
         propertyTraceEnabled = enabled;
+    }
+
+    public static boolean isMusTraceEnabled() {
+        return musTraceEnabled;
+    }
+
+    public static void setMusTraceEnabled(boolean enabled) {
+        musTraceEnabled = enabled;
     }
 
     public static boolean isPauseOnScriptErrorEnabled() {

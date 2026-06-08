@@ -59,6 +59,20 @@ class MovieBuiltinsTest {
         }
     }
 
+    @Test
+    void frameFunctionReadsCurrentMovieFrame() {
+        LingoVM vm = new LingoVM(null);
+        RecordingMovieProvider provider = new RecordingMovieProvider();
+        provider.properties.put("frame", Datum.of(9));
+
+        MoviePropertyProvider.setProvider(provider);
+        try {
+            assertEquals(9, vm.callHandler("frame", List.of()).toInt());
+        } finally {
+            MoviePropertyProvider.clearProvider();
+        }
+    }
+
     private static final class RecordingMovieProvider implements MoviePropertyProvider {
         private final Map<String, Datum> properties = new HashMap<>();
 

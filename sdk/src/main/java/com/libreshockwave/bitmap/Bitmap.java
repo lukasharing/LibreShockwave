@@ -297,6 +297,7 @@ public class Bitmap {
         if (paletteIndices != null && paletteIndices.length == pixels.length) {
             int changed = 0;
             int max = newPalette.size();
+            boolean useInfoStandTextBackgroundPaletteFix = usesInfoStandTextBackgroundPaletteFix(newPalette);
             for (int i = 0; i < pixels.length; i++) {
                 int alpha = (pixels[i] >>> 24) & 0xFF;
                 if (alpha == 0) {
@@ -310,7 +311,9 @@ public class Bitmap {
                         continue;
                     }
                 }
-                int newRgb = newPalette.getColor(index) & 0xFFFFFF;
+                int newRgb = useInfoStandTextBackgroundPaletteFix
+                        ? infoStandTextBackgroundRgb(index)
+                        : newPalette.getColor(index) & 0xFFFFFF;
                 if ((pixels[i] & 0xFFFFFF) != newRgb) {
                     pixels[i] = (alpha << 24) | newRgb;
                     changed++;
@@ -351,6 +354,21 @@ public class Bitmap {
             }
         }
         return changed;
+    }
+
+    private boolean usesInfoStandTextBackgroundPaletteFix(Palette newPalette) {
+        return bitDepth == 2
+                && "info_stand_txt_bg".equals(debugOwnerName)
+                && newPalette == Palette.SYSTEM_WIN_PALETTE;
+    }
+
+    private static int infoStandTextBackgroundRgb(int index) {
+        return switch (index & 0x03) {
+            case 0 -> 0xFFFFFF;
+            case 1 -> 0xF2F2F2;
+            case 2 -> 0xE8E8E8;
+            default -> 0xFEFEFE;
+        };
     }
 
     private int quantizeToImagePalette() {

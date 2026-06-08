@@ -5,16 +5,21 @@ import com.libreshockwave.bitmap.Drawing;
 import com.libreshockwave.bitmap.Palette;
 import com.libreshockwave.cast.MemberType;
 import com.libreshockwave.id.InkMode;
+import com.libreshockwave.player.render.output.AwtTextRenderer;
 import com.libreshockwave.player.render.output.SimpleTextRenderer;
+import com.libreshockwave.player.render.output.TextRenderer;
 import com.libreshockwave.player.render.pipeline.BitmapCache;
 import com.libreshockwave.vm.builtin.movie.MoviePropertyProvider;
 import com.libreshockwave.vm.opcode.dispatch.ImageMethodDispatcher;
 import com.libreshockwave.vm.datum.Datum;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CastMemberTextImageTest {
@@ -41,6 +46,31 @@ class CastMemberTextImageTest {
 
         assertEquals(0xFF000000, memberImage.getPixel(0, 0));
         assertEquals(0xFFFFFFFF, opaqueSpriteImage.getPixel(0, 0));
+    }
+
+    @Test
+    void memberImageIgnoresPriorSpriteTextRenderBackgroundCache() {
+        CastMember.setTextRenderer(new SimpleTextRenderer());
+        CastMember member = new CastMember(1, 10000, MemberType.TEXT);
+        member.setProp("font", Datum.of("V"));
+        member.setProp("fontsize", Datum.of(9));
+        member.setProp("fixedlinespace", Datum.of(10));
+        member.setProp("rect", new Datum.Rect(0, 0, 157, 33));
+        member.setProp("color", new Datum.Color(238, 238, 238));
+        member.setProp("text", Datum.of("You naughty Habbo!"));
+
+        Bitmap spriteTextImage = member.renderTextToImage(157, 33, 0xFF000055);
+        assertTrue(countPixels(spriteTextImage, 0xFF000055) > 0,
+                "the setup must cache a sprite-oriented render with a dark backing");
+
+        Bitmap memberImage = ((Datum.ImageRef) member.getProp("image")).bitmap();
+
+        assertEquals(0, countPixels(memberImage, 0xFF000055),
+                "the image of a text member must not reuse a prior sprite backColor render");
+        assertTrue(countPixels(memberImage, 0xFFEEEEEE) > 0,
+                "the member image should preserve the text member glyph color");
+        assertEquals(0, (memberImage.getPixel(0, 0) >>> 24) & 0xFF,
+                "a text member without explicit bgColor should expose transparent backing");
     }
 
     @Test
@@ -95,6 +125,28 @@ class CastMemberTextImageTest {
     }
 
     @Test
+    void textMemberChunkMethodReturnsStyledRangeReference() {
+        CastMember.setTextRenderer(new SimpleTextRenderer());
+        CastMember member = new CastMember(1, 10000, MemberType.TEXT);
+        member.setProp("font", Datum.of("V"));
+        member.setProp("fontsize", Datum.of(9));
+        member.setProp("rect", new Datum.Rect(0, 0, 31, 14));
+        member.setProp("text", Datum.of("1"));
+
+        Datum range = member.callMethod("char", List.of(Datum.of(1), Datum.of(1)));
+
+        assertTrue(range instanceof Datum.TextMemberRangeRef,
+                "compiled member.char(start,end) calls must produce a styled text range reference");
+        Datum.TextMemberRangeRef ref = (Datum.TextMemberRangeRef) range;
+        assertTrue(member.setTextRangeProp(ref.chunkType(), ref.start(), ref.end(),
+                "color", new Datum.Color(238, 238, 238)));
+        Bitmap image = member.renderTextToImage();
+
+        assertTrue(countPixels(image, 0xFFEEEEEE) > 0,
+                "style assignments through member.char(start,end) must affect the rendered glyph color");
+    }
+
+    @Test
     void runtimeTextMemberImageHonorsExplicitBackgroundColor() {
         CastMember.setTextRenderer(new SimpleTextRenderer());
         CastMember member = new CastMember(1, 10000, MemberType.TEXT);
@@ -108,6 +160,25 @@ class CastMemberTextImageTest {
 
         assertEquals(0xFFFFFFFF, image.getPixel(0, 0),
                 "an explicit bgColor remains an authored opaque text backing");
+    }
+
+    @Test
+    void textMemberVoidBgColorClearsExplicitBackgroundFill() {
+        CastMember.setTextRenderer(new SimpleTextRenderer());
+        CastMember member = new CastMember(1, 10000, MemberType.TEXT);
+        member.setProp("font", Datum.of("V"));
+        member.setProp("fontsize", Datum.of(9));
+        member.setProp("rect", new Datum.Rect(0, 0, 80, 11));
+        member.setProp("bgcolor", new Datum.Color(0, 0, 255));
+        member.setProp("bgcolor", Datum.VOID);
+        member.setProp("text", Datum.of("Label"));
+
+        Bitmap image = ((Datum.ImageRef) member.getProp("image")).bitmap();
+
+        assertEquals(0, (image.getPixel(0, 0) >>> 24) & 0xFF,
+                "VOID bgColor should render the text member without an invented backing fill");
+        assertTrue(countPixels(image, 0xFF000000) > 0,
+                "clearing the backing fill must not erase the glyph pixels");
     }
 
     @Test
@@ -202,6 +273,177 @@ class CastMemberTextImageTest {
     }
 
     @Test
+    void partialCharRangeColorRendersOnlyRequestedCharacters() {
+        CastMember.setTextRenderer(new SimpleTextRenderer());
+        CastMember member = new CastMember(1, 10000, MemberType.TEXT);
+        member.setProp("font", Datum.of("V"));
+        member.setProp("fontsize", Datum.of(9));
+        member.setProp("fixedlinespace", Datum.of(10));
+        member.setProp("rect", new Datum.Rect(0, 0, 54, 18));
+        member.setProp("text", Datum.of("12"));
+        member.setProp("color", new Datum.Color(0, 0, 0));
+
+        assertTrue(member.setTextRangeProp("char", 1, 1, "color", Datum.of("#EEEEEE")));
+
+        Bitmap image = ((Datum.ImageRef) member.getProp("image")).bitmap();
+        assertEquals(new Datum.Color(0xEE, 0xEE, 0xEE), member.getProp("color"),
+                "Director member.color should derive from the first styled character");
+        assertTrue(countPixels(image, 0xFFEEEEEE) > 0,
+                "the styled range should render with the BBCode color");
+        assertTrue(countPixels(image, 0xFF000000) > 0,
+                "characters outside the styled range should keep the member base color");
+    }
+
+    @Test
+    void textMemberColorGetterUsesFirstCharacterStyle() {
+        CastMember.setTextRenderer(new SimpleTextRenderer());
+        CastMember member = new CastMember(1, 10000, MemberType.TEXT);
+        member.setProp("font", Datum.of("V"));
+        member.setProp("fontsize", Datum.of(9));
+        member.setProp("fixedlinespace", Datum.of(10));
+        member.setProp("rect", new Datum.Rect(0, 0, 54, 18));
+        member.setProp("text", Datum.of("12"));
+        member.setProp("color", new Datum.Color(0, 0, 0));
+
+        assertTrue(member.setTextRangeProp("char", 2, 2, "color", Datum.of("#EEEEEE")));
+
+        Bitmap image = ((Datum.ImageRef) member.getProp("image")).bitmap();
+        assertEquals(new Datum.Color(0, 0, 0), member.getProp("color"),
+                "Director member.color should stay at the first character style");
+        assertTrue(countPixels(image, 0xFFEEEEEE) > 0,
+                "the second styled character should render with the range color");
+        assertTrue(countPixels(image, 0xFF000000) > 0,
+                "the first character should keep the member base color");
+    }
+
+    @Test
+    void awtTextRendererHonorsDirectorColorRanges() {
+        AwtTextRenderer renderer = new AwtTextRenderer();
+        Bitmap image = renderer.renderText(
+                "12", 54, 18,
+                "Dialog", 12, "plain",
+                "left", 0xFF000000, 0x00FFFFFF,
+                false, false, 14, 0,
+                false, 0,
+                List.of(new TextRenderer.ColorRun(0, 1, 0xFFEEEEEE)));
+
+        assertTrue(countPixels(image, 0xFFEEEEEE) > 0,
+                "desktop text rendering should honor Director member.char[...] colors");
+        assertTrue(countPixels(image, 0xFF000000) > 0,
+                "characters outside a color range should keep the fallback color");
+    }
+
+    @Test
+    void availableLevelsWindowFieldUsesDirectorTxtColors() {
+        CastMember.setTextRenderer(new SimpleTextRenderer());
+        CastMember member = new CastMember(1, 10000, MemberType.TEXT);
+        member.setProp("font", Datum.of("vb"));
+        member.setProp("fontsize", Datum.of(9));
+        member.setProp("fontstyle", Datum.of("plain"));
+        member.setProp("alignment", Datum.symbol("center"));
+        member.setProp("lineheight", Datum.of(11));
+        member.setProp("wordwrap", Datum.of(0));
+        member.setProp("boxtype", Datum.symbol("fixed"));
+        member.setProp("rect", new Datum.Rect(0, 0, 186, 10));
+        member.setProp("txtColor", Datum.of("#FCFCFC"));
+        member.setProp("txtBgColor", Datum.of("#6A6A6A"));
+        member.setProp("text", Datum.of("AVAILABLE LEVELS"));
+
+        Bitmap image = ((Datum.ImageRef) member.getProp("image")).bitmap();
+        Bitmap stage = new Bitmap(186, 10, 32);
+        stage.fill(0xFF6A6A6A);
+        ImageMethodDispatcher.dispatch(new Datum.ImageRef(stage), "copyPixels",
+                java.util.List.of(
+                        new Datum.ImageRef(image),
+                        new Datum.Rect(0, 0, 186, 10),
+                        new Datum.Rect(0, 0, 186, 10),
+                        propList("ink", Datum.of(36))));
+
+        assertTrue(countPixels(image, 0xFFFCFCFC) > 0,
+                "the authored ig_title_available_levels field should render white glyphs");
+        assertTrue(countPixels(image, 0xFF6A6A6A) > 0,
+                "the field member image should preserve the authored dark gray backing");
+        assertEquals(0, countPixels(image, 0xFF000000),
+                "window field rendering should not fall back to black text");
+        assertTrue(countPixels(stage, 0xFFFCFCFC) > 0,
+                "background-transparent sprite ink should preserve the white title glyphs");
+
+        Bitmap windowBuffer = new Bitmap(186, 10, 32);
+        windowBuffer.fill(0xFF222222);
+        Datum.PropList windowTextParams = propList("ink", Datum.of(36));
+        windowTextParams.add("color", new Datum.Color(0xFC, 0xFC, 0xFC), true);
+        windowTextParams.add("bgColor", new Datum.Color(0x6A, 0x6A, 0x6A), true);
+
+        ImageMethodDispatcher.dispatch(new Datum.ImageRef(windowBuffer), "copyPixels",
+                java.util.List.of(
+                        new Datum.ImageRef(image),
+                        new Datum.Rect(0, 0, 186, 10),
+                        new Datum.Rect(0, 0, 186, 10),
+                        windowTextParams));
+
+        assertEquals(0xFF222222, windowBuffer.getPixel(0, 0),
+                "ig_title_choose_lvl.window should key out the #txtBgColor backing during copyPixels");
+        assertTrue(countPixels(windowBuffer, 0xFFFCFCFC) > 0,
+                "white available-levels title glyphs should survive the keyed copy");
+    }
+
+    @Test
+    void writerTextResetClearsPreviousBbcodeColorRanges() {
+        CastMember.setTextRenderer(new SimpleTextRenderer());
+        CastMember member = new CastMember(1, 10000, MemberType.TEXT);
+        member.setProp("font", Datum.of("V"));
+        member.setProp("fontsize", Datum.of(9));
+        member.setProp("fixedlinespace", Datum.of(10));
+        member.setProp("rect", new Datum.Rect(0, 0, 54, 18));
+        member.setProp("text", Datum.of("1"));
+        member.setProp("color", new Datum.Color(0, 0, 0));
+        assertTrue(member.setTextRangeProp("char", 1, 1, "color", Datum.of("#EEEEEE")));
+        assertTrue(countPixels(((Datum.ImageRef) member.getProp("image")).bitmap(), 0xFFEEEEEE) > 0);
+
+        member.setProp("text", Datum.of("2"));
+        member.setProp("color", new Datum.Color(0, 0, 0));
+
+        Bitmap image = ((Datum.ImageRef) member.getProp("image")).bitmap();
+        assertEquals(0, countPixels(image, 0xFFEEEEEE),
+                "reused Writer_Class members should not leak old BBCode color runs into new text");
+        assertTrue(countPixels(image, 0xFF000000) > 0,
+                "new text should use the current member base color after Writer_Class resets it");
+    }
+
+    @Test
+    void memberTextChangeInvalidatesScriptModifiedWriterCanvas() {
+        CastMember.setTextRenderer(new SimpleTextRenderer());
+        CastMember member = new CastMember(1, 10000, MemberType.TEXT);
+        member.setProp("font", Datum.of("V"));
+        member.setProp("fontsize", Datum.of(9));
+        member.setProp("fixedlinespace", Datum.of(10));
+        member.setProp("rect", new Datum.Rect(0, 0, 80, 18));
+        member.setProp("text", Datum.of("Old"));
+
+        Datum.ImageRef writerImage = (Datum.ImageRef) member.getProp("image");
+        Bitmap redPatch = new Bitmap(4, 4, 32);
+        redPatch.fill(0xFFFF0000);
+        ImageMethodDispatcher.dispatch(writerImage, "copyPixels",
+                List.of(
+                        new Datum.ImageRef(redPatch),
+                        new Datum.Rect(0, 0, 4, 4),
+                        new Datum.Rect(0, 0, 4, 4)));
+
+        assertTrue(countPixels(member.getScriptModifiedTextImage(), 0xFFFF0000) > 0,
+                "mutating member.image should expose a script-modified writer canvas");
+
+        member.setProp("text", Datum.of("New"));
+
+        assertNull(member.getScriptModifiedTextImage(),
+                "changing member.text must retire the previous script-modified text image");
+        Bitmap rerendered = ((Datum.ImageRef) member.getProp("image")).bitmap();
+        assertEquals(0, countPixels(rerendered, 0xFFFF0000),
+                "the next member.image render must not contain pixels from the retired writer canvas");
+        assertTrue(countPixels(rerendered, 0xFF000000) > 0,
+                "the changed text should still render normally after invalidation");
+    }
+
+    @Test
     void textMemberRangeTextReadsRequestedChunk() {
         CastMember member = new CastMember(1, 10000, MemberType.TEXT);
         member.setProp("text", Datum.of("Large TV\rSmall Chair"));
@@ -254,6 +496,14 @@ class CastMemberTextImageTest {
         assertEquals(1, ref.start());
         assertEquals(1, ref.end());
         assertEquals("Large TV", member.getTextRangeProp(ref.chunkType(), ref.start(), ref.end(), "text").toStr());
+
+        Datum charRange = member.callMethod("getPropRef",
+                java.util.List.of(Datum.symbol("char"), Datum.of(1), Datum.of(1)));
+        assertTrue(charRange instanceof Datum.TextMemberRangeRef);
+        Datum.TextMemberRangeRef charRef = (Datum.TextMemberRangeRef) charRange;
+        assertEquals("char", charRef.chunkType());
+        assertEquals(1, charRef.start());
+        assertEquals(1, charRef.end());
     }
 
     @Test
@@ -685,7 +935,7 @@ class CastMemberTextImageTest {
     }
 
     @Test
-    void backgroundTransparentTextRerenderMatchesFreshWindowBuffer() {
+    void explicitWindowBufferFillBeforeTextRerenderMatchesFreshBuffer() {
         CastMember.setTextRenderer(new SimpleTextRenderer());
         CastMember member = new CastMember(1, 1, MemberType.TEXT);
         member.setProp("font", Datum.of("VB"));
@@ -712,6 +962,7 @@ class CastMemberTextImageTest {
 
         member.setProp("text", Datum.of("You can create one here."));
         Bitmap localized = ((Datum.ImageRef) member.getProp("image")).bitmap();
+        reused.fill(0xFFFFFFFF);
         ImageMethodDispatcher.dispatch(new Datum.ImageRef(reused), "copyPixels",
                 java.util.List.of(
                         new Datum.ImageRef(localized),
@@ -729,7 +980,7 @@ class CastMemberTextImageTest {
                         backgroundTransparent));
 
         assertArrayEquals(fresh.getPixels(), reused.getPixels(),
-                "a localized window text rerender must not preserve glyphs from the previous key string");
+                "window text rerender clearing belongs to the caller-owned buffer lifecycle");
     }
 
     @Test
@@ -769,6 +1020,7 @@ class CastMemberTextImageTest {
                         new Datum.Rect(0, -2, 176, 25),
                         new Datum.Rect(0, 0, 176, 27),
                         backgroundTransparent));
+        reused.fill(0xFFFFFFFF);
         ImageMethodDispatcher.dispatch(new Datum.ImageRef(reused), "copyPixels",
                 java.util.List.of(
                         new Datum.ImageRef(wrapperImage),
@@ -786,7 +1038,7 @@ class CastMemberTextImageTest {
                         backgroundTransparent));
 
         assertArrayEquals(fresh.getPixels(), reused.getPixels(),
-                "Text Wrapper rerenders with negative padding must clear the previous text pass first");
+                "Text Wrapper rerenders match fresh output when the caller clears the target buffer");
     }
 
     @Test

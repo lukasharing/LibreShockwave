@@ -267,9 +267,6 @@ public class MovieProperties implements MoviePropertyProvider {
         if (inputState == null) {
             return 0;
         }
-        if (player != null && player.getInputHandler() != null) {
-            return player.getInputHandler().resolveRolloverAtCurrentMouse();
-        }
         return inputState.getRolloverSprite();
     }
 

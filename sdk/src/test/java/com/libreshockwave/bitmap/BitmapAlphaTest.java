@@ -2,6 +2,8 @@ package com.libreshockwave.bitmap;
 
 import org.junit.jupiter.api.Test;
 
+import com.libreshockwave.bitmap.Palette.InkMode;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
@@ -92,5 +94,28 @@ class BitmapAlphaTest {
         assertSame(newPalette, bitmap.getImagePalette());
         assertEquals(0xFF000000, bitmap.getPixel(0, 0));
         assertEquals(0xFFFFFFFF, bitmap.getPixel(1, 0));
+    }
+
+    @Test
+    void infoStandTextBackgroundSystemWinRemapKeepsNeutralOverlay() {
+        Bitmap bitmap = new Bitmap(2, 1, 2);
+        bitmap.setImagePalette(Palette.SYSTEM_MAC_PALETTE);
+        bitmap.setDebugOwnerName("info_stand_txt_bg");
+        bitmap.setPixelPaletteIndex(0, 0, 0, 0xFFFFFFFF);
+        bitmap.setPixelPaletteIndex(1, 0, 3, 0xFFFFFF66);
+
+        int changed = bitmap.remapImagePalette(Palette.SYSTEM_WIN_PALETTE);
+
+        assertEquals(1, changed);
+        assertEquals(0xFFFFFFFF, bitmap.getPixel(0, 0));
+        assertEquals(0xFFFEFEFE, bitmap.getPixel(1, 0));
+
+        Bitmap dest = new Bitmap(2, 1, 32);
+        dest.fill(0xFF000000);
+        Drawing.copyPixels(dest, bitmap, 0, 0, 0, 0, 2, 1,
+                InkMode.BACKGROUND_TRANSPARENT, 51, null, 0xFFFFFF);
+
+        assertEquals(0xFF000000, dest.getPixel(0, 0));
+        assertEquals(0xFF323232, dest.getPixel(1, 0));
     }
 }

@@ -450,18 +450,20 @@ public class SpriteBaker {
             textImage = member.getScriptModifiedTextImage();
         }
 
-        if (textImage == null && member != null && member.hasDynamicText()) {
-            // Lingo set member.text — use the member's own text properties (color,
-            // alignment, font style, etc.) so rendering matches caret positioning.
+        if (textImage == null && member != null
+                && (member.hasDynamicText() || member.hasTextPresentationOverride())) {
+            // Lingo can mutate a loaded text member's visual properties without
+            // replacing member.text. Director renders that member through its
+            // current runtime properties, not the original STXT/XMED defaults.
             int width = sprite.getWidth() > 0 ? sprite.getWidth() : 200;
             int height = sprite.getHeight() > 0 ? sprite.getHeight() : 20;
             int bgColor = dynamicTextBgColor(sprite, member);
             textImage = member.renderTextToImage(width, height, bgColor);
         }
-        // For file-loaded text members (no dynamic text), skip member.renderTextToImage()
-        // and fall through to bakeTextFromFile() which applies the sprite's foreColor/backColor
-        // from the score. member.renderTextToImage() uses the member's default color (black)
-        // which doesn't reflect the score's foreColor for this sprite channel.
+        // For untouched file-loaded text members, fall through to bakeTextFromFile()
+        // which applies the sprite's foreColor/backColor from the score.
+        // member.renderTextToImage() would use the member defaults, which do not
+        // reflect the score colors for that sprite channel.
 
         // Fall back to rendering directly from the file's STXT/XMED chunk
         // (for score-placed text sprites that don't have a runtime CastMember,
@@ -491,13 +493,40 @@ public class SpriteBaker {
     }
 
     private int dynamicTextBgColor(RenderSprite sprite, CastMember member) {
+        if (member.hasExplicitTextBgColor()) {
+            int memberBgColor = member.getTextBgColor();
+            if (((memberBgColor >>> 24) & 0xFF) == 0xFF
+                    && (memberBgColor & 0xFFFFFF) != 0xFFFFFF) {
+                return memberBgColor;
+            }
+        }
         if (sprite.getInkMode() == InkMode.BACKGROUND_TRANSPARENT) {
+            Integer spriteBgColor = explicitRgbTextBacking(sprite);
+            if (spriteBgColor != null) {
+                return spriteBgColor;
+            }
             return 0x00000000;
         }
         if (member.hasExplicitTextBgColor()) {
             return member.getTextBgColor();
         }
         return resolvePaletteColor(sprite.getBackColor(), sprite.getBackColorSource());
+    }
+
+    private int fileTextBgColor(RenderSprite sprite, int authoredBgColor) {
+        if (sprite.getInkMode() != InkMode.BACKGROUND_TRANSPARENT) {
+            return authoredBgColor;
+        }
+        Integer spriteBgColor = explicitRgbTextBacking(sprite);
+        return spriteBgColor != null ? spriteBgColor : 0x00000000;
+    }
+
+    private Integer explicitRgbTextBacking(RenderSprite sprite) {
+        if (!sprite.hasBackColor() || sprite.getBackColorSource() != SpriteColorSource.RGB) {
+            return null;
+        }
+        int rgb = sprite.getBackColor() & 0xFFFFFF;
+        return rgb != 0xFFFFFF ? 0xFF000000 | rgb : null;
     }
 
     /**
@@ -561,9 +590,8 @@ public class SpriteBaker {
         } else {
             textColor = resolvePaletteColor(sprite.getForeColor(), sprite.getForeColorSource());
         }
-        int bgColor = sprite.getInkMode() == InkMode.BACKGROUND_TRANSPARENT
-                ? 0x00000000
-                : 0xFF000000 | ((textInfo.bgRed() << 16) | (textInfo.bgGreen() << 8) | textInfo.bgBlue());
+        int authoredBgColor = 0xFF000000 | ((textInfo.bgRed() << 16) | (textInfo.bgGreen() << 8) | textInfo.bgBlue());
+        int bgColor = fileTextBgColor(sprite, authoredBgColor);
 
         return renderer.renderText(
                 textChunk.text(), width, height,
@@ -599,9 +627,7 @@ public class SpriteBaker {
         } else {
             textColor = resolvePaletteColor(sprite.getForeColor(), sprite.getForeColorSource());
         }
-        int bgColor = sprite.getInkMode() == InkMode.BACKGROUND_TRANSPARENT
-                ? 0x00000000
-                : resolvePaletteColor(sprite.getBackColor(), sprite.getBackColorSource());
+        int bgColor = fileTextBgColor(sprite, resolvePaletteColor(sprite.getBackColor(), sprite.getBackColorSource()));
 
         var renderer = CastMember.getTextRendererStatic();
         if (renderer == null) return null;

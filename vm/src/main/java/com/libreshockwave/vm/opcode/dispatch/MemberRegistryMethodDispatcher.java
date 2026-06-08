@@ -24,6 +24,8 @@ public final class MemberRegistryMethodDispatcher {
 
     private record RememberedAliasText(String text, Map<String, Integer> importedAliases) {}
 
+    private record MemberSlot(int castLibNumber, int memberNumber) {}
+
     private MemberRegistryMethodDispatcher() {}
 
     static DispatchResult prefill(Datum.ScriptInstance instance, String methodName, List<Datum> args) {
@@ -78,7 +80,7 @@ public final class MemberRegistryMethodDispatcher {
         }
 
         return switch (method) {
-            case "getmemnum", "exists", "memberexists", "getmember", "readaliasindexesfromfield" -> {
+            case "getmemnum", "exists", "memberexists", "getmember", "updatemember", "readaliasindexesfromfield" -> {
                 Datum.PropList registry = getRegistry(instance);
                 if (registry == null) {
                     yield NOT_HANDLED;
@@ -89,12 +91,47 @@ public final class MemberRegistryMethodDispatcher {
                             true,
                             Math.abs(resolveRegisteredMemberSlot(instance, registry, args, true)) > 0 ? Datum.TRUE : Datum.FALSE);
                     case "getmember" -> new DispatchResult(true, resolveRegisteredMember(instance, registry, args));
+                    case "updatemember" -> new DispatchResult(true, updateRegisteredMember(instance, registry, args));
                     case "readaliasindexesfromfield" -> dispatchReadAliasIndexesFromField(instance, registry, args);
                     default -> NOT_HANDLED;
                 };
             }
             default -> NOT_HANDLED;
         };
+    }
+
+    private static Datum updateRegisteredMember(
+            Datum.ScriptInstance instance,
+            Datum.PropList registry,
+            List<Datum> args) {
+        CastLibProvider provider = CastLibProvider.getProvider();
+        if (provider == null) {
+            return Datum.ZERO;
+        }
+        int slotValue = resolveRegisteredMemberSlot(instance, registry, args, true);
+        MemberSlot slot = memberSlotFromValue(provider, slotValue);
+        if (slot == null) {
+            return Datum.ZERO;
+        }
+        return provider.updateMember(slot.castLibNumber(), slot.memberNumber()) ? Datum.TRUE : Datum.ZERO;
+    }
+
+    private static MemberSlot memberSlotFromValue(CastLibProvider provider, int slotValue) {
+        if (provider == null || slotValue == 0) {
+            return null;
+        }
+        int absValue = Math.abs(slotValue);
+        SlotId slotId = new SlotId(absValue);
+        if (slotId.castLib() >= 1 && slotId.member() >= 1) {
+            return new MemberSlot(slotId.castLib(), slotId.member());
+        }
+        int castCount = provider.getCastLibCount();
+        for (int castLib = 1; castLib <= castCount; castLib++) {
+            if (provider.memberExists(castLib, absValue)) {
+                return new MemberSlot(castLib, absValue);
+            }
+        }
+        return null;
     }
 
     private static DispatchResult dispatchReadAliasIndexesFromField(

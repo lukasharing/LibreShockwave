@@ -178,8 +178,10 @@ public class EventDispatcher {
                                 vm.resetErrorState();
                                 if (scriptInstanceRespondsToEvent(si, handlerName)) {
                                     traceScriptInstanceInvoke("scriptInstance", handlerName, channel, si);
+                                    traceEventBrokerInvoke(handlerName, channel, si);
                                     Datum result = invokeScriptInstanceEvent(si, handlerName, args);
                                     traceScriptInstanceResult("scriptInstance", handlerName, channel, si, result);
+                                    traceEventBrokerResult(handlerName, channel, si, result);
                                 }
                             } catch (Exception e) {
                                 System.err.println("[EventDispatcher] Error in scriptInstanceList handler "
@@ -432,6 +434,30 @@ public class EventDispatcher {
                 + " ch=" + channel
                 + " instance=" + (instance != null ? instance.scriptId() : 0)
                 + " result=" + datumKey(result));
+    }
+
+    private void traceEventBrokerInvoke(String handlerName, int channel, Datum.ScriptInstance instance) {
+        if (!debugEnabled || !isInputTraceHandler(handlerName) || !isEventBrokerLike(instance)) {
+            return;
+        }
+        System.out.println("[EventBroker] invoke"
+                + " event=" + handlerName
+                + " ch=" + channel
+                + " instance=" + (instance != null ? instance.scriptId() : 0)
+                + eventBrokerTraceInfo(handlerName, instance));
+    }
+
+    private void traceEventBrokerResult(String handlerName, int channel,
+                                        Datum.ScriptInstance instance, Datum result) {
+        if (!debugEnabled || !isInputTraceHandler(handlerName) || !isEventBrokerLike(instance)) {
+            return;
+        }
+        System.out.println("[EventBroker] done"
+                + " event=" + handlerName
+                + " ch=" + channel
+                + " instance=" + (instance != null ? instance.scriptId() : 0)
+                + " result=" + datumKey(result)
+                + " stopped=" + vm.isEventStopped());
     }
 
     private boolean isInputTraceHandler(String handlerName) {

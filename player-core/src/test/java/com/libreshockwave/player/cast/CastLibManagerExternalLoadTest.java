@@ -1,10 +1,14 @@
 package com.libreshockwave.player.cast;
 
+import com.libreshockwave.DirectorFile;
 import com.libreshockwave.chunks.CastListChunk;
+import com.libreshockwave.format.ChunkType;
 import com.libreshockwave.vm.datum.Datum;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
+import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -12,6 +16,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CastLibManagerExternalLoadTest {
@@ -147,6 +152,29 @@ class CastLibManagerExternalLoadTest {
         authored.markFetching();
 
         assertEquals(List.of(2), manager.getHydratableExternalCastSlots(EXTERNAL_CAST_URL));
+    }
+
+    @Test
+    void setExternalCastDataCanCommitPreparsedDirectorFile() throws Exception {
+        CastLibManager manager = new CastLibManager(null, (castLibNumber, fileName) -> {});
+        CastLib authored = new CastLib(2, null, new CastListChunk.CastListEntry(
+                "External Widget",
+                EXTERNAL_CAST_URL,
+                2,
+                1,
+                1,
+                0,
+                0));
+        installCastLib(manager, authored);
+
+        byte[] downloadedBytes = new byte[]{1, 2, 3};
+        DirectorFile preparsed = newEmptyDirectorFile();
+
+        assertTrue(manager.setExternalCastData(2, downloadedBytes, preparsed));
+
+        assertTrue(authored.isLoaded());
+        assertSame(preparsed, authored.getSourceFile(),
+                "parallel cast parsing must only change the source used at the normal commit point");
     }
 
     @Test
@@ -429,5 +457,12 @@ class CastLibManagerExternalLoadTest {
         castLibsField.setAccessible(true);
         Map<Integer, CastLib> castLibs = (Map<Integer, CastLib>) castLibsField.get(manager);
         castLibs.put(castLib.getNumber(), castLib);
+    }
+
+    private static DirectorFile newEmptyDirectorFile() throws Exception {
+        Constructor<DirectorFile> ctor = DirectorFile.class.getDeclaredConstructor(
+                ByteOrder.class, boolean.class, int.class, ChunkType.class);
+        ctor.setAccessible(true);
+        return ctor.newInstance(ByteOrder.BIG_ENDIAN, false, 0, ChunkType.MV93);
     }
 }

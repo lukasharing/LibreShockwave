@@ -282,6 +282,55 @@ class CastMemberLifecycleTest {
         assertEquals("field", target.getProp("type").toKeyName());
     }
 
+    @Test
+    void updateMemberRetiresRuntimeMemberFromRegistryLookupsAndReusesSlot() throws Exception {
+        CastLibManager manager = new CastLibManager(null, null);
+        CastLib castLib = new CastLib(2, null, null);
+        installCastLib(manager, 2, castLib);
+
+        assertTrue(manager.getMemberByName(0, "window_part_buffer").isVoid());
+        Datum created = manager.createMember(2, "text");
+        assertInstanceOf(Datum.CastMemberRef.class, created);
+        Datum.CastMemberRef createdRef = (Datum.CastMemberRef) created;
+        assertTrue(manager.setMemberProp(2, createdRef.memberNum(), "name", Datum.of("window_part_buffer")));
+
+        Datum found = manager.getMemberByName(0, "window_part_buffer");
+        assertInstanceOf(Datum.CastMemberRef.class, found);
+        assertEquals(createdRef.memberNum(), ((Datum.CastMemberRef) found).memberNum());
+        assertTrue(manager.isRegistryVisibleMember(2, createdRef.memberNum()));
+
+        assertTrue(manager.updateMember(2, createdRef.memberNum()));
+
+        assertTrue(manager.getMemberByName(0, "window_part_buffer").isVoid());
+        assertFalse(manager.isRegistryVisibleMember(2, createdRef.memberNum()));
+
+        Datum reused = manager.createMember(2, "bitmap");
+        assertInstanceOf(Datum.CastMemberRef.class, reused);
+        assertEquals(createdRef.memberNum(), ((Datum.CastMemberRef) reused).memberNum());
+    }
+
+    @Test
+    void removeMemberRetiresRuntimeMemberFromRegistryLookupsAndReusesSlot() throws Exception {
+        CastLibManager manager = new CastLibManager(null, null);
+        CastLib castLib = new CastLib(2, null, null);
+        installCastLib(manager, 2, castLib);
+
+        Datum created = manager.createMember(2, "text");
+        assertInstanceOf(Datum.CastMemberRef.class, created);
+        Datum.CastMemberRef createdRef = (Datum.CastMemberRef) created;
+        assertTrue(manager.setMemberProp(2, createdRef.memberNum(), "name", Datum.of("temporary_writer")));
+        assertFalse(manager.getMemberByName(0, "temporary_writer").isVoid());
+
+        assertTrue(manager.removeMember(2, createdRef.memberNum()));
+
+        assertTrue(manager.getMemberByName(0, "temporary_writer").isVoid());
+        assertFalse(manager.isRegistryVisibleMember(2, createdRef.memberNum()));
+
+        Datum reused = manager.createMember(2, "bitmap");
+        assertInstanceOf(Datum.CastMemberRef.class, reused);
+        assertEquals(createdRef.memberNum(), ((Datum.CastMemberRef) reused).memberNum());
+    }
+
     private static CastMemberChunk createTextXtraChunk(int memberNum, String name) {
         byte[] textXtraSpecificData = new byte[]{0, 0, 0, 0, 't', 'e', 'x', 't'};
         return new CastMemberChunk(

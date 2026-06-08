@@ -29,70 +29,54 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ScriptInstanceMethodDispatcherTest {
 
     @Test
-    void numericCloseThreadDefersDuringActiveHandler() throws Exception {
-        LingoVM vm = new LingoVM(null);
-        pushActiveScope(vm);
-
-        assertTrue(ScriptInstanceMethodDispatcher.shouldDeferNumericCloseThread(
-                vm,
-                "closethread",
-                List.of(Datum.of(11))));
-        assertTrue(ScriptInstanceMethodDispatcher.shouldDeferNumericCloseThread(
-                vm,
-                "closethread",
-                List.of(Datum.of(11.5))));
-    }
-
-    @Test
-    void symbolicCloseThreadDoesNotDeferDuringActiveHandler() throws Exception {
-        LingoVM vm = new LingoVM(null);
-        pushActiveScope(vm);
-
-        assertFalse(ScriptInstanceMethodDispatcher.shouldDeferNumericCloseThread(
-                vm,
-                "closethread",
-                List.of(Datum.symbol("catalogue"))));
-    }
-
-    @Test
-    void numericCloseThreadDoesNotDeferWhileFlushingDeferredTasks() throws Exception {
-        LingoVM vm = new LingoVM(null);
-        pushActiveScope(vm);
-        setBooleanField(vm, "flushingDeferredTasks", true);
-
-        assertFalse(ScriptInstanceMethodDispatcher.shouldDeferNumericCloseThread(
-                vm,
-                "closethread",
-                List.of(Datum.of(11))));
-    }
-
-    @Test
-    void numericCloseThreadDoesNotDeferOutsideActiveHandler() {
-        LingoVM vm = new LingoVM(null);
-
-        assertFalse(ScriptInstanceMethodDispatcher.shouldDeferNumericCloseThread(
-                vm,
-                "closethread",
-                List.of(Datum.of(11))));
-    }
-
-    @Test
-    void numericCloseThreadDispatchQueuesTickBoundaryTask() throws Exception {
+    void numericCloseThreadDispatchesAuthoredHandlerDuringActiveHandler() throws Exception {
         LingoVM vm = new LingoVM(null);
         pushActiveScope(vm);
         setCurrentVm(vm);
 
+        ScriptChunk.Handler handler = createTestHandler();
+        ScriptChunk script = createTestScript(handler);
+        ExecutionContext ctx = new ExecutionContext(
+                new Scope(script, handler, List.of(), Datum.VOID),
+                handler.instructions().getFirst(),
+                new BuiltinRegistry(),
+                null,
+                (ignoredScript, ignoredHandler, args, receiver) -> Datum.of("script:closethread"),
+                ignoredName -> null,
+                new ExecutionContext.GlobalAccessor() {
+                    @Override
+                    public Datum getGlobal(String name) {
+                        return Datum.VOID;
+                    }
+
+                    @Override
+                    public void setGlobal(String name, Datum value) {}
+                },
+                (name, args) -> Datum.VOID,
+                ignored -> {},
+                () -> "");
+
+        CastLibProvider.setProvider(new NoOpCastLibProvider() {
+            @Override
+            public HandlerLocation findHandlerInScript(int scriptId, String handlerName) {
+                if (scriptId == 77 && "closethread".equalsIgnoreCase(handlerName)) {
+                    return new HandlerLocation(1, script, handler, null);
+                }
+                return null;
+            }
+        });
         try {
             Datum result = ScriptInstanceMethodDispatcher.dispatch(
-                    null,
+                    ctx,
                     new Datum.ScriptInstance(77, new LinkedHashMap<>()),
                     "closeThread",
                     List.of(Datum.of(11)));
 
-            assertTrue(result.isTruthy());
+            assertEquals("script:closethread", result.toStr());
             assertEquals(0, getDequeSize(vm, "deferredScriptInstanceCalls"));
-            assertEquals(1, getDequeSize(vm, "deferredTasks"));
+            assertEquals(0, getDequeSize(vm, "deferredTasks"));
         } finally {
+            CastLibProvider.clearProvider();
             clearCurrentVm();
         }
     }
@@ -439,12 +423,6 @@ class ScriptInstanceMethodDispatcherTest {
         Field field = LingoVM.class.getDeclaredField(fieldName);
         field.setAccessible(true);
         return ((Deque<Object>) field.get(vm)).size();
-    }
-
-    private static void setBooleanField(LingoVM vm, String fieldName, boolean value) throws Exception {
-        Field field = LingoVM.class.getDeclaredField(fieldName);
-        field.setAccessible(true);
-        field.setBoolean(vm, value);
     }
 
     @SuppressWarnings("unchecked")

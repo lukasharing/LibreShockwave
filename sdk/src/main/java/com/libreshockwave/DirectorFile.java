@@ -737,6 +737,33 @@ public class DirectorFile {
     }
 
     /**
+     * Return every loaded Lnam name for the same numeric selector.
+     *
+     * Protected movies and external casts can carry multiple Lnam chunks. The
+     * active script context should normally identify the right one, but Xtra
+     * OBJ_CALL dispatch can still recover from a mismatched table by comparing
+     * all names for the same selector against the Xtra's published msgTable.
+     */
+    public List<String> getScriptNameCandidates(int nameId) {
+        LinkedHashSet<String> candidates = new LinkedHashSet<>();
+        addScriptNameCandidate(candidates, scriptNames, nameId);
+        for (ScriptNamesChunk names : scriptNamesById.values()) {
+            addScriptNameCandidate(candidates, names, nameId);
+        }
+        return new ArrayList<>(candidates);
+    }
+
+    private static void addScriptNameCandidate(Set<String> candidates, ScriptNamesChunk names, int nameId) {
+        if (names == null || nameId < 0 || nameId >= names.names().size()) {
+            return;
+        }
+        String name = names.getName(nameId);
+        if (name != null && !name.isEmpty() && !name.startsWith("<unknown:")) {
+            candidates.add(name);
+        }
+    }
+
+    /**
      * Get the correct ScriptNamesChunk (Lnam) for a given ScriptChunk.
      * Each Lctx has its own lnamSectionId; this finds which Lctx owns the script
      * and returns the associated Lnam. Falls back to the default/global Lnam.

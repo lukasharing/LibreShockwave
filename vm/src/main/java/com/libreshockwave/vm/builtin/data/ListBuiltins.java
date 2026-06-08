@@ -123,7 +123,8 @@ public final class ListBuiltins {
         }
 
         if (container instanceof Datum.PropList pl) {
-            return pl.getAtOrDefault(keyOrIndex, Datum.VOID);
+            return pl.getAtOrDefault(keyOrIndex, Datum.VOID,
+                    vm != null && vm.isPropListSetAtByKeyCompatibilityEnabled());
         }
 
         if (container instanceof Datum.CastLibMemberAccessor accessor) {
@@ -186,6 +187,10 @@ public final class ListBuiltins {
                 int index = keyOrIndex.toInt() - 1;
                 if (index >= 0 && index < pl.size()) {
                     pl.setValue(index, value);
+                    return Datum.VOID;
+                }
+                if (vm.isPropListSetAtByKeyCompatibilityEnabled()) {
+                    pl.put(keyOrIndex, value);
                     return Datum.VOID;
                 }
                 throw new LingoException("setAt index out of range: " + keyOrIndex.toInt());

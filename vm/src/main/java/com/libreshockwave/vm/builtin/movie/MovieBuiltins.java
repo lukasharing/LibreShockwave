@@ -22,6 +22,7 @@ public final class MovieBuiltins {
         builtins.put("commanddown", property("commandDown"));
         builtins.put("controldown", property("controlDown"));
         builtins.put("doubleclick", MovieBuiltins::doubleClick);
+        builtins.put("frame", property("frame"));
         builtins.put("key", property("key"));
         builtins.put("keycode", property("keyCode"));
         builtins.put("keypressed", property("keyPressed"));

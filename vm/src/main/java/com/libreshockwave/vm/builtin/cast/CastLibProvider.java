@@ -272,6 +272,24 @@ public interface CastLibProvider {
     }
 
     /**
+     * Director's updateMember refreshes an authored/linked member and releases
+     * runtime-created scratch members. Providers should treat file-backed members
+     * as a successful no-op unless they can reload them from their backing store.
+     */
+    default boolean updateMember(int castLibNumber, int memberNumber) {
+        return false;
+    }
+
+    /**
+     * Director's removeMember removes a runtime-created cast slot from the
+     * active movie state. Implementations may treat authored file-backed
+     * members as a successful no-op when the backing Director file is immutable.
+     */
+    default boolean removeMember(int castLibNumber, int memberNumber) {
+        return updateMember(castLibNumber, memberNumber);
+    }
+
+    /**
      * Get the declared property names for a script member.
      * Used to pre-initialize script instance properties to VOID.
      * @param castLib The cast library number

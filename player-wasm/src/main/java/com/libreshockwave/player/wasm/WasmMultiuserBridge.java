@@ -26,6 +26,7 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
     static final int REQ_DISCONNECT = 2;
 
     static class PendingRequest {
+        final long requestId;
         final int type;
         final int instanceId;
         String host;
@@ -34,13 +35,15 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
         String subject;
         String content;
 
-        PendingRequest(int type, int instanceId) {
+        PendingRequest(long requestId, int type, int instanceId) {
+            this.requestId = requestId;
             this.type = type;
             this.instanceId = instanceId;
         }
     }
 
     private final List<PendingRequest> pendingRequests = new ArrayList<>();
+    private final List<PendingRequest> drainingRequests = new ArrayList<>();
     private final Map<Integer, Boolean> connectedMap = new HashMap<>();
     private final Map<Integer, List<NetMessage>> messageQueues = new HashMap<>();
     // Keep terminal network conditions behind application data already visible
@@ -50,6 +53,7 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
     private final Set<Integer> terminalInstances = new HashSet<>();
     private final Set<Integer> terminalDeferredForHandler = new HashSet<>();
     private final Map<Integer, MultiuserTransportState> transports = new HashMap<>();
+    private long nextRequestId = 1;
 
     // --- MultiuserNetBridge implementation ---
 
@@ -62,6 +66,7 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
     public void requestConnect(int instanceId, String host, int port, int modeFlag) {
         debug("request connect instance=" + instanceId + " host=" + host + " port=" + port
                 + " mode=" + modeFlag + (modeFlag != 0 ? " content-only" : " smus"));
+        removePendingRequestsForInstance(instanceId);
         closingInstances.remove(instanceId);
         terminalInstances.remove(instanceId);
         terminalMessages.remove(instanceId);
@@ -69,7 +74,7 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
         connectedMap.remove(instanceId);
         messageQueues.remove(instanceId);
         transports.put(instanceId, new MultiuserTransportState(modeFlag));
-        PendingRequest req = new PendingRequest(REQ_CONNECT, instanceId);
+        PendingRequest req = new PendingRequest(nextRequestId++, REQ_CONNECT, instanceId);
         req.host = host;
         req.port = port;
         pendingRequests.add(req);
@@ -88,10 +93,11 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
                 transports.computeIfAbsent(instanceId, ignored -> new MultiuserTransportState(0));
         boolean contentOnly = transport.willSendContentOnly(senderID, subject);
         String encoded = transport.encodeOutgoing(senderID, subject, content);
-        debug("request send instance=" + instanceId + " sender=" + senderID
+        long requestId = nextRequestId++;
+        debug("request send id=" + requestId + " instance=" + instanceId + " sender=" + senderID
                 + " subject=" + subject + " contentOnly=" + contentOnly
-                + " bytes=" + contentString.length() + " content=" + preview(contentString));
-        PendingRequest req = new PendingRequest(REQ_SEND, instanceId);
+                + " bytes=" + contentString.length());
+        PendingRequest req = new PendingRequest(requestId, REQ_SEND, instanceId);
         req.senderID = senderID;
         req.subject = subject;
         req.content = encoded;
@@ -106,7 +112,7 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
         terminalMessages.remove(instanceId);
         terminalDeferredForHandler.remove(instanceId);
         messageQueues.remove(instanceId);
-        PendingRequest req = new PendingRequest(REQ_DISCONNECT, instanceId);
+        PendingRequest req = new PendingRequest(nextRequestId++, REQ_DISCONNECT, instanceId);
         pendingRequests.add(req);
         connectedMap.remove(instanceId);
         transports.remove(instanceId);
@@ -163,11 +169,32 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
     }
 
     PendingRequest getRequest(int index) {
-        return index >= 0 && index < pendingRequests.size() ? pendingRequests.get(index) : null;
+        List<PendingRequest> source = !drainingRequests.isEmpty() ? drainingRequests : pendingRequests;
+        return index >= 0 && index < source.size() ? source.get(index) : null;
     }
 
     void drainPendingRequests() {
         pendingRequests.clear();
+        drainingRequests.clear();
+    }
+
+    int beginPendingRequestDrain() {
+        drainingRequests.clear();
+        if (pendingRequests.isEmpty()) {
+            return 0;
+        }
+        drainingRequests.addAll(pendingRequests);
+        pendingRequests.clear();
+        return drainingRequests.size();
+    }
+
+    void finishPendingRequestDrain() {
+        drainingRequests.clear();
+    }
+
+    private void removePendingRequestsForInstance(int instanceId) {
+        pendingRequests.removeIf(req -> req.instanceId == instanceId);
+        drainingRequests.removeIf(req -> req.instanceId == instanceId);
     }
 
     // --- JS delivery API ---
@@ -181,7 +208,7 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
         debug("connected instance=" + instanceId);
         // Director's Multiuser Xtra reports a successful connection with this
         // system message before authored scripts begin application traffic.
-        queueMessage(instanceId, new NetMessage(0, "System", "ConnectToNetServer", new Datum.Str("")));
+        queueMessage(instanceId, new NetMessage(0, "System", "ConnectToNetServer", Datum.VOID));
     }
 
     void notifyDisconnected(int instanceId) {
@@ -196,15 +223,6 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
             terminalDeferredForHandler.remove(instanceId);
             transports.remove(instanceId);
             debug("disconnected ignored for closing instance=" + instanceId
-                    + formatCloseDetail(closeCode, wasClean, detail));
-            return;
-        }
-        if (closeCode == 1000 && wasClean) {
-            terminalInstances.add(instanceId);
-            terminalMessages.remove(instanceId);
-            terminalDeferredForHandler.remove(instanceId);
-            transports.remove(instanceId);
-            debug("clean disconnected ignored instance=" + instanceId
                     + formatCloseDetail(closeCode, wasClean, detail));
             return;
         }
@@ -249,11 +267,14 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
         MultiuserTransportState transport = transports.get(instanceId);
         if (transport == null) {
             debug("message instance=" + instanceId + " bytes=" + (content != null ? content.length() : 0)
-                    + " content=" + preview(content));
+                    + " content=" + contentSummary(content));
             queueMessage(instanceId, new NetMessage(errorCode, senderID, subject, new Datum.Str(content)));
             return;
         }
         boolean wasContentOnly = transport.isContentOnly();
+        debug("message incoming instance=" + instanceId
+                + " mode=" + (wasContentOnly ? "content-only" : "smus")
+                + " bytes=" + (content != null ? content.length() : 0));
         List<NetMessage> decoded = transport.decodeIncoming(errorCode, senderID, subject, content);
         if (decoded.isEmpty()) {
             debug("message instance=" + instanceId + " buffered=" + (content != null ? content.length() : 0));
@@ -264,21 +285,22 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
         }
         for (NetMessage msg : decoded) {
             debug("message instance=" + instanceId + " subject=" + msg.subject()
-                    + " content=" + preview(msg.content() != null ? msg.content().toStr() : null));
+                    + " content=" + contentSummary(msg.content() != null ? msg.content().toStr() : null));
             queueMessage(instanceId, msg);
         }
     }
 
     private void queueMessage(int instanceId, NetMessage msg) {
         debug("queue instance=" + instanceId + " error=" + msg.errorCode()
-                + " subject=" + msg.subject() + " content=" + preview(msg.content() != null ? msg.content().toStr() : null));
+                + " subject=" + msg.subject() + " content="
+                + contentSummary(msg.content() != null ? msg.content().toStr() : null));
         messageQueues.computeIfAbsent(instanceId, k -> new ArrayList<>()).add(msg);
     }
 
     private void queueTerminalMessage(int instanceId, NetMessage msg) {
         debug("queue terminal instance=" + instanceId + " error=" + msg.errorCode()
                 + " subject=" + msg.subject() + " content="
-                + preview(msg.content() != null ? msg.content().toStr() : null));
+                + contentSummary(msg.content() != null ? msg.content().toStr() : null));
         terminalMessages.put(instanceId, msg);
     }
 
@@ -292,7 +314,7 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
     }
 
     private static void debug(String message) {
-        if (DebugConfig.isDebugPlaybackEnabled()) {
+        if (DebugConfig.isDebugPlaybackEnabled() || DebugConfig.isMusTraceEnabled()) {
             System.out.println("[MUSBridge] " + message);
         }
     }
@@ -339,5 +361,9 @@ public class WasmMultiuserBridge implements MultiuserNetBridge {
         if (content.length() > limit) sb.append("...");
         sb.append('"');
         return sb.toString();
+    }
+
+    private static String contentSummary(String content) {
+        return content == null ? "<null>" : "len=" + content.length();
     }
 }

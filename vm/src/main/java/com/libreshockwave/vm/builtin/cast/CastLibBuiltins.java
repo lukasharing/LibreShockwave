@@ -27,6 +27,8 @@ public final class CastLibBuiltins {
         builtins.put("field", CastLibBuiltins::field);
         builtins.put("getmemnum", CastLibBuiltins::getMemNum);
         builtins.put("memberexists", CastLibBuiltins::memberExistsBuiltin);
+        builtins.put("updatemember", CastLibBuiltins::updateMember);
+        builtins.put("removemember", CastLibBuiltins::removeMember);
     }
 
     /**
@@ -209,6 +211,40 @@ public final class CastLibBuiltins {
         return Datum.of(0);
     }
 
+    private static Datum updateMember(LingoVM vm, List<Datum> args) {
+        if (args.isEmpty()) {
+            return Datum.ZERO;
+        }
+
+        CastLibProvider provider = CastLibProvider.getProvider();
+        if (provider == null) {
+            return Datum.ZERO;
+        }
+
+        MemberSlot slot = resolveMemberSlot(provider, args.get(0), args.size() > 1 ? args.get(1) : Datum.VOID);
+        if (slot == null) {
+            return Datum.ZERO;
+        }
+        return provider.updateMember(slot.castLibNumber(), slot.memberNumber()) ? Datum.TRUE : Datum.ZERO;
+    }
+
+    private static Datum removeMember(LingoVM vm, List<Datum> args) {
+        if (args.isEmpty()) {
+            return Datum.ZERO;
+        }
+
+        CastLibProvider provider = CastLibProvider.getProvider();
+        if (provider == null) {
+            return Datum.ZERO;
+        }
+
+        MemberSlot slot = resolveMemberSlot(provider, args.get(0), args.size() > 1 ? args.get(1) : Datum.VOID);
+        if (slot == null) {
+            return Datum.ZERO;
+        }
+        return provider.removeMember(slot.castLibNumber(), slot.memberNumber()) ? Datum.TRUE : Datum.ZERO;
+    }
+
     private static int resolveGlobalMemberSlot(CastLibProvider provider, String memberName) {
         if (provider == null || memberName == null || memberName.isEmpty()) {
             return 0;
@@ -234,6 +270,46 @@ public final class CastLibBuiltins {
         return 0;
     }
 
+    private static MemberSlot resolveMemberSlot(CastLibProvider provider, Datum memberArg, Datum castArg) {
+        if (provider == null || memberArg == null || memberArg.isVoid()) {
+            return null;
+        }
+        int castLibNumber = resolveCastLibArg(provider, castArg);
+        if (memberArg instanceof Datum.CastMemberRef cmr && cmr.castLibNum() >= 1 && cmr.memberNum() >= 1) {
+            return new MemberSlot(cmr.castLibNum(), cmr.memberNum());
+        }
+        if (memberArg.isString() || memberArg.isSymbol()) {
+            Datum found = provider.getMemberByName(castLibNumber, memberArg.toStr());
+            return found instanceof Datum.CastMemberRef cmr && cmr.castLibNum() >= 1 && cmr.memberNum() >= 1
+                    ? new MemberSlot(cmr.castLibNum(), cmr.memberNum())
+                    : null;
+        }
+        if (!memberArg.isInt() && !memberArg.isFloat()) {
+            return null;
+        }
+
+        int rawMemberNumber = Math.abs(memberArg.toInt());
+        if (rawMemberNumber == 0) {
+            return null;
+        }
+        if (castLibNumber > 0) {
+            return new MemberSlot(castLibNumber, rawMemberNumber);
+        }
+
+        SlotId encoded = new SlotId(rawMemberNumber);
+        if (encoded.castLib() >= 1 && encoded.member() >= 1) {
+            return new MemberSlot(encoded.castLib(), encoded.member());
+        }
+
+        int totalCasts = provider.getCastLibCount();
+        for (int i = 1; i <= totalCasts; i++) {
+            if (provider.memberExists(i, rawMemberNumber)) {
+                return new MemberSlot(i, rawMemberNumber);
+            }
+        }
+        return null;
+    }
+
     private static int resolveCastLibArg(CastLibProvider provider, Datum castArg) {
         if (provider == null || castArg == null || castArg.isVoid()) {
             return 0;
@@ -251,5 +327,7 @@ public final class CastLibBuiltins {
         }
         return 0;
     }
+
+    private record MemberSlot(int castLibNumber, int memberNumber) {}
 
 }

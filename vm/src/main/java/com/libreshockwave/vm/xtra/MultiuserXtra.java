@@ -24,6 +24,8 @@ import java.util.Map;
  */
 public class MultiuserXtra implements Xtra {
 
+    private static final int TICK_CALLBACK_BURST_LIMIT = 32;
+
     private final MultiuserNetBridge netBridge;
     private final ScriptCallback scriptCallback;
     private final Map<Integer, InstanceState> instances = new HashMap<>();
@@ -63,19 +65,21 @@ public class MultiuserXtra implements Xtra {
             return Datum.VOID;
         }
 
-        return switch (handlerName.toLowerCase()) {
+        return switch (normalizeHandlerName(handlerName)) {
             case "setnetbufferlimits" -> setNetBufferLimits(state, args);
-            case "setnetmessagehandler" -> setNetMessageHandler(state, args);
-            case "connecttonetserver" -> connectToNetServer(instanceId, state, args);
-            case "sendnetmessage" -> sendNetMessage(instanceId, state, args);
+            case "setnetmessagehandler" -> setNetMessageHandlerOrBufferLimits(state, args);
+            case "connecttonetserver" -> connectOrSetMessageHandler(instanceId, state, args);
+            case "sendnetmessage" -> sendNetMessageOrBufferLimits(instanceId, state, args);
             case "getnetmessage" -> getNetMessage(state);
             case "checknetmessages" -> checkNetMessages(instanceId, state, args);
+            case "breakconnection" -> breakConnection(instanceId, state);
+            case "getpeerconnectionlist" -> Datum.list();
+            case "getnetaddresscookie" -> Datum.EMPTY_STRING;
+            case "getnetoutgoingbytes" -> Datum.ZERO;
             case "getnumberwaitingnetmessages" -> getNumberWaitingNetMessages(instanceId, state);
+            case "waitfornetconnection" -> Datum.of(-1);
             case "getneterrorstring" -> getNetErrorString(args);
-            default -> {
-                System.err.println("[MultiuserXtra] Unknown handler: " + handlerName);
-                yield Datum.VOID;
-            }
+            default -> resolveProtectedSelectorBySignature(instanceId, state, handlerName, args);
         };
     }
 
@@ -89,13 +93,11 @@ public class MultiuserXtra implements Xtra {
     }
 
     /**
-     * Run Multiuser callbacks during the normal Director tick.
+     * Stage Multiuser socket messages during the normal Director tick.
      *
-     * Some movies poll explicitly with getNumberWaitingNetMessages() and
-     * checkNetMessages(), while others rely on the registered net message
-     * handler being called automatically. Host transports stage data into the
-     * bridge first; Player may then call this from a score tick or an explicit
-     * callback pump that does not advance the score.
+     * Movies that only install a net message handler receive callbacks from the
+     * tick pump. Once a movie starts using the explicit waiting/check API on an
+     * instance, callback delivery is driven by authored checkNetMessages calls.
      */
     @Override
     public void tick() {
@@ -107,17 +109,16 @@ public class MultiuserXtra implements Xtra {
                 continue;
             }
 
-            // Poll new messages from the bridge
-            List<MultiuserNetBridge.NetMessage> messages = netBridge.pollMessages(instanceId);
-            state.messageQueue.addAll(messages);
-            if (!messages.isEmpty()) {
-                debug("poll instance=" + instanceId
-                        + " received=" + messages.size()
-                        + " queued=" + state.messageQueue.size()
-                        + " handler=" + state.callbackHandler);
+            int received = pollBridgeMessages(instanceId, state, "tick");
+            if (received > 0 || !state.messageQueue.isEmpty()) {
+                debug("tick staged instance=" + instanceId
+                        + " received=" + received
+                        + " queued=" + state.messageQueue.size());
             }
-
-            drainCallbacks(instanceId, state, state.messageQueue.size(), "tick");
+            if (!state.explicitPolling) {
+                int callbackBudget = Math.min(state.messageQueue.size(), TICK_CALLBACK_BURST_LIMIT);
+                drainCallbacks(instanceId, state, callbackBudget, "tick");
+            }
         }
     }
 
@@ -130,6 +131,13 @@ public class MultiuserXtra implements Xtra {
             state.bufferUrgency = args.get(2).toInt();
         }
         return Datum.ZERO;
+    }
+
+    private Datum setNetMessageHandlerOrBufferLimits(InstanceState state, List<Datum> args) {
+        if (looksLikeBufferLimits(args)) {
+            return setNetBufferLimits(state, args);
+        }
+        return setNetMessageHandler(state, args);
     }
 
     private Datum setNetMessageHandler(InstanceState state, List<Datum> args) {
@@ -155,6 +163,13 @@ public class MultiuserXtra implements Xtra {
         return Datum.ZERO; // 0 = success
     }
 
+    private Datum connectOrSetMessageHandler(int instanceId, InstanceState state, List<Datum> args) {
+        if (args.size() == 2) {
+            return setNetMessageHandler(state, args);
+        }
+        return connectToNetServer(instanceId, state, args);
+    }
+
     private Datum connectToNetServer(int instanceId, InstanceState state, List<Datum> args) {
         // connectToNetServer(senderID, user, host, port, appID, encryptFlag)
         if (args.size() >= 4) {
@@ -165,6 +180,7 @@ public class MultiuserXtra implements Xtra {
             state.port = port;
             state.currentMessage = null;
             state.messageQueue.clear();
+            state.explicitPolling = false;
             debug("connect instance=" + instanceId
                     + " host=" + host
                     + " port=" + port
@@ -172,6 +188,13 @@ public class MultiuserXtra implements Xtra {
             netBridge.requestConnect(instanceId, host, port, modeFlag);
         }
         return Datum.ZERO;
+    }
+
+    private Datum sendNetMessageOrBufferLimits(int instanceId, InstanceState state, List<Datum> args) {
+        if (looksLikeBufferLimits(args)) {
+            return setNetBufferLimits(state, args);
+        }
+        return sendNetMessage(instanceId, state, args);
     }
 
     private Datum sendNetMessage(int instanceId, InstanceState state, List<Datum> args) {
@@ -183,7 +206,7 @@ public class MultiuserXtra implements Xtra {
             debug("send instance=" + instanceId
                     + " sender=" + senderID
                     + " subject=" + subject
-                    + " content=" + preview(content));
+                    + " content=" + contentSummary(content));
             netBridge.requestSend(instanceId, senderID, subject, content);
         }
         return Datum.ZERO;
@@ -200,24 +223,39 @@ public class MultiuserXtra implements Xtra {
         pl.add("senderID", Datum.of(msg.senderID()), true);
         pl.add("subject", Datum.of(msg.subject()), true);
         pl.add("content", msg.content() != null ? msg.content() : Datum.VOID, true);
+        pl.add("recipients", toDatumList(msg.recipients()), true);
+        pl.add("timeStamp", Datum.of(msg.timeStamp()), true);
+        // Protected casts can call the same native Xtra entrypoints through
+        // renamed selectors/properties. Keep the public Director keys and
+        // expose the selector-local aliases against the same message.
+        pl.add("Crypto_DecryptHeader", Datum.of(msg.errorCode()), true);
+        pl.add("txtColor", Datum.of(msg.errorCode()), true);
+        pl.add("tSubject", Datum.of(msg.subject()), true);
+        pl.add("strechV", Datum.of(msg.subject()), true);
+        pl.add("systemMac", msg.content() != null ? msg.content() : Datum.VOID, true);
         return pl;
     }
 
     private Datum checkNetMessages(int instanceId, InstanceState state, List<Datum> args) {
         int count = args.isEmpty() ? 1 : args.get(0).toInt();
-
-        // Poll messages from the bridge
-        List<MultiuserNetBridge.NetMessage> messages = netBridge.pollMessages(instanceId);
-        state.messageQueue.addAll(messages);
-        if (!messages.isEmpty() || !state.messageQueue.isEmpty()) {
+        state.explicitPolling = true;
+        int received = pollBridgeMessages(instanceId, state, "check");
+        if (received > 0 || !state.messageQueue.isEmpty()) {
             debug("check instance=" + instanceId
                     + " requested=" + count
-                    + " received=" + messages.size()
+                    + " received=" + received
                     + " queued=" + state.messageQueue.size()
                     + " handler=" + state.callbackHandler);
         }
 
         return Datum.of(drainCallbacks(instanceId, state, count, "check"));
+    }
+
+    private Datum breakConnection(int instanceId, InstanceState state) {
+        state.currentMessage = null;
+        state.messageQueue.clear();
+        netBridge.requestDisconnect(instanceId);
+        return Datum.ZERO;
     }
 
     private int drainCallbacks(int instanceId, InstanceState state, int count, String mode) {
@@ -232,7 +270,15 @@ public class MultiuserXtra implements Xtra {
                     traceCallback(instanceId, state, mode);
                     scriptCallback.invoke(state.callbackTarget, state.callbackHandler, List.of());
                 } catch (Exception e) {
-                    System.err.println("[MultiuserXtra] Callback error: " + e.getMessage());
+                    System.err.println("[MultiuserXtra] Callback error"
+                            + " instance=" + instanceId
+                            + " handler=" + state.callbackHandler
+                            + " message=" + contentSummary(state.currentMessage != null
+                                    ? state.currentMessage.content() : Datum.VOID)
+                            + ": " + e.getMessage());
+                    if (DebugConfig.isMusTraceEnabled() || DebugConfig.isDebugPlaybackEnabled()) {
+                        e.printStackTrace(System.err);
+                    }
                 }
             }
         }
@@ -242,15 +288,69 @@ public class MultiuserXtra implements Xtra {
     }
 
     private Datum getNumberWaitingNetMessages(int instanceId, InstanceState state) {
-        // Include any not-yet-polled messages from the bridge
-        List<MultiuserNetBridge.NetMessage> messages = netBridge.pollMessages(instanceId);
-        state.messageQueue.addAll(messages);
-        if (!messages.isEmpty()) {
+        state.explicitPolling = true;
+        int received = pollBridgeMessages(instanceId, state, "waiting");
+        if (received > 0) {
             debug("waiting instance=" + instanceId
-                    + " received=" + messages.size()
+                    + " received=" + received
                     + " queued=" + state.messageQueue.size());
         }
         return Datum.of(state.messageQueue.size());
+    }
+
+    private int pollBridgeMessages(int instanceId, InstanceState state, String mode) {
+        List<MultiuserNetBridge.NetMessage> messages = netBridge.pollMessages(instanceId);
+        state.messageQueue.addAll(messages);
+        if (!messages.isEmpty()) {
+            debug("poll mode=" + mode
+                    + " instance=" + instanceId
+                    + " received=" + messages.size()
+                    + " queued=" + state.messageQueue.size()
+                    + " handler=" + state.callbackHandler);
+        }
+        return messages.size();
+    }
+
+    private Datum resolveProtectedSelectorBySignature(
+            int instanceId, InstanceState state, String handlerName, List<Datum> args) {
+        // Some protected Director casts call native Xtra methods through symbol
+        // names that are not the public handler names. The native projector
+        // still resolves those calls through the Xtra method table. Until the
+        // VM preserves that selector identity, keep this resolution strictly
+        // signature-based and local to the Multiuser API.
+        if (looksLikeBufferLimits(args)) {
+            return setNetBufferLimits(state, args);
+        }
+        if (looksLikeMessageHandler(args)) {
+            return setNetMessageHandler(state, args);
+        }
+        if (looksLikeConnect(args)) {
+            return connectToNetServer(instanceId, state, args);
+        }
+        if (looksLikeSend(args)) {
+            return sendNetMessage(instanceId, state, args);
+        }
+        if (args.size() == 1 && args.get(0).isNumber()) {
+            return checkNetMessages(instanceId, state, args);
+        }
+        if (args.isEmpty()) {
+            return state.currentMessage != null
+                    ? getNetMessage(state)
+                    : getNumberWaitingNetMessages(instanceId, state);
+        }
+
+        System.err.println("[MultiuserXtra] Unknown handler: " + handlerName);
+        return Datum.VOID;
+    }
+
+    private static Datum toDatumList(List<String> values) {
+        List<Datum> items = new ArrayList<>();
+        if (values != null) {
+            for (String value : values) {
+                items.add(Datum.of(value != null ? value : ""));
+            }
+        }
+        return Datum.list(items);
     }
 
     private Datum getNetErrorString(List<Datum> args) {
@@ -279,13 +379,51 @@ public class MultiuserXtra implements Xtra {
                 + " error=" + message.errorCode()
                 + " sender=" + message.senderID()
                 + " subject=" + message.subject()
-                + " content=" + preview(message.content()));
+                + " content=" + contentSummary(message.content()));
     }
 
     private static void debug(String message) {
-        if (DebugConfig.isDebugPlaybackEnabled()) {
+        if (DebugConfig.isDebugPlaybackEnabled() || DebugConfig.isMusTraceEnabled()) {
             System.out.println("[MultiuserXtra] " + message);
         }
+    }
+
+    private static String normalizeHandlerName(String handlerName) {
+        if (handlerName == null) {
+            return "";
+        }
+        String normalized = handlerName.toLowerCase();
+        return normalized.startsWith("#") ? normalized.substring(1) : normalized;
+    }
+
+    private static boolean looksLikeBufferLimits(List<Datum> args) {
+        return args.size() >= 3
+                && args.get(0).isNumber()
+                && args.get(1).isNumber()
+                && args.get(2).isNumber()
+                && args.get(0).toInt() > 0
+                && args.get(1).toInt() > 0;
+    }
+
+    private static boolean looksLikeMessageHandler(List<Datum> args) {
+        if (args.size() != 2) {
+            return false;
+        }
+        Datum handler = args.get(0);
+        return handler.isVoid()
+                || handler instanceof Datum.Symbol
+                || handler instanceof Datum.Str;
+    }
+
+    private static boolean looksLikeConnect(List<Datum> args) {
+        return args.size() >= 4
+                && !args.get(2).isVoid()
+                && !args.get(2).isNumber()
+                && args.get(3).isNumber();
+    }
+
+    private static boolean looksLikeSend(List<Datum> args) {
+        return args.size() >= 3;
     }
 
     private static String preview(Datum datum) {
@@ -314,6 +452,13 @@ public class MultiuserXtra implements Xtra {
         return '"' + out.toString() + '"';
     }
 
+    private static String contentSummary(Datum datum) {
+        if (datum == null || datum.isVoid()) {
+            return "VOID";
+        }
+        return "len=" + datum.toStr().length();
+    }
+
     // --- Instance state ---
 
     private static class InstanceState {
@@ -324,6 +469,7 @@ public class MultiuserXtra implements Xtra {
         int bufferUrgency;
         String callbackHandler;
         Datum callbackTarget;
+        boolean explicitPolling;
         MultiuserNetBridge.NetMessage currentMessage;
         final List<MultiuserNetBridge.NetMessage> messageQueue = new ArrayList<>();
     }

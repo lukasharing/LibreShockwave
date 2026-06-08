@@ -11,41 +11,37 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class ImageMethodDispatcherTextRerenderTest {
 
     @Test
-    void backgroundTransparentTextRerenderClearsMatchingFullDestination() {
+    void backgroundTransparentCopyPixelsDoesNotClearPreviousDestinationPixels() {
         Bitmap oldText = transparentTextImage(8, 4, 1, 1);
         Bitmap newText = transparentTextImage(8, 4, 6, 2);
         Datum.PropList backgroundTransparent = new Datum.PropList();
         backgroundTransparent.add("ink", Datum.of(36), true);
 
         Bitmap reused = new Bitmap(8, 4, 32);
-        reused.fill(0xFFFFFFFF);
-        copyFull(reused, oldText, backgroundTransparent);
-        copyFull(reused, newText, backgroundTransparent);
-
-        Bitmap fresh = new Bitmap(8, 4, 32);
-        fresh.fill(0xFFFFFFFF);
-        copyFull(fresh, newText, backgroundTransparent);
-
-        assertEquals(fresh.getPixel(1, 1), reused.getPixel(1, 1),
-                "a full text rerender must clear stale glyph pixels from the prior text image");
-        assertEquals(0xFFFFFFFF, reused.getPixel(1, 1));
-        assertEquals(0xFF000000, reused.getPixel(6, 2));
-    }
-
-    @Test
-    void backgroundTransparentTextRerenderDoesNotClearMismatchedDestination() {
-        Bitmap oldText = transparentTextImage(8, 4, 1, 1);
-        Bitmap newText = transparentTextImage(8, 4, 6, 2);
-        Datum.PropList backgroundTransparent = new Datum.PropList();
-        backgroundTransparent.add("ink", Datum.of(36), true);
-
-        Bitmap reused = new Bitmap(8, 4, 32);
-        reused.fill(0xFFCCCCCC);
+        reused.fill(0x00FFFFFF);
         copyFull(reused, oldText, backgroundTransparent);
         copyFull(reused, newText, backgroundTransparent);
 
         assertEquals(0xFF000000, reused.getPixel(1, 1),
-                "the text pre-clear is limited to destinations already matching the render background");
+                "copyPixels must not infer text lifecycle and erase prior destination pixels");
+        assertEquals(0xFF000000, reused.getPixel(6, 2));
+    }
+
+    @Test
+    void explicitFillBeforeBackgroundTransparentCopyPixelsClearsPreviousGlyphs() {
+        Bitmap oldText = transparentTextImage(8, 4, 1, 1);
+        Bitmap newText = transparentTextImage(8, 4, 6, 2);
+        Datum.PropList backgroundTransparent = new Datum.PropList();
+        backgroundTransparent.add("ink", Datum.of(36), true);
+
+        Bitmap reused = new Bitmap(8, 4, 32);
+        reused.fill(0x00FFFFFF);
+        copyFull(reused, oldText, backgroundTransparent);
+        reused.fill(0x00FFFFFF);
+        copyFull(reused, newText, backgroundTransparent);
+
+        assertEquals(0x00FFFFFF, reused.getPixel(1, 1),
+                "clearing between text renders is the caller/member lifecycle's responsibility");
         assertEquals(0xFF000000, reused.getPixel(6, 2));
     }
 
@@ -62,7 +58,7 @@ class ImageMethodDispatcherTextRerenderTest {
         ImageMethodDispatcher.dispatch(new Datum.ImageRef(dest), "copyPixels",
                 List.of(
                         new Datum.ImageRef(src),
-                        new Datum.Rect(0, 0, dest.getWidth(), dest.getHeight()),
+                        new Datum.Rect(0, 0, src.getWidth(), src.getHeight()),
                         new Datum.Rect(0, 0, src.getWidth(), src.getHeight()),
                         props));
     }

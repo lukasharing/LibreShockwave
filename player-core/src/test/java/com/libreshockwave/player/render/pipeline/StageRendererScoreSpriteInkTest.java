@@ -86,6 +86,30 @@ class StageRendererScoreSpriteInkTest {
         assertEquals(40, state.getLocV());
     }
 
+    @Test
+    void frameEntrySyncDoesNotResetPuppetedSpritePosition() throws Exception {
+        DirectorFile file = newEmptyDirectorFile();
+        installScore(file, List.of(
+                frameEntry(0, 8, channelDataAt(10, 20)),
+                frameEntry(1, 8, channelDataAt(30, 40))
+        ));
+        StageRenderer renderer = new StageRenderer(file);
+
+        renderer.syncScoreStateForFrame(1);
+        SpriteState state = renderer.getSpriteRegistry().get(8);
+        assertNotNull(state);
+        state.setPuppet(true);
+        state.setLocH(111);
+        state.setLocV(222);
+        state.setLocZ(333);
+
+        renderer.syncScoreStateForFrame(2);
+
+        assertEquals(111, state.getLocH());
+        assertEquals(222, state.getLocV());
+        assertEquals(333, state.getLocZ());
+    }
+
     private static RenderSprite invokeCreateRenderSprite(StageRenderer renderer, int channel,
                                                          ScoreChunk.ChannelData data) throws Exception {
         Method method = StageRenderer.class.getDeclaredMethod(

@@ -19,6 +19,39 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class MemberRegistryMethodDispatcherTest {
 
     @Test
+    void updateMemberOnRegistryOwnerRefreshesRegisteredSlot() {
+        Datum.PropList registry = new Datum.PropList();
+        registry.putTyped("runtime_window_part", false, Datum.of((7 << 16) | 42));
+        Datum.ScriptInstance instance = new Datum.ScriptInstance(1, new LinkedHashMap<>());
+        instance.properties().put("pAllMemNumList", registry);
+
+        final int[] updatedSlot = {0};
+        CastLibProvider.setProvider(new NoOpCastLibProvider() {
+            @Override
+            public boolean isRegistryVisibleMember(int castLibNumber, int memberNumber) {
+                return castLibNumber == 7 && memberNumber == 42;
+            }
+
+            @Override
+            public boolean updateMember(int castLibNumber, int memberNumber) {
+                updatedSlot[0] = (castLibNumber << 16) | memberNumber;
+                return true;
+            }
+        });
+        try {
+            MemberRegistryMethodDispatcher.DispatchResult result =
+                    MemberRegistryMethodDispatcher.dispatch(instance, "updateMember",
+                            List.of(Datum.of("runtime_window_part")));
+
+            assertTrue(result.handled());
+            assertEquals(1, result.value().toInt());
+            assertEquals((7 << 16) | 42, updatedSlot[0]);
+        } finally {
+            CastLibProvider.clearProvider();
+        }
+    }
+
+    @Test
     void readAliasIndexesFromFieldImportsAliasesIntoMemberRegistry() {
         Datum.PropList registry = new Datum.PropList();
         registry.putTyped("hcc_stool_a_0_1_1_0_0", false, Datum.of(0x0B0004));

@@ -1,6 +1,6 @@
 package com.libreshockwave.player.net;
 
-import java.net.URI;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Represents a single network request task.
@@ -81,7 +81,7 @@ public class NetTask {
     }
 
     public String getResultAsString() {
-        return result != null ? new String(result) : "";
+        return result != null ? new String(result, StandardCharsets.UTF_8) : "";
     }
 
     public int getErrorCode() {

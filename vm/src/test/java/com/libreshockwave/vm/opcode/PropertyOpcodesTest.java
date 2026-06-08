@@ -174,6 +174,22 @@ class PropertyOpcodesTest {
     }
 
     @Test
+    void voidIlkObjectPropertyMatchesDirectorTypeQuery() throws Exception {
+        assertEquals("void", getObjectProperty(Datum.VOID, "ilk").toKeyName());
+    }
+
+    @Test
+    void missingPropertyListCommandCanBeDetectedByIlkGuard() throws Exception {
+        Datum.PropList commands = new Datum.PropList();
+        commands.add("CHAT", Datum.of(52), true);
+
+        Datum missingCommand = commands.getAPropOrDefault(Datum.of("GET_GROUP_BADGES"), Datum.VOID);
+
+        assertEquals(Datum.VOID, missingCommand);
+        assertEquals("void", getObjectProperty(missingCommand, "ilk").toKeyName());
+    }
+
+    @Test
     void numericConversionPropertiesCoerceBeforeSpriteProviderLookup() throws Exception {
         StubSpriteProvider provider = new StubSpriteProvider();
         provider.props.put("42:bgcolor", Datum.of(0x6794A7));

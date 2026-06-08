@@ -12,7 +12,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
+import java.util.LinkedHashSet;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.*;
 
 /**
@@ -117,10 +120,10 @@ public class NetManager implements NetBuiltins.NetProvider {
         tasks.put(taskId, task);
 
         // Check cache synchronously - if already loaded, complete immediately
-        String cacheKey = FileUtil.getFileName(url);
-        byte[] cached = urlCache.get(cacheKey);
+        byte[] cached = findCachedData(url, task.getUrl());
         if (cached != null) {
-            System.out.println("[NetManager] Using cached: " + cacheKey + " (" + cached.length + " bytes)");
+            System.out.println("[NetManager] Using cached: " + primaryCacheKey(url, task.getUrl())
+                    + " (" + cached.length + " bytes)");
             task.markInProgress();
             task.complete(cached);
             notifyCompletion(url, cached);
@@ -166,9 +169,24 @@ public class NetManager implements NetBuiltins.NetProvider {
     public String netTextResult(Integer taskId) {
         NetTask task = getTask(taskId);
         if (task != null && task.getState() == NetTask.State.COMPLETED) {
-            return task.getResultAsString();
+            return normalizeDirectorText(task.getResultAsString());
         }
         return "";
+    }
+
+    @Override
+    public byte[] netBytesResult(Integer taskId) {
+        return getNetBytes(taskId);
+    }
+
+    @Override
+    public void aliasCachedResult(Integer taskId, String alias) {
+        byte[] data = netBytesResult(taskId);
+        if (data == null || alias == null || alias.isEmpty()) {
+            return;
+        }
+        cacheData(alias, alias, data);
+        notifyCompletion(alias, data);
     }
 
     /**
@@ -252,12 +270,15 @@ public class NetManager implements NetBuiltins.NetProvider {
      * extension while castLib.fileName may use a different one (e.g. .cst vs .cct).
      */
     public byte[] getCachedData(String url) {
-        String cacheKey = FileUtil.getFileName(url);
-        byte[] data = urlCache.get(cacheKey);
+        byte[] data = findCachedData(url, url);
         if (data != null) return data;
 
-        String lower = cacheKey.toLowerCase();
-        String baseName = FileUtil.getFileNameWithoutExtension(cacheKey);
+        String fileName = FileUtil.getFileName(url);
+        if (fileName == null || fileName.isEmpty() || hasQuery(url)) {
+            return null;
+        }
+        String lower = fileName.toLowerCase(Locale.ROOT);
+        String baseName = FileUtil.getFileNameWithoutExtension(fileName);
 
         // Director cast URLs are commonly mixed between:
         // - extensionless names
@@ -266,20 +287,20 @@ public class NetManager implements NetBuiltins.NetProvider {
         // Try all normalized variants so castLib.fileName reloads can always
         // reuse already-fetched bytes from preloadNetThing/getNetThing.
         if (lower.endsWith(".cct")) {
-            data = urlCache.get(baseName + ".cst");
+            data = findCachedData(baseName + ".cst", baseName + ".cst");
             if (data != null) return data;
-            return urlCache.get(baseName);
+            return findCachedData(baseName, baseName);
         }
         if (lower.endsWith(".cst")) {
-            data = urlCache.get(baseName + ".cct");
+            data = findCachedData(baseName + ".cct", baseName + ".cct");
             if (data != null) return data;
-            return urlCache.get(baseName);
+            return findCachedData(baseName, baseName);
         }
 
         // Extensionless lookup: try both known cast extensions.
-        data = urlCache.get(baseName + ".cct");
+        data = findCachedData(baseName + ".cct", baseName + ".cct");
         if (data != null) return data;
-        return urlCache.get(baseName + ".cst");
+        return findCachedData(baseName + ".cst", baseName + ".cst");
     }
 
     /**
@@ -296,22 +317,24 @@ public class NetManager implements NetBuiltins.NetProvider {
             return url;
         }
 
+        if (url.startsWith("http://") || url.startsWith("https://")) {
+            return url;
+        }
+
+        if (url.startsWith("/") && basePath != null
+                && (basePath.startsWith("http://") || basePath.startsWith("https://"))) {
+            String origin = extractOrigin(basePath);
+            if (origin != null) {
+                return origin + url;
+            }
+        }
+
         // Strip query parameters before resolving as file path
         // (URLs like "file.txt?random=123" are invalid file paths on Windows)
         String cleanUrl = url;
         int queryIdx = cleanUrl.indexOf('?');
         if (queryIdx >= 0) {
             cleanUrl = cleanUrl.substring(0, queryIdx);
-        }
-
-        // For HTTP(S) URLs, extract just the filename from the URL path
-        // (Paths.get() fails on Windows for URLs like "http://localhost/path/file.txt")
-        if (cleanUrl.startsWith("http://") || cleanUrl.startsWith("https://")) {
-            int lastSlash = cleanUrl.lastIndexOf('/');
-            if (lastSlash >= 0 && lastSlash < cleanUrl.length() - 1) {
-                return cleanUrl.substring(lastSlash + 1);
-            }
-            return cleanUrl;
         }
 
         try {
@@ -333,12 +356,12 @@ public class NetManager implements NetBuiltins.NetProvider {
             task.markInProgress();
 
             String url = task.getOriginalUrl();
-            String cacheKey = FileUtil.getFileName(url);
+            String cacheKey = primaryCacheKey(task.getOriginalUrl(), task.getUrl());
 
             // Use inFlightLoads to deduplicate: only one actual load per cacheKey
             CompletableFuture<byte[]> future = inFlightLoads.computeIfAbsent(cacheKey, k -> {
                 CompletableFuture<byte[]> f = new CompletableFuture<>();
-                getExecutor().submit(() -> doLoad(url, cacheKey, f));
+                getExecutor().submit(() -> doLoad(url, task.getUrl(), cacheKey, f));
                 return f;
             });
 
@@ -360,10 +383,11 @@ public class NetManager implements NetBuiltins.NetProvider {
     /**
      * Perform the actual load for a cache key. Called only once per unique URL.
      */
-    private void doLoad(String url, String cacheKey, CompletableFuture<byte[]> future) {
+    private void doLoad(String url, String resolvedUrl, String cacheKey, CompletableFuture<byte[]> future) {
+        String inFlightKey = cacheKey;
         try {
             // Check cache first
-            byte[] cached = urlCache.get(cacheKey);
+            byte[] cached = findCachedData(url, resolvedUrl);
             if (cached != null) {
                 System.out.println("[NetManager] Using cached: " + cacheKey + " (" + cached.length + " bytes)");
                 future.complete(cached);
@@ -377,7 +401,8 @@ public class NetManager implements NetBuiltins.NetProvider {
                 String origin = extractOrigin(basePath);
                 if (origin != null) {
                     url = origin + url;
-                    cacheKey = FileUtil.getFileName(url);
+                    cacheKey = primaryCacheKey(url, url);
+                    resolvedUrl = url;
                 }
             }
 
@@ -391,14 +416,14 @@ public class NetManager implements NetBuiltins.NetProvider {
                     String urlPath = extractUrlPath(url);
                     if (urlPath != null) {
                         Path localPath = Path.of(localHttpRoot).resolve(urlPath.startsWith("/") ? urlPath.substring(1) : urlPath);
-                        byte[] data = tryLoadFromFile(localPath, cacheKey);
+                        byte[] data = tryLoadFromFile(localPath, url, resolvedUrl);
                         if (data != null) {
                             future.complete(data);
                             return;
                         }
                     }
                 }
-                byte[] data = loadFromHttpAndCache(url, cacheKey);
+                byte[] data = loadFromHttpAndCache(url, url, resolvedUrl);
                 future.complete(data);
                 return;
             }
@@ -414,7 +439,7 @@ public class NetManager implements NetBuiltins.NetProvider {
                 }
 
                 // Try loading from file with fallbacks
-                byte[] data = tryLoadFromFile(base.resolve(fileName), cacheKey);
+                byte[] data = tryLoadFromFile(base.resolve(fileName), url, resolvedUrl);
                 if (data != null) {
                     future.complete(data);
                     return;
@@ -424,7 +449,7 @@ public class NetManager implements NetBuiltins.NetProvider {
             // basePath is HTTP - resolve relative filename against it
             if (basePath != null && (basePath.startsWith("http://") || basePath.startsWith("https://"))) {
                 String fullUrl = basePath + fileName;
-                byte[] data = loadFromHttpAndCache(fullUrl, cacheKey);
+                byte[] data = loadFromHttpAndCache(fullUrl, url, fullUrl);
                 future.complete(data);
             } else {
                 // No HTTP fallback available
@@ -433,14 +458,14 @@ public class NetManager implements NetBuiltins.NetProvider {
         } catch (Exception e) {
             future.completeExceptionally(e);
         } finally {
-            inFlightLoads.remove(cacheKey);
+            inFlightLoads.remove(inFlightKey);
         }
     }
 
     /**
      * Try to load a file with extension fallbacks. Returns data if found, null otherwise.
      */
-    private byte[] tryLoadFromFile(Path path, String cacheKey) {
+    private byte[] tryLoadFromFile(Path path, String originalUrl, String resolvedUrl) {
         try {
             Path resolvedPath = resolvePathWithFallbacks(path);
             if (resolvedPath == null) {
@@ -448,7 +473,7 @@ public class NetManager implements NetBuiltins.NetProvider {
             }
 
             byte[] data = Files.readAllBytes(resolvedPath);
-            urlCache.put(cacheKey, data);  // Cache the result
+            cacheData(originalUrl, resolvedUrl, data);
             System.out.println("[NetManager] Loaded file: " + resolvedPath + " (" + data.length + " bytes)");
             return data;
         } catch (Exception e) {
@@ -548,14 +573,13 @@ public class NetManager implements NetBuiltins.NetProvider {
         getExecutor().submit(() -> {
             task.markInProgress();
             String url = task.getOriginalUrl();
-            String fileName = FileUtil.getFileName(url);
-            String cacheKey = fileName;
             try {
                 if (url.startsWith("http://") || url.startsWith("https://")) {
-                    loadFromHttp(url, task, cacheKey);
+                    loadFromHttp(url, task);
                 } else if (basePath != null && (basePath.startsWith("http://") || basePath.startsWith("https://"))) {
+                    String fileName = FileUtil.getFileName(url);
                     String fullUrl = basePath + fileName;
-                    loadFromHttp(fullUrl, task, cacheKey);
+                    loadFromHttp(fullUrl, task);
                 } else {
                     task.fail(404, "No HTTP URL for POST");
                 }
@@ -569,7 +593,7 @@ public class NetManager implements NetBuiltins.NetProvider {
      * Load from HTTP, cache the result, and return the bytes.
      * Used by doLoad for GET requests.
      */
-    private byte[] loadFromHttpAndCache(String url, String cacheKey) throws Exception {
+    private byte[] loadFromHttpAndCache(String url, String originalUrl, String resolvedUrl) throws Exception {
         String[] urlsToTry = getUrlsWithFallbacks(url);
 
         Exception lastException = null;
@@ -591,7 +615,8 @@ public class NetManager implements NetBuiltins.NetProvider {
                 int statusCode = response.statusCode();
                 if (statusCode >= 200 && statusCode < 300) {
                     byte[] data = response.body();
-                    urlCache.put(cacheKey, data);
+                    cacheData(originalUrl, resolvedUrl, data);
+                    cacheData(originalUrl, tryUrl, data);
                     System.out.println("[NetManager] Loaded URL: " + tryUrl + " (" + data.length + " bytes)");
                     return data;
                 }
@@ -614,7 +639,7 @@ public class NetManager implements NetBuiltins.NetProvider {
         throw new RuntimeException(msg);
     }
 
-    private void loadFromHttp(String url, NetTask task, String cacheKey) throws Exception {
+    private void loadFromHttp(String url, NetTask task) throws Exception {
         // Try the URL with extension fallbacks
         String[] urlsToTry = getUrlsWithFallbacks(url);
 
@@ -643,7 +668,7 @@ public class NetManager implements NetBuiltins.NetProvider {
                 int statusCode = response.statusCode();
                 if (statusCode >= 200 && statusCode < 300) {
                     byte[] data = response.body();
-                    urlCache.put(cacheKey, data);  // Cache the result
+                    cacheData(task.getOriginalUrl(), tryUrl, data);
                     System.out.println("[NetManager] Loaded URL: " + tryUrl + " (" + data.length + " bytes)");
                     notifyCompletion(task.getUrl(), data);
                     task.complete(data);
@@ -669,7 +694,128 @@ public class NetManager implements NetBuiltins.NetProvider {
     }
 
     private String[] getUrlsWithFallbacks(String url) {
+        if (isExtensionlessHttpResource(url)) {
+            return new String[] { url };
+        }
         return FileUtil.getUrlsWithFallbacks(url);
+    }
+
+    private byte[] findCachedData(String originalUrl, String resolvedUrl) {
+        for (String key : buildCacheKeys(originalUrl, resolvedUrl)) {
+            byte[] cached = urlCache.get(key);
+            if (cached != null) {
+                return cached;
+            }
+        }
+        return null;
+    }
+
+    private void cacheData(String originalUrl, String resolvedUrl, byte[] data) {
+        if (data == null) {
+            return;
+        }
+        for (String key : buildCacheKeys(originalUrl, resolvedUrl)) {
+            urlCache.put(key, data);
+        }
+    }
+
+    private String primaryCacheKey(String originalUrl, String resolvedUrl) {
+        for (String key : buildCacheKeys(originalUrl, resolvedUrl)) {
+            return key;
+        }
+        return originalUrl != null ? originalUrl : resolvedUrl;
+    }
+
+    private Set<String> buildCacheKeys(String originalUrl, String resolvedUrl) {
+        LinkedHashSet<String> keys = new LinkedHashSet<>();
+        addCacheKeys(keys, originalUrl);
+        addCacheKeys(keys, resolvedUrl);
+        return keys;
+    }
+
+    private void addCacheKeys(Set<String> keys, String url) {
+        if (url == null || url.isEmpty()) {
+            return;
+        }
+        String normalizedUrl = normalizedUrlCacheKey(url);
+        if (normalizedUrl != null && !normalizedUrl.isEmpty()) {
+            keys.add(normalizedUrl);
+        }
+        if (hasQuery(url)) {
+            return;
+        }
+        String fileName = FileUtil.getFileName(url);
+        if (fileName == null || fileName.isEmpty() || isAmbiguousCacheFileName(fileName)) {
+            return;
+        }
+        keys.add(fileName.toLowerCase(Locale.ROOT));
+        String baseName = FileUtil.getFileNameWithoutExtension(fileName);
+        if (baseName != null && !baseName.isEmpty()) {
+            keys.add(baseName.toLowerCase(Locale.ROOT));
+        }
+    }
+
+    private static boolean isExtensionlessHttpResource(String url) {
+        if (!isAbsoluteHttpUrl(url)) {
+            return false;
+        }
+        String fileName = FileUtil.getFileName(url);
+        return fileName != null && !fileName.isEmpty() && !fileName.contains(".");
+    }
+
+    private static boolean isAmbiguousCacheFileName(String fileName) {
+        if (fileName == null || fileName.isEmpty()) {
+            return true;
+        }
+        String clean = fileName;
+        int query = clean.indexOf('?');
+        if (query >= 0) {
+            clean = clean.substring(0, query);
+        }
+        return clean.matches("\\d+");
+    }
+
+    private static String normalizeDirectorText(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        return value.replace("\r\n", "\r").replace('\n', '\r');
+    }
+
+    private static String normalizedUrlCacheKey(String url) {
+        if (url == null || url.isEmpty()) {
+            return null;
+        }
+        if (isAbsoluteHttpUrl(url)) {
+            try {
+                URI uri = URI.create(url);
+                String scheme = uri.getScheme();
+                String host = uri.getHost();
+                String path = uri.getPath();
+                if (scheme == null || host == null || path == null || path.isEmpty()) {
+                    return null;
+                }
+                int port = uri.getPort();
+                String authority = port >= 0 ? host + ":" + port : host;
+                String query = uri.getRawQuery();
+                String key = scheme + "://" + authority + path;
+                if (query != null && !query.isEmpty()) {
+                    key = key + "?" + query;
+                }
+                return key.toLowerCase(Locale.ROOT);
+            } catch (Exception ignored) {
+                return null;
+            }
+        }
+        return url.toLowerCase(Locale.ROOT);
+    }
+
+    private static boolean hasQuery(String url) {
+        return url != null && url.indexOf('?') >= 0;
+    }
+
+    private static boolean isAbsoluteHttpUrl(String url) {
+        return url != null && (url.startsWith("http://") || url.startsWith("https://"));
     }
 
     /**

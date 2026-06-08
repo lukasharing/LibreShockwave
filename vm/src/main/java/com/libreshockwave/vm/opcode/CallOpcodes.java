@@ -162,6 +162,12 @@ public final class CallOpcodes {
             args = args.subList(1, args.size());
         }
 
+        if (target instanceof Datum.XtraInstance xtraInstance) {
+            methodName = XtraBuiltins.resolveHandlerName(
+                    xtraInstance,
+                    methodName,
+                    ctx.resolveNameCandidates(nameIdx));
+        }
         Datum result = dispatchMethod(ctx, target, methodName, args);
 
         if (!noRet) {

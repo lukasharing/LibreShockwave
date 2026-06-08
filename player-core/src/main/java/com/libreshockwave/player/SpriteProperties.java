@@ -13,7 +13,9 @@ import com.libreshockwave.player.debug.LifecycleDiagnostics;
 import com.libreshockwave.player.render.SpriteRegistry;
 import com.libreshockwave.player.sprite.SpriteColorSource;
 import com.libreshockwave.player.sprite.SpriteState;
+import com.libreshockwave.vm.DebugConfig;
 import com.libreshockwave.vm.datum.Datum;
+import com.libreshockwave.vm.datum.DatumFormatter;
 import com.libreshockwave.vm.builtin.sprite.SpritePropertyProvider;
 
 /**
@@ -240,14 +242,17 @@ public class SpriteProperties implements SpritePropertyProvider {
         switch (prop) {
             case "loch" -> {
                 sprite.setLocH(value.toInt());
+                traceSpriteSet(spriteNum, sprite, prop, value);
                 return true;
             }
             case "locv" -> {
                 sprite.setLocV(value.toInt());
+                traceSpriteSet(spriteNum, sprite, prop, value);
                 return true;
             }
             case "locz" -> {
                 sprite.setLocZ(value.toInt());
+                traceSpriteSet(spriteNum, sprite, prop, value);
                 return true;
             }
             case "loc" -> {
@@ -255,6 +260,7 @@ public class SpriteProperties implements SpritePropertyProvider {
                 if (point != null) {
                     sprite.setLocH(point.x());
                     sprite.setLocV(point.y());
+                    traceSpriteSet(spriteNum, sprite, prop, value);
                     return true;
                 }
                 return false;
@@ -268,12 +274,14 @@ public class SpriteProperties implements SpritePropertyProvider {
                     sprite.setLocV(r.top() + reg.y());
                     sprite.setWidth(width);
                     sprite.setHeight(height);
+                    traceSpriteSet(spriteNum, sprite, prop, value);
                     return true;
                 }
                 return false;
             }
             case "visible" -> {
                 sprite.setVisible(value.isTruthy());
+                traceSpriteSet(spriteNum, sprite, prop, value);
                 return true;
             }
             case "puppet" -> {
@@ -282,6 +290,7 @@ public class SpriteProperties implements SpritePropertyProvider {
                 if (!enabled) {
                     releasePuppetedSprite(sprite);
                 }
+                traceSpriteSet(spriteNum, sprite, prop, value);
                 return true;
             }
             case "ink" -> {
@@ -308,10 +317,12 @@ public class SpriteProperties implements SpritePropertyProvider {
             }
             case "width" -> {
                 sprite.setWidth(value.toInt());
+                traceSpriteSet(spriteNum, sprite, prop, value);
                 return true;
             }
             case "height" -> {
                 sprite.setHeight(value.toInt());
+                traceSpriteSet(spriteNum, sprite, prop, value);
                 return true;
             }
             case "image" -> {
@@ -358,7 +369,11 @@ public class SpriteProperties implements SpritePropertyProvider {
                 return true;
             }
             case "member" -> {
-                return assignMember(sprite, value, false);
+                boolean assigned = assignMember(sprite, value, false);
+                if (assigned) {
+                    traceSpriteSet(spriteNum, sprite, prop, value);
+                }
+                return assigned;
             }
             case "castnum", "membernum" -> {
                 int rawNum = value.toInt();
@@ -366,6 +381,7 @@ public class SpriteProperties implements SpritePropertyProvider {
                 int num = Math.abs(rawNum);
                 if (num <= 0) {
                     applyEmptyMemberOverride(sprite);
+                    traceSpriteSet(spriteNum, sprite, prop, value);
                     return true;
                 }
                 // Decode encoded slot numbers: (castLib << 16) | memberNum
@@ -380,6 +396,7 @@ public class SpriteProperties implements SpritePropertyProvider {
                     sprite.setDynamicMember(cl, num, mirrored);
                     autoSizeSprite(sprite, cl, num, false);
                 }
+                traceSpriteSet(spriteNum, sprite, prop, value);
                 return true;
             }
             case "color" -> {
@@ -414,17 +431,21 @@ public class SpriteProperties implements SpritePropertyProvider {
             }
             case "scriptinstancelist" -> {
                 if (value instanceof Datum.List list) {
+                    java.util.List<Datum> next = new java.util.ArrayList<>(list.items());
+                    int preserved = preserveRuntimeProcLists(sprite.getScriptInstanceList(), next);
                     // Store spriteNum on each ScriptInstance so behavior scripts
                     // can access me.spriteNum (Director built-in for behaviors)
-                    for (Datum item : list.items()) {
+                    for (Datum item : next) {
                         if (item instanceof Datum.ScriptInstance si) {
                             si.properties().put("spritenum", Datum.of(spriteNum));
                             si.properties().put("spriteNum", Datum.of(spriteNum));
                         }
                     }
-                    sprite.setScriptInstanceList(list.items());
+                    sprite.setScriptInstanceList(next);
+                    traceScriptInstanceListSet(spriteNum, next, preserved);
                 } else {
                     sprite.setScriptInstanceList(java.util.List.of());
+                    traceScriptInstanceListSet(spriteNum, java.util.List.of(), 0);
                 }
                 return true;
             }
@@ -472,11 +493,137 @@ public class SpriteProperties implements SpritePropertyProvider {
         return null;
     }
 
+    private static int preserveRuntimeProcLists(java.util.List<Datum> previous,
+                                                java.util.List<Datum> next) {
+        if (previous == null || previous.isEmpty() || next == null || next.isEmpty()) {
+            return 0;
+        }
+
+        int preserved = 0;
+        for (Datum item : next) {
+            if (!(item instanceof Datum.ScriptInstance nextInstance)) {
+                continue;
+            }
+            Datum nextProcList = nextInstance.properties().get("pProcList");
+            if (hasCallableProcedure(nextProcList)) {
+                continue;
+            }
+
+            Datum.ScriptInstance previousInstance = findPreviousRuntimeProcOwner(previous, nextInstance);
+            if (previousInstance == null) {
+                continue;
+            }
+
+            Datum previousProcList = previousInstance.properties().get("pProcList");
+            if (!hasCallableProcedure(previousProcList)) {
+                continue;
+            }
+
+            nextInstance.properties().put("pProcList", previousProcList.deepCopy());
+            preserved++;
+        }
+        return preserved;
+    }
+
+    private static Datum.ScriptInstance findPreviousRuntimeProcOwner(java.util.List<Datum> previous,
+                                                                     Datum.ScriptInstance nextInstance) {
+        Datum.ScriptInstance fallback = null;
+        for (Datum item : previous) {
+            if (!(item instanceof Datum.ScriptInstance previousInstance)) {
+                continue;
+            }
+            Datum previousProcList = previousInstance.properties().get("pProcList");
+            if (!hasCallableProcedure(previousProcList)) {
+                continue;
+            }
+            if (previousInstance.scriptId() == nextInstance.scriptId()) {
+                return previousInstance;
+            }
+            if (fallback == null && nextInstance.properties().containsKey("pProcList")) {
+                fallback = previousInstance;
+            }
+        }
+        return fallback;
+    }
+
+    private static boolean hasCallableProcedure(Datum procListDatum) {
+        if (!(procListDatum instanceof Datum.PropList procList)) {
+            return false;
+        }
+        for (Datum.PropEntry entry : procList.entries()) {
+            if (isCallableProcedureEntry(entry.value())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isCallableProcedureEntry(Datum value) {
+        if (!(value instanceof Datum.List list) || list.items().size() < 2) {
+            return false;
+        }
+        Datum method = list.items().get(0);
+        Datum target = list.items().get(1);
+        return isProcedureMethod(method) && target != null && target.isTruthy();
+    }
+
+    private static boolean isProcedureMethod(Datum method) {
+        if (method == null || method.isVoid()) {
+            return false;
+        }
+        String name = method.toKeyName();
+        return name != null && !name.isBlank() && !"null".equalsIgnoreCase(name);
+    }
+
+    private static void traceScriptInstanceListSet(int spriteNum, java.util.List<Datum> list, int preserved) {
+        if (!shouldTraceSpriteProperties()) {
+            return;
+        }
+        System.out.println("[SpriteProperties] set sprite=" + spriteNum
+                + " prop=#scriptInstanceList"
+                + " count=" + (list != null ? list.size() : 0)
+                + " preservedProcLists=" + preserved);
+    }
+
+    private static boolean shouldTraceSpriteSet(String prop) {
+        if (!shouldTraceSpriteProperties()) {
+            return false;
+        }
+        return switch (prop) {
+            case "loch", "locv", "locz", "loc", "rect",
+                 "member", "castnum", "membernum",
+                 "width", "height", "visible", "puppet" -> true;
+            default -> false;
+        };
+    }
+
+    private static boolean shouldTraceSpriteProperties() {
+        return DebugConfig.isDebugPlaybackEnabled() && DebugConfig.isPropertyTraceEnabled();
+    }
+
+    private static void traceSpriteSet(int spriteNum, SpriteState sprite, String prop, Datum value) {
+        if (sprite == null || !shouldTraceSpriteSet(prop)) {
+            return;
+        }
+        System.out.println("[SpriteProperties] set sprite=" + spriteNum
+                + " prop=#" + prop
+                + " value=" + DatumFormatter.formatBrief(value)
+                + " loc=" + sprite.getLocH() + "," + sprite.getLocV() + "," + sprite.getLocZ()
+                + " size=" + sprite.getWidth() + "x" + sprite.getHeight()
+                + " member=" + sprite.getEffectiveCastLib() + ":" + sprite.getEffectiveCastMember()
+                + " puppet=" + sprite.isPuppet()
+                + " visible=" + sprite.isVisible());
+    }
+
     @Override
     public boolean setSpriteMember(int spriteNum, Datum value) {
         SpriteState sprite = registry.getOrCreateDynamic(spriteNum);
         registry.bumpRevision();
-        return assignMember(sprite, value, true);
+        boolean assigned = assignMember(sprite, value, true);
+        if (assigned) {
+            traceSpriteSet(spriteNum, sprite, "member", value);
+        }
+        return assigned;
     }
 
     private record SpriteColor(int value, SpriteColorSource source) {}
@@ -534,12 +681,7 @@ public class SpriteProperties implements SpritePropertyProvider {
                 if (sprite.isDynamic()) {
                     resetReleasedEmptyChannel(sprite);
                 } else {
-                    ScoreChunk.ChannelData scoreData = sprite.getInitialData();
-                    if (sprite.isVisible() && scoreData != null) {
-                        sprite.rebindToScorePreservingScriptInstances(scoreData);
-                    } else {
-                        keepReleasedScoreBackedChannelEmpty(sprite);
-                    }
+                    keepReleasedScoreBackedChannelEmpty(sprite);
                 }
                 return;
             }

@@ -76,6 +76,19 @@ class MoviePropertiesTest {
         assertFalse(inputState.isCaretVisible());
     }
 
+    @Test
+    void rolloverPropertyReturnsInputTurnStateWithoutSideEffects() {
+        InputState inputState = new InputState();
+        inputState.setRolloverSprite(61);
+
+        MovieProperties properties = new MovieProperties(null, null);
+        properties.setInputState(inputState);
+
+        assertEquals(61, properties.getMovieProp("rollover").toInt());
+        assertEquals(61, inputState.getRolloverSprite(),
+                "the rollover is input event state and should not be recomputed while handlers read it");
+    }
+
     private record FakeXtra(String name) implements Xtra {
         @Override
         public String getName() {
