@@ -23,6 +23,7 @@ import com.libreshockwave.vm.util.AncestorChainWalker;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 
 /**
  * Function call opcodes.
@@ -109,10 +110,13 @@ public final class CallOpcodes {
     }
 
     private static boolean extCall(ExecutionContext ctx) {
-        String handlerName = ctx.resolveName(ctx.getArgument());
+        int nameIdx = ctx.getArgument();
+        String handlerName = ctx.resolveName(nameIdx);
         Datum argListDatum = ctx.pop();
         boolean noRet = argListDatum instanceof Datum.ArgListNoRet;
         List<Datum> args = getArgs(argListDatum);
+        handlerName = resolveCallableName(handlerName, ctx.resolveNameCandidates(nameIdx),
+                name -> ctx.findHandler(name) != null || ctx.isBuiltin(name));
 
         Datum result;
         Datum preferredBuiltin = shouldPreferBuiltinBeforeAuthored(handlerName)
@@ -167,6 +171,8 @@ public final class CallOpcodes {
                     xtraInstance,
                     methodName,
                     ctx.resolveNameCandidates(nameIdx));
+        } else {
+            methodName = resolveMethodNameForTarget(ctx, target, methodName, ctx.resolveNameCandidates(nameIdx));
         }
         Datum result = dispatchMethod(ctx, target, methodName, args);
 
@@ -174,6 +180,32 @@ public final class CallOpcodes {
             ctx.push(result);
         }
         return true;
+    }
+
+    private static String resolveMethodNameForTarget(ExecutionContext ctx, Datum target,
+                                                     String primaryName, List<String> candidates) {
+        if (target instanceof Datum.ImageRef) {
+            return resolveCallableName(primaryName, candidates, ImageMethodDispatcher::supportsMethod);
+        }
+        if (target instanceof Datum.MovieRef) {
+            return resolveCallableName(primaryName, candidates, ctx::isBuiltin);
+        }
+        return primaryName;
+    }
+
+    static String resolveCallableName(String primaryName, List<String> candidates,
+                                      Predicate<String> isCallable) {
+        if (primaryName != null && isCallable.test(primaryName)) {
+            return primaryName;
+        }
+        if (candidates != null) {
+            for (String candidate : candidates) {
+                if (candidate != null && isCallable.test(candidate)) {
+                    return candidate;
+                }
+            }
+        }
+        return primaryName;
     }
 
     /**

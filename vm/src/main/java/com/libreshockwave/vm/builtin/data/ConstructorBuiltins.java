@@ -195,6 +195,19 @@ public final class ConstructorBuiltins {
     }
 
     private static Datum color(LingoVM vm, List<Datum> args) {
+        if (!args.isEmpty() && args.get(0).isSymbol()) {
+            String colorSpace = args.get(0).toKeyName().toLowerCase();
+            if ("rgb".equals(colorSpace)) {
+                int r = args.size() > 1 ? args.get(1).toInt() : 0;
+                int g = args.size() > 2 ? args.get(2).toInt() : 0;
+                int b = args.size() > 3 ? args.get(3).toInt() : 0;
+                return new Datum.Color(r, g, b);
+            }
+            if ("paletteindex".equals(colorSpace) || "palette".equals(colorSpace) || "index".equals(colorSpace)) {
+                Datum index = args.size() > 1 ? args.get(1) : Datum.ZERO;
+                return new Datum.PaletteIndexColor(index.toInt() & 0xFF);
+            }
+        }
         if (args.size() == 1) {
             return new Datum.PaletteIndexColor(args.get(0).toInt() & 0xFF);
         }
@@ -220,7 +233,7 @@ public final class ConstructorBuiltins {
     /**
      * rgb(r, g, b) - create color from RGB components
      * rgb("#RRGGBB") - create color from hex string
-     * rgb(paletteIndex) - create color from palette index (treated as grayscale)
+     * rgb(colorNumber) - create color from Director's numeric color value
      */
     private static Datum rgb(LingoVM vm, List<Datum> args) {
         if (args.isEmpty()) {
@@ -231,29 +244,26 @@ public final class ConstructorBuiltins {
         if (first instanceof Datum.Color c && args.size() == 1) {
             return c;
         }
-        // rgb("#RRGGBB") - hex string/symbol
-        String hexText = rgbTextValue(first);
-        if (hexText != null) {
-            String hex = stripOptionalStringQuotes(hexText.trim());
-            if (hex.startsWith("#")) {
-                hex = hex.substring(1);
-            }
-            Integer colorVal = parseHexColor(hex);
-            if (colorVal != null) {
-                int r = (colorVal >> 16) & 0xFF;
-                int g = (colorVal >> 8) & 0xFF;
-                int b = colorVal & 0xFF;
-                return new Datum.Color(r, g, b);
-            }
-            return new Datum.Color(0, 0, 0);
-        }
         // rgb(r, g, b) - three integer components
         if (args.size() >= 3) {
             return new Datum.Color(args.get(0).toInt(), args.get(1).toInt(), args.get(2).toInt());
         }
-        // rgb(paletteIndex) - single integer, treat as grayscale or palette
-        int val = first.toInt();
-        return new Datum.Color((val >> 16) & 0xFF, (val >> 8) & 0xFF, val & 0xFF);
+        // rgb("#RRGGBB") - hex string/symbol. Numeric strings such as "238"
+        // are Director color numbers, not short packed RGB values.
+        String hexText = rgbTextValue(first);
+        if (hexText != null) {
+            String value = stripOptionalStringQuotes(hexText.trim());
+            Integer colorVal = parseRgbHexColor(value);
+            if (colorVal != null) {
+                return colorFromPackedRgb(colorVal);
+            }
+            Integer directorColor = parseDecimalInteger(value);
+            if (directorColor != null) {
+                return colorFromDirectorColorNumber(directorColor);
+            }
+            return new Datum.Color(0, 0, 0);
+        }
+        return colorFromDirectorColorNumber(first.toInt());
     }
 
     private static String rgbTextValue(Datum value) {
@@ -267,8 +277,27 @@ public final class ConstructorBuiltins {
         };
     }
 
-    private static Integer parseHexColor(String hex) {
-        if (hex == null || hex.isEmpty() || hex.length() > 6) {
+    private static Datum.Color colorFromDirectorColorNumber(int val) {
+        return colorFromArgb(Datum.datumToArgb(Datum.of(val)));
+    }
+
+    private static Datum.Color colorFromPackedRgb(int rgb) {
+        return new Datum.Color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
+    }
+
+    private static Datum.Color colorFromArgb(int argb) {
+        return new Datum.Color((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF);
+    }
+
+    private static Integer parseRgbHexColor(String value) {
+        if (value == null) {
+            return null;
+        }
+        String hex = value;
+        if (hex.startsWith("#")) {
+            hex = hex.substring(1);
+        }
+        if (hex.length() != 6) {
             return null;
         }
         int color = 0;
@@ -280,6 +309,30 @@ public final class ConstructorBuiltins {
             color = (color << 4) | nibble;
         }
         return color;
+    }
+
+    private static Integer parseDecimalInteger(String value) {
+        if (value == null || value.isEmpty()) {
+            return null;
+        }
+        int start = 0;
+        char first = value.charAt(0);
+        if (first == '-' || first == '+') {
+            if (value.length() == 1) {
+                return null;
+            }
+            start = 1;
+        }
+        for (int i = start; i < value.length(); i++) {
+            if (!Character.isDigit(value.charAt(i))) {
+                return null;
+            }
+        }
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     private static int hexNibble(char c) {

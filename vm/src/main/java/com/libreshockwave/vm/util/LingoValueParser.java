@@ -73,14 +73,6 @@ public final class LingoValueParser {
 
         if (expr.startsWith("rgb(") && expr.endsWith(")")) {
             String inner = expr.substring(4, expr.length() - 1).trim();
-            if (inner.startsWith("\"") && inner.endsWith("\"")) {
-                String hex = inner.substring(1, inner.length() - 1).trim();
-                if (hex.startsWith("#")) hex = hex.substring(1);
-                try {
-                    int colorVal = Integer.parseInt(hex, 16);
-                    return new Datum.Color((colorVal >> 16) & 0xFF, (colorVal >> 8) & 0xFF, colorVal & 0xFF);
-                } catch (NumberFormatException ignored) {}
-            }
             String[] parts = inner.split(",");
             if (parts.length == 3) {
                 try {
@@ -91,10 +83,15 @@ public final class LingoValueParser {
                 } catch (NumberFormatException ignored) {}
             }
             if (parts.length == 1) {
-                try {
-                    int val = Integer.parseInt(parts[0].trim());
-                    return new Datum.Color((val >> 16) & 0xFF, (val >> 8) & 0xFF, val & 0xFF);
-                } catch (NumberFormatException ignored) {}
+                String value = stripOptionalStringQuotes(parts[0].trim());
+                Integer hexColor = parseRgbHexColor(value);
+                if (hexColor != null) {
+                    return colorFromPackedRgb(hexColor);
+                }
+                Integer directorColor = parseDecimalInteger(value);
+                if (directorColor != null) {
+                    return colorFromDirectorColorNumber(directorColor);
+                }
             }
         }
 
@@ -154,6 +151,89 @@ public final class LingoValueParser {
         }
 
         return null;
+    }
+
+    private static Datum.Color colorFromDirectorColorNumber(int val) {
+        return colorFromArgb(Datum.datumToArgb(Datum.of(val)));
+    }
+
+    private static Datum.Color colorFromPackedRgb(int rgb) {
+        return new Datum.Color((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
+    }
+
+    private static Datum.Color colorFromArgb(int argb) {
+        return new Datum.Color((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF);
+    }
+
+    private static String stripOptionalStringQuotes(String value) {
+        if (value == null || value.length() < 2) {
+            return value;
+        }
+        char first = value.charAt(0);
+        char last = value.charAt(value.length() - 1);
+        if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
+            return value.substring(1, value.length() - 1).trim();
+        }
+        return value;
+    }
+
+    private static Integer parseRgbHexColor(String value) {
+        if (value == null) {
+            return null;
+        }
+        String hex = value;
+        if (hex.startsWith("#")) {
+            hex = hex.substring(1);
+        }
+        if (hex.length() != 6) {
+            return null;
+        }
+        int color = 0;
+        for (int i = 0; i < hex.length(); i++) {
+            int nibble = hexNibble(hex.charAt(i));
+            if (nibble < 0) {
+                return null;
+            }
+            color = (color << 4) | nibble;
+        }
+        return color;
+    }
+
+    private static int hexNibble(char c) {
+        if (c >= '0' && c <= '9') {
+            return c - '0';
+        }
+        if (c >= 'A' && c <= 'F') {
+            return 10 + (c - 'A');
+        }
+        if (c >= 'a' && c <= 'f') {
+            return 10 + (c - 'a');
+        }
+        return -1;
+    }
+
+    private static Integer parseDecimalInteger(String value) {
+        if (value == null || value.isEmpty()) {
+            return null;
+        }
+        int start = 0;
+        char first = value.charAt(0);
+        if (first == '-' || first == '+') {
+            if (value.length() == 1) {
+                return null;
+            }
+            start = 1;
+        }
+        for (int i = start; i < value.length(); i++) {
+            if (!Character.isDigit(value.charAt(i))) {
+                return null;
+            }
+        }
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     private static Datum parseFirstValidExpression(String expr, LingoVM vm) {

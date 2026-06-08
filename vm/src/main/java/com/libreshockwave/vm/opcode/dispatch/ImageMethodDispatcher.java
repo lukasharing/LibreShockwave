@@ -147,6 +147,27 @@ public final class ImageMethodDispatcher {
         };
     }
 
+    public static boolean supportsMethod(String methodName) {
+        if (methodName == null) {
+            return false;
+        }
+        return switch (methodName.toLowerCase()) {
+            case "draw",
+                 "fill",
+                 "copypixels",
+                 "setalpha",
+                 "duplicate",
+                 "crop",
+                 "setpixel",
+                 "getpixel",
+                 "trimwhitespace",
+                 "creatematte",
+                 "createmask",
+                 "getat" -> true;
+            default -> false;
+        };
+    }
+
     private static Datum dispatchNullImage(String method, List<Datum> args) {
         return switch (method) {
             case "getat" -> {
@@ -792,9 +813,13 @@ public final class ImageMethodDispatcher {
         boolean darkenBgTintCandidate = ink == Palette.InkMode.DARKEN
                 && colorizeBgColorRemap >= 0
                 && colorRemap < 0;
+        boolean nativeAlphaColorMaskCandidate = src.hasNativeMatteAlpha()
+                && colorRemap >= 0
+                && colorizeBgColorRemap < 0
+                && hasAlphaMaskSemantics(src, srcRect);
         if ((colorRemap >= 0 || colorizeBgColorRemap >= 0)
                 && !skipColorizationForExactBackground
-                && (!src.hasNativeMatteAlpha() || darkenBgTintCandidate)) {
+                && (!src.hasNativeMatteAlpha() || darkenBgTintCandidate || nativeAlphaColorMaskCandidate)) {
             // Sample source pixels to check if they're grayscale (safe to remap)
             boolean isGrayscale = isMostlyGrayscale(src, srcRect);
 
@@ -1226,7 +1251,6 @@ public final class ImageMethodDispatcher {
                 }
             }
         } else {
-            transformed.setNativeAlpha(true);
             for (int y = 0; y < destH; y++) {
                 double worldY = minY + y + 0.5;
                 for (int x = 0; x < destW; x++) {
@@ -1757,6 +1781,27 @@ public final class ImageMethodDispatcher {
             }
         }
         return true;
+    }
+
+    private static boolean hasAlphaMaskSemantics(Bitmap src, Datum.Rect srcRect) {
+        if (src == null || srcRect == null) {
+            return false;
+        }
+        if (src.isTextRenderedImage()) {
+            return true;
+        }
+        int left = clamp(Math.min(srcRect.left(), srcRect.right()), 0, src.getWidth());
+        int right = clamp(Math.max(srcRect.left(), srcRect.right()), 0, src.getWidth());
+        int top = clamp(Math.min(srcRect.top(), srcRect.bottom()), 0, src.getHeight());
+        int bottom = clamp(Math.max(srcRect.top(), srcRect.bottom()), 0, src.getHeight());
+        for (int y = top; y < bottom; y++) {
+            for (int x = left; x < right; x++) {
+                if ((src.getPixel(x, y) >>> 24) == 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private static boolean isBackgroundTransparentColorizableMask(Bitmap src, Datum.Rect srcRect,

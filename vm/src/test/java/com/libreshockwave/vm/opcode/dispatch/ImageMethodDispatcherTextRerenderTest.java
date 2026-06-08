@@ -45,6 +45,57 @@ class ImageMethodDispatcherTextRerenderTest {
         assertEquals(0xFF000000, reused.getPixel(6, 2));
     }
 
+    @Test
+    void colorRemapRecolorsNativeAlphaTextMaskWithoutCopyingItsBackground() {
+        Bitmap text = transparentTextImage(5, 3, 2, 1);
+        Datum.PropList colorRemap = new Datum.PropList();
+        colorRemap.add("color", new Datum.Color(254, 254, 254), true);
+
+        Bitmap dest = new Bitmap(5, 3, 32);
+        dest.fill(0xFF333333);
+        copyFull(dest, text, colorRemap);
+
+        assertEquals(0xFF333333, dest.getPixel(0, 0),
+                "transparent text image background must remain transparent after #color remap");
+        assertEquals(0xFFFEFEFE, dest.getPixel(2, 1),
+                "copyPixels #color recolors the black text/mask pixels even when the source has alpha");
+    }
+
+    @Test
+    void colorRemapTreatsWhiteBackedTextAsTransparentMask() {
+        Bitmap text = new Bitmap(5, 3, 32);
+        text.fill(0xFFFFFFFF);
+        text.setPixel(2, 1, 0xFF000000);
+        Datum.PropList colorRemap = new Datum.PropList();
+        colorRemap.add("color", new Datum.Color(254, 254, 254), true);
+
+        Bitmap dest = new Bitmap(5, 3, 32);
+        dest.fill(0xFF777777);
+        copyFull(dest, text, colorRemap);
+
+        assertEquals(0xFF777777, dest.getPixel(0, 0),
+                "copyPixels #color uses a white text backing as transparent mask background");
+        assertEquals(0xFFFEFEFE, dest.getPixel(2, 1));
+    }
+
+    @Test
+    void colorRemapDoesNotRecolorColoredNativeAlphaArt() {
+        Bitmap art = new Bitmap(5, 3, 32);
+        art.fill(0x00000000);
+        art.setPixel(2, 1, 0xFFFF0000);
+        art.setNativeAlpha(true);
+        Datum.PropList colorRemap = new Datum.PropList();
+        colorRemap.add("color", new Datum.Color(254, 254, 254), true);
+
+        Bitmap dest = new Bitmap(5, 3, 32);
+        dest.fill(0xFF333333);
+        copyFull(dest, art, colorRemap);
+
+        assertEquals(0xFF333333, dest.getPixel(0, 0));
+        assertEquals(0xFFFF0000, dest.getPixel(2, 1),
+                "the grayscale/mask guard must prevent #color from flattening colored alpha artwork");
+    }
+
     private static Bitmap transparentTextImage(int width, int height, int glyphX, int glyphY) {
         Bitmap bitmap = new Bitmap(width, height, 32);
         bitmap.fill(0x00FFFFFF);

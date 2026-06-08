@@ -663,6 +663,18 @@ public class SpriteProperties implements SpritePropertyProvider {
         LifecycleDiagnostics.logReleasedEmptyChannel("spriteReleasedEmptyChannel", sprite);
     }
 
+    private static void keepReleasedDynamicChannelEmpty(SpriteState sprite) {
+        sprite.setScriptInstanceList(java.util.List.of());
+        sprite.setVisible(false);
+        sprite.setCursor(0);
+        sprite.setBlend(100);
+        sprite.setStretch(0);
+        sprite.resetReleasedChannelGeometry();
+        sprite.resetReleasedSpriteTransforms();
+        sprite.setDynamicMember(0, 0);
+        LifecycleDiagnostics.logReleasedEmptyChannel("spriteReleasedEmptyChannel", sprite);
+    }
+
     private static void keepReleasedScoreBackedChannelEmpty(SpriteState sprite) {
         sprite.setScriptInstanceList(java.util.List.of());
         sprite.setVisible(false);
@@ -679,7 +691,7 @@ public class SpriteProperties implements SpritePropertyProvider {
         if (sprite.hasDynamicMember()) {
             if (sprite.getEffectiveCastMember() <= 0) {
                 if (sprite.isDynamic()) {
-                    resetReleasedEmptyChannel(sprite);
+                    keepReleasedDynamicChannelEmpty(sprite);
                 } else {
                     keepReleasedScoreBackedChannelEmpty(sprite);
                 }

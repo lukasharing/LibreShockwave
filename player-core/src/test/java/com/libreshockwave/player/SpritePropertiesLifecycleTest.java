@@ -332,7 +332,8 @@ class SpritePropertiesLifecycleTest {
         assertEquals(0, state.getCursor());
         assertEquals(1, state.getWidth());
         assertEquals(1, state.getHeight());
-        assertFalse(state.hasDynamicMember());
+        assertTrue(state.hasDynamicMember());
+        assertEquals(0, state.getEffectiveCastMember());
     }
 
     @Test
@@ -421,6 +422,38 @@ class SpritePropertiesLifecycleTest {
         assertFalse(state.isVisible());
         assertEquals(List.of(), state.getScriptInstanceList(),
                 "released window channels must not keep stale registerProcedure brokers");
+    }
+
+    @Test
+    void releasedDynamicEmptyChannelDoesNotRebindToLateScoreData() {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteProperties props = new SpriteProperties(registry);
+
+        SpriteState state = registry.getOrCreateDynamic(31);
+        state.setScriptInstanceList(List.of(new Datum.ScriptInstance(99, new LinkedHashMap<>())));
+        state.setVisible(true);
+
+        assertTrue(props.setSpriteProp(31, "member", Datum.ZERO));
+        assertTrue(props.setSpriteProp(31, "visible", Datum.ZERO));
+        assertTrue(props.setSpriteProp(31, "puppet", Datum.ZERO));
+
+        assertTrue(state.hasDynamicMember(),
+                "releaseSprite writes member(0); the empty override must survive unpuppeting");
+        assertEquals(0, state.getEffectiveCastMember());
+        assertFalse(state.isVisible());
+        assertTrue(state.getScriptInstanceList().isEmpty());
+
+        registry.getOrCreate(31, new ScoreChunk.ChannelData(
+                1, 0, 0, 0, 0, 0,
+                4, 88,
+                0, 0, 10, 20, 30, 40,
+                0, 0, 0, 0, 0, 0, 0
+        ));
+
+        assertTrue(state.hasDynamicMember(),
+                "late score collection must not resurrect a channel explicitly released to member(0)");
+        assertEquals(0, state.getEffectiveCastMember());
+        assertFalse(state.isVisible());
     }
 
     @Test

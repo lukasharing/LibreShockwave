@@ -385,6 +385,36 @@ class DatumTest {
     }
 
     @Test
+    void rgbBuiltinTreatsSingleSmallNumbersAsDirectorColorValues() {
+        LingoVM vm = new LingoVM(null);
+
+        Datum.Color director238 = colorFromArgb(Datum.datumToArgb(Datum.of(238)));
+
+        assertEquals(director238, vm.callHandler("rgb", List.of(Datum.of(238))));
+        assertEquals(director238, vm.callHandler("rgb", List.of(Datum.of("238"))));
+        assertEquals(new Datum.Color(0x12, 0x34, 0x56),
+                vm.callHandler("rgb", List.of(Datum.of(0x123456))));
+        assertEquals(new Datum.Color(0x12, 0x34, 0x56),
+                vm.callHandler("rgb", List.of(Datum.of("123456"))));
+    }
+
+    @Test
+    void colorBuiltinSupportsDirectorRgbColorSpaceSyntax() {
+        LingoVM vm = new LingoVM(null);
+
+        assertEquals(new Datum.Color(238, 238, 238),
+                vm.callHandler("color", List.of(Datum.symbol("rgb"), Datum.of(238), Datum.of(238), Datum.of(238))));
+        assertEquals(new Datum.Color(150, 150, 150),
+                vm.callHandler("color", List.of(Datum.symbol("rgb"), Datum.of(150), Datum.of(150), Datum.of(150))));
+        assertEquals(new Datum.PaletteIndexColor(238),
+                vm.callHandler("color", List.of(Datum.symbol("paletteIndex"), Datum.of(238))));
+    }
+
+    private static Datum.Color colorFromArgb(int argb) {
+        return new Datum.Color((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF);
+    }
+
+    @Test
     void testNumericOperations() {
         Datum a = Datum.of(10);
         Datum b = Datum.of(3);

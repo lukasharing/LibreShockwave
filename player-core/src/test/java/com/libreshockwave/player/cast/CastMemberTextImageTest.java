@@ -125,6 +125,42 @@ class CastMemberTextImageTest {
     }
 
     @Test
+    void textWrapperCopyIntoSystemPaletteKeepsExplicitRgbTextColor() {
+        CastMember.setTextRenderer(new SimpleTextRenderer());
+        CastMember member = new CastMember(1, 10000, MemberType.TEXT);
+        member.setName("visual window text");
+        member.setProp("font", Datum.of("V"));
+        member.setProp("fontsize", Datum.of(9));
+        member.setProp("fixedlinespace", Datum.of(10));
+        member.setProp("wordwrap", Datum.of(1));
+        member.setProp("alignment", Datum.symbol("right"));
+        member.setProp("rect", new Datum.Rect(0, 0, 157, 33));
+        member.setProp("bgcolor", new Datum.Color(255, 255, 255));
+        member.setProp("color", new Datum.Color(238, 238, 238));
+        member.setProp("text", Datum.of("Custom furniture description"));
+
+        Bitmap textImage = ((Datum.ImageRef) member.getProp("image")).bitmap();
+        Bitmap wrapperImage = new Bitmap(157, 37, 8);
+        wrapperImage.setImagePalette(Palette.SYSTEM_MAC_PALETTE);
+        wrapperImage.setPaletteRefSystemName("systemMac");
+        wrapperImage.fill(0xFFFFFFFF);
+
+        ImageMethodDispatcher.dispatch(new Datum.ImageRef(wrapperImage), "copyPixels",
+                java.util.List.of(
+                        new Datum.ImageRef(textImage),
+                        new Datum.Rect(0, 2, textImage.getWidth(), 2 + textImage.getHeight()),
+                        new Datum.Rect(0, 0, textImage.getWidth(), textImage.getHeight()),
+                        propList("ink", Datum.of(8))));
+
+        assertTrue(countPixels(textImage, 0xFFEEEEEE) > 0,
+                "the shared text member should render the authored #EEEEEE glyph color");
+        assertTrue(countPixels(wrapperImage, 0xFFEEEEEE) > 0,
+                "copyPixels into a system-palette Text Wrapper image must preserve explicit RGB glyphs");
+        assertEquals(0, countPixels(wrapperImage, 0xFF0000EE),
+                "explicit RGB text color must not be reinterpreted as palette index 238 blue");
+    }
+
+    @Test
     void textMemberChunkMethodReturnsStyledRangeReference() {
         CastMember.setTextRenderer(new SimpleTextRenderer());
         CastMember member = new CastMember(1, 10000, MemberType.TEXT);

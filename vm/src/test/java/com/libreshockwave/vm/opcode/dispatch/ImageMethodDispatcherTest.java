@@ -379,6 +379,33 @@ class ImageMethodDispatcherTest {
     }
 
     @Test
+    void skewedQuadCopyWithMatteDoesNotPromoteWhiteBackedSourceToNativeAlpha() {
+        Bitmap dest = new Bitmap(7, 7, 32);
+        dest.fill(0xFF445566);
+
+        Bitmap src = new Bitmap(5, 5, 32);
+        src.fill(0xFFFFFFFF);
+        src.fillRect(1, 1, 3, 3, 0xFF000000);
+
+        Datum.List skewQuad = new Datum.List(new ArrayList<>(List.of(
+                new Datum.Point(1, 0),
+                new Datum.Point(6, 1),
+                new Datum.Point(5, 6),
+                new Datum.Point(0, 5)
+        )));
+        Datum.PropList props = new Datum.PropList();
+        props.add("ink", Datum.of(8), true);
+
+        ImageMethodDispatcher.dispatch(new Datum.ImageRef(dest), "copyPixels",
+                List.of(new Datum.ImageRef(src), skewQuad, new Datum.Rect(0, 0, 5, 5), props));
+
+        assertEquals(0xFF445566, dest.getPixel(1, 1),
+                "MATTE must still remove white-backed source pixels after a skewed quad transform");
+        assertEquals(0xFF000000, dest.getPixel(3, 3),
+                "opaque content inside the transformed matte source must still copy");
+    }
+
+    @Test
     void copyPixelsPaletteAliasRemapsIndexedSourceLikePaletteRef() {
         Bitmap dest = new Bitmap(1, 1, 32);
         dest.fill(0xFFFFFFFF);

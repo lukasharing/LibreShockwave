@@ -120,6 +120,18 @@ class LingoValueParserTest {
     }
 
     @Test
+    void parsesRgbSingleNumberWithDirectorColorSemantics() {
+        Datum.Color director238 = colorFromArgb(Datum.datumToArgb(Datum.of(238)));
+
+        assertEquals(director238, LingoValueParser.parseWithPartial("rgb(238)", new LingoVM(null)));
+        assertEquals(director238, LingoValueParser.parseWithPartial("rgb(\"238\")", new LingoVM(null)));
+        assertEquals(new Datum.Color(0xEE, 0xEE, 0xEE),
+                LingoValueParser.parseWithPartial("rgb(\"#EEEEEE\")", new LingoVM(null)));
+        assertEquals(new Datum.Color(0x12, 0x34, 0x56),
+                LingoValueParser.parseWithPartial("rgb(\"123456\")", new LingoVM(null)));
+    }
+
+    @Test
     void parsesFlatMixedLiteralListsWithoutRegexDependency() {
         Datum parsed = LingoValueParser.parseWithPartial(
                 "[#core, 7, 3.5, \"Broker Manager Class\"]",
@@ -131,5 +143,9 @@ class LingoValueParserTest {
         assertEquals(7, list.items().get(1).toInt());
         assertEquals(3.5, list.items().get(2).toDouble(), 0.0001);
         assertEquals("Broker Manager Class", list.items().get(3).toStr());
+    }
+
+    private static Datum.Color colorFromArgb(int argb) {
+        return new Datum.Color((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF);
     }
 }

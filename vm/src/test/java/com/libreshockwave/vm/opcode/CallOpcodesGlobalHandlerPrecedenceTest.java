@@ -14,12 +14,39 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CallOpcodesGlobalHandlerPrecedenceTest {
+
+    @Test
+    void selectorCandidateResolutionKeepsCallablePrimaryName() {
+        String resolved = CallOpcodes.resolveCallableName(
+                "image",
+                List.of("tTextList", "image", "pheight"),
+                CallOpcodesGlobalHandlerPrecedenceTest::isDirectorImageApiName);
+
+        assertEquals("image", resolved);
+    }
+
+    @Test
+    void selectorCandidateResolutionFallsBackToCallableDirectorApiName() {
+        assertEquals("image", CallOpcodes.resolveCallableName(
+                "tTextList",
+                List.of("tTextList", "image", "pheight"),
+                CallOpcodesGlobalHandlerPrecedenceTest::isDirectorImageApiName));
+        assertEquals("copyPixels", CallOpcodes.resolveCallableName(
+                "tMaskFix",
+                List.of("tMaskFix", "copyPixels", "createMatte"),
+                CallOpcodesGlobalHandlerPrecedenceTest::isDirectorImageApiName));
+        assertEquals("fill", CallOpcodes.resolveCallableName(
+                "updateStage",
+                List.of("updateStage", "fill", "tTextWidth"),
+                CallOpcodesGlobalHandlerPrecedenceTest::isDirectorImageApiName));
+    }
 
     @Test
     void extCallPrefersAuthoredHandlersOverBuiltinFallbacks() {
@@ -146,5 +173,10 @@ class CallOpcodesGlobalHandlerPrecedenceTest {
                 errorState -> {
                 },
                 () -> "(test)");
+    }
+
+    private static boolean isDirectorImageApiName(String name) {
+        Set<String> names = Set.of("image", "fill", "copypixels");
+        return name != null && names.contains(name.toLowerCase());
     }
 }
