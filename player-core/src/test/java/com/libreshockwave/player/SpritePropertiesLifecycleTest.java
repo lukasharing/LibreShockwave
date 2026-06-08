@@ -491,7 +491,7 @@ class SpritePropertiesLifecycleTest {
     }
 
     @Test
-    void retiredScoreBackedRuntimeMemberRestoresAuthoredGeometryBeforeReuse() throws Exception {
+    void retiredScoreBackedRuntimeMemberLeavesChannelEmptyUntilReuse() throws Exception {
         SpriteRegistry registry = new SpriteRegistry();
         SpriteProperties props = new SpriteProperties(registry);
         CastLibManager castLibManager = new CastLibManager(null, (castLib, fileName) -> {});
@@ -533,11 +533,14 @@ class SpritePropertiesLifecycleTest {
             CastMember.setMemberSlotRetiredCallback(null);
         }
 
-        assertFalse(state.hasDynamicMember());
-        assertEquals(40, state.getWidth());
-        assertEquals(30, state.getHeight());
+        assertTrue(state.hasDynamicMember());
+        assertEquals(0, state.getEffectiveCastLib());
+        assertEquals(0, state.getEffectiveCastMember());
+        assertFalse(state.isVisible());
+        assertEquals(1, state.getWidth());
+        assertEquals(1, state.getHeight());
         assertFalse(state.hasSizeChanged());
-        assertEquals(List.of(broker), state.getScriptInstanceList());
+        assertTrue(state.getScriptInstanceList().isEmpty());
 
         CastMember reused = castLib.createDynamicMember("bitmap");
         assertSame(first, reused);

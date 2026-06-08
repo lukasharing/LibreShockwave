@@ -34,6 +34,7 @@ public class StageRenderer {
 
     // Stage image buffer - used by (the stage).image for direct pixel drawing
     private Bitmap stageImage;
+    private boolean stageImageRenderPending;
 
     // Last baked sprites from FrameSnapshot — used for ink-aware hit testing
     private List<RenderSprite> lastBakedSprites = new ArrayList<>();
@@ -69,9 +70,13 @@ public class StageRenderer {
     }
 
     public void setBackgroundColor(int color) {
+        int oldColor = this.backgroundColor;
         this.backgroundColor = color;
         if (stageImage != null && !stageImage.isScriptModified()) {
             stageImage.fill(0xFF000000 | (backgroundColor & 0xFFFFFF));
+        }
+        if (oldColor != this.backgroundColor) {
+            spriteRegistry.bumpRevision();
         }
     }
 
@@ -90,8 +95,10 @@ public class StageRenderer {
             int w = getStageWidth();
             int h = getStageHeight();
             stageImage = new Bitmap(w, h, 32);
+            attachStageImageMutationCallback(stageImage);
             // Fill with background color (opaque) - Director's stage image is opaque
             stageImage.fill(0xFF000000 | (backgroundColor & 0xFFFFFF));
+            spriteRegistry.bumpRevision();
         }
         return stageImage;
     }
@@ -104,10 +111,26 @@ public class StageRenderer {
     }
 
     public Bitmap getRenderableStageImage() {
-        if (stageImage == null || !stageImage.isScriptModified()) {
+        if (stageImage == null || !stageImage.isScriptModified() || !stageImageRenderPending) {
             return null;
         }
         return stageImage;
+    }
+
+    public int getRenderableStageImageRevision() {
+        Bitmap renderable = getRenderableStageImage();
+        return renderable != null ? renderable.getMutationRevision() : -1;
+    }
+
+    public void consumeRenderableStageImage(Bitmap renderedStageImage, int mutationRevision) {
+        if (renderedStageImage == null || stageImage == null || renderedStageImage != stageImage) {
+            return;
+        }
+        if (stageImage.getMutationRevision() == mutationRevision) {
+            stageImage = null;
+            stageImageRenderPending = false;
+            spriteRegistry.bumpRevision();
+        }
     }
 
     /**
@@ -115,7 +138,12 @@ public class StageRenderer {
      * background color on the next render.
      */
     public void discardStageImage() {
+        boolean changed = stageImage != null || stageImageRenderPending;
         stageImage = null;
+        stageImageRenderPending = false;
+        if (changed) {
+            spriteRegistry.bumpRevision();
+        }
     }
 
     /**
@@ -124,8 +152,24 @@ public class StageRenderer {
      * stage buffer or a room-specific background color.
      */
     public void resetVisualState() {
+        boolean changed = backgroundColor != defaultBackgroundColor
+                || stageImage != null
+                || stageImageRenderPending;
         backgroundColor = defaultBackgroundColor;
         stageImage = null;
+        stageImageRenderPending = false;
+        if (changed) {
+            spriteRegistry.bumpRevision();
+        }
+    }
+
+    private void attachStageImageMutationCallback(Bitmap bitmap) {
+        bitmap.setMutationCallback(() -> {
+            if (stageImage == bitmap) {
+                stageImageRenderPending = true;
+                spriteRegistry.bumpRevision();
+            }
+        });
     }
 
     /** Store baked sprites from last rendered frame for hit testing. */
@@ -311,7 +355,7 @@ public class StageRenderer {
             // Puppeted sprites without a member can still render if they have
             // bgColor set (e.g., window system color swatches). In Director,
             // a visible sprite with bgColor fills its rect with that color.
-            if (state.isPuppet() && state.hasBackColor()) {
+            if (!state.hasDynamicMember() && state.isPuppet() && state.hasBackColor()) {
                 var pos = state.snapshotPosition();
                 int w = pos.width(), h = pos.height();
                 if (w > 0 && h > 0) {

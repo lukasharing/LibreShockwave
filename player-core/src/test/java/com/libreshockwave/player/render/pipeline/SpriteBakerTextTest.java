@@ -121,6 +121,99 @@ class SpriteBakerTextTest {
     }
 
     @Test
+    void dynamicTextWithoutMemberColorUsesSpriteForeColor() {
+        CastMember.setTextRenderer(new SimpleTextRenderer());
+        CastMember member = new CastMember(1, 1, MemberType.TEXT);
+        member.setProp("font", Datum.of("V"));
+        member.setProp("fontsize", Datum.of(9));
+        member.setProp("rect", new Datum.Rect(0, 0, 64, 16));
+        member.setProp("text", Datum.of("0/1"));
+
+        RenderSprite sprite = new RenderSprite(
+                1, 0, 0, 64, 16, 0, true,
+                RenderSprite.SpriteType.TEXT,
+                null, member,
+                0xFCFCFC, 0x000055,
+                true, true,
+                0, 100,
+                false, false,
+                null, false);
+
+        Bitmap baked = new SpriteBaker(new BitmapCache(), null, null)
+                .bake(sprite)
+                .getBakedBitmap();
+
+        assertTrue(countPixels(baked, 0xFFFCFCFC) > 0,
+                "runtime text with no member color should inherit the sprite foreColor");
+    }
+
+    @Test
+    void dynamicTextExplicitMemberColorOverridesSpriteForeColor() {
+        CastMember.setTextRenderer(new SimpleTextRenderer());
+        CastMember member = new CastMember(1, 1, MemberType.TEXT);
+        member.setProp("font", Datum.of("V"));
+        member.setProp("fontsize", Datum.of(9));
+        member.setProp("rect", new Datum.Rect(0, 0, 64, 16));
+        member.setProp("text", Datum.of("0/1"));
+        member.setProp("color", new Datum.Color(0, 0, 0));
+
+        RenderSprite sprite = new RenderSprite(
+                1, 0, 0, 64, 16, 0, true,
+                RenderSprite.SpriteType.TEXT,
+                null, member,
+                0xFCFCFC, 0x000055,
+                true, true,
+                0, 100,
+                false, false,
+                null, false);
+
+        Bitmap baked = new SpriteBaker(new BitmapCache(), null, null)
+                .bake(sprite)
+                .getBakedBitmap();
+
+        assertEquals(0, countPixels(baked, 0xFFFCFCFC));
+        assertTrue(countPixels(baked, 0xFF000000) > 0,
+                "member.color should remain stronger than sprite foreColor");
+    }
+
+    @Test
+    void dynamicTextRenderCacheIncludesInheritedSpriteForeColor() {
+        CastMember.setTextRenderer(new SimpleTextRenderer());
+        CastMember member = new CastMember(1, 1, MemberType.TEXT);
+        member.setProp("font", Datum.of("V"));
+        member.setProp("fontsize", Datum.of(9));
+        member.setProp("rect", new Datum.Rect(0, 0, 64, 16));
+        member.setProp("text", Datum.of("0/1"));
+
+        SpriteBaker baker = new SpriteBaker(new BitmapCache(), null, null);
+        RenderSprite whiteSprite = new RenderSprite(
+                1, 0, 0, 64, 16, 0, true,
+                RenderSprite.SpriteType.TEXT,
+                null, member,
+                0xFCFCFC, 0x000055,
+                true, true,
+                0, 100,
+                false, false,
+                null, false);
+        RenderSprite redSprite = new RenderSprite(
+                2, 0, 0, 64, 16, 0, true,
+                RenderSprite.SpriteType.TEXT,
+                null, member,
+                0xFF0000, 0x000055,
+                true, true,
+                0, 100,
+                false, false,
+                null, false);
+
+        Bitmap white = baker.bake(whiteSprite).getBakedBitmap();
+        Bitmap red = baker.bake(redSprite).getBakedBitmap();
+
+        assertTrue(countPixels(white, 0xFFFCFCFC) > 0);
+        assertTrue(countPixels(red, 0xFFFF0000) > 0,
+                "the cached runtime text image must be keyed by effective text color");
+    }
+
+    @Test
     void backgroundTransparentTextUsesSpriteInkKeyAfterMemberRaster() {
         CastMember.setTextRenderer(new SimpleTextRenderer());
         CastMember member = new CastMember(1, 1, MemberType.TEXT);

@@ -28,6 +28,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.BiConsumer;
+import java.util.function.IntConsumer;
 
 /**
  * Manages cast libraries for the player.
@@ -52,15 +53,20 @@ public class CastLibManager implements CastLibProvider {
     // with (castLibNumber, fileName). Can load data synchronously (JVM) or queue for
     // async delivery (WASM).
     private final BiConsumer<Integer, String> castDataRequestCallback;
-    private java.util.function.IntConsumer registryChangeCallback;
+    private IntConsumer registryChangeCallback;
+    private IntConsumer castContentsRetiredCallback;
 
     public CastLibManager(DirectorFile file, BiConsumer<Integer, String> castDataRequestCallback) {
         this.file = file;
         this.castDataRequestCallback = castDataRequestCallback;
     }
 
-    public void setRegistryChangeCallback(java.util.function.IntConsumer registryChangeCallback) {
+    public void setRegistryChangeCallback(IntConsumer registryChangeCallback) {
         this.registryChangeCallback = registryChangeCallback;
+    }
+
+    public void setCastContentsRetiredCallback(IntConsumer castContentsRetiredCallback) {
+        this.castContentsRetiredCallback = castContentsRetiredCallback;
     }
 
     /**
@@ -251,6 +257,12 @@ public class CastLibManager implements CastLibProvider {
         String oldName = castLib.getName();
         String oldFileName = castLib.getFileName();
         boolean wasRegistryVisible = isRegistryVisibleCast(castLib);
+        boolean fileBindingChanged = "filename".equals(normalizedPropName)
+                && !sameFileBinding(oldFileName, value.toStr());
+
+        if (fileBindingChanged) {
+            notifyCastContentsRetired(castLibNumber);
+        }
 
         boolean result = castLib.setProp(propName, value);
         if (result && ("name".equals(normalizedPropName) || "filename".equals(normalizedPropName))) {
@@ -287,6 +299,20 @@ public class CastLibManager implements CastLibProvider {
         if (registryChangeCallback != null) {
             registryChangeCallback.accept(castLibNumber);
         }
+    }
+
+    private void notifyCastContentsRetired(int castLibNumber) {
+        clearHandlerLookupCache();
+        if (castContentsRetiredCallback != null) {
+            castContentsRetiredCallback.accept(castLibNumber);
+        }
+    }
+
+    private static boolean sameFileBinding(String currentFileName, String newFileName) {
+        if (currentFileName == null) {
+            return newFileName == null || newFileName.isEmpty();
+        }
+        return currentFileName.equals(newFileName);
     }
 
     private void tryLoadCastFromCache(int castLibNumber, String newFileName) {
@@ -612,7 +638,27 @@ public class CastLibManager implements CastLibProvider {
 
     @Override
     public boolean removeMember(int castLibNumber, int memberNumber) {
-        return updateMember(castLibNumber, memberNumber);
+        CastLib castLib = getCastLib(castLibNumber);
+        if (castLib == null || memberNumber <= 0) {
+            return false;
+        }
+
+        CastMember cached = castLib.getCachedMember(memberNumber);
+        boolean exists = cached != null || castLib.findMemberByNumber(memberNumber) != null;
+        if (!exists) {
+            return false;
+        }
+
+        boolean runtimeDynamic = cached != null && cached.isRuntimeDynamic();
+        boolean removed = castLib.removeMemberSlot(memberNumber);
+        if (!removed) {
+            return false;
+        }
+        if (!runtimeDynamic) {
+            CastMember.notifyMemberSlotRetired(castLibNumber, memberNumber);
+        }
+        clearHandlerLookupCache();
+        return true;
     }
 
     @Override
@@ -1249,6 +1295,9 @@ public class CastLibManager implements CastLibProvider {
                 + " file=" + safe(castLib.getFileName())
                 + " bytes=" + (data != null ? data.length : 0)
                 + " reuse=" + (reusableSource != null));
+        if (castLib.isLoaded() && !castLib.hasFetchedExternalData(data)) {
+            notifyCastContentsRetired(castLibNumber);
+        }
         boolean loaded = castLib.setExternalData(data, reusableSource);
         if (loaded) {
             clearPendingExternalLoad(castLibNumber);

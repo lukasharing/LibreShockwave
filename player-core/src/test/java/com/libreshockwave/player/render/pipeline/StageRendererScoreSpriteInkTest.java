@@ -18,6 +18,7 @@ import java.nio.ByteOrder;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 class StageRendererScoreSpriteInkTest {
@@ -110,12 +111,34 @@ class StageRendererScoreSpriteInkTest {
         assertEquals(333, state.getLocZ());
     }
 
+    @Test
+    void explicitEmptyDynamicMemberDoesNotRenderAsColorOnlyPuppetSprite() throws Exception {
+        StageRenderer renderer = new StageRenderer(null);
+        SpriteState state = renderer.getSpriteRegistry().getOrCreateDynamic(12);
+        state.setVisible(true);
+        state.setPuppet(true);
+        state.setBackColor(0xFF00FF);
+        state.setWidth(20);
+        state.setHeight(10);
+        state.setDynamicMember(0, 0);
+
+        assertNull(invokeCreateDynamicRenderSprite(renderer, state));
+    }
+
     private static RenderSprite invokeCreateRenderSprite(StageRenderer renderer, int channel,
                                                          ScoreChunk.ChannelData data) throws Exception {
         Method method = StageRenderer.class.getDeclaredMethod(
             "createRenderSprite", int.class, ScoreChunk.ChannelData.class);
         method.setAccessible(true);
         return (RenderSprite) method.invoke(renderer, channel, data);
+    }
+
+    private static RenderSprite invokeCreateDynamicRenderSprite(StageRenderer renderer, SpriteState state)
+            throws Exception {
+        Method method = StageRenderer.class.getDeclaredMethod(
+            "createDynamicRenderSprite", SpriteState.class);
+        method.setAccessible(true);
+        return (RenderSprite) method.invoke(renderer, state);
     }
 
     private static DirectorFile newEmptyDirectorFile() throws Exception {

@@ -120,6 +120,51 @@ class ImageMethodDispatcherTest {
     }
 
     @Test
+    void drawNumericCoordinatesDefaultsToLineSemantics() {
+        Bitmap bitmap = new Bitmap(6, 6, 32);
+        bitmap.fill(0xFFFFFFFF);
+
+        ImageMethodDispatcher.dispatch(new Datum.ImageRef(bitmap), "draw",
+                List.of(Datum.of(1), Datum.of(1), Datum.of(4), Datum.of(3),
+                        new Datum.Color(0, 0, 0)));
+
+        assertEquals(0xFF000000, bitmap.getPixel(1, 1));
+        assertEquals(0xFF000000, bitmap.getPixel(4, 3));
+        assertEquals(0xFFFFFFFF, bitmap.getPixel(4, 1));
+        assertEquals(0xFFFFFFFF, bitmap.getPixel(1, 3));
+    }
+
+    @Test
+    void drawRectWithColorDefaultsToDiagonalLine() {
+        Bitmap bitmap = new Bitmap(6, 6, 32);
+        bitmap.fill(0xFFFFFFFF);
+
+        ImageMethodDispatcher.dispatch(new Datum.ImageRef(bitmap), "draw",
+                List.of(new Datum.Rect(1, 1, 4, 3), new Datum.Color(0, 0, 0)));
+
+        assertEquals(0xFF000000, bitmap.getPixel(1, 1));
+        assertEquals(0xFF000000, bitmap.getPixel(4, 3));
+        assertEquals(0xFFFFFFFF, bitmap.getPixel(4, 1));
+        assertEquals(0xFFFFFFFF, bitmap.getPixel(1, 3));
+    }
+
+    @Test
+    void drawRectPropListWithoutShapeTypeDefaultsToLine() {
+        Bitmap bitmap = new Bitmap(6, 6, 32);
+        bitmap.fill(0xFFFFFFFF);
+        Datum.PropList props = new Datum.PropList();
+        props.add("color", new Datum.Color(0, 0, 0), true);
+
+        ImageMethodDispatcher.dispatch(new Datum.ImageRef(bitmap), "draw",
+                List.of(new Datum.Rect(1, 1, 4, 3), props));
+
+        assertEquals(0xFF000000, bitmap.getPixel(1, 1));
+        assertEquals(0xFF000000, bitmap.getPixel(4, 3));
+        assertEquals(0xFFFFFFFF, bitmap.getPixel(4, 1));
+        assertEquals(0xFFFFFFFF, bitmap.getPixel(1, 3));
+    }
+
+    @Test
     void drawPointToPointUsesLineSemantics() {
         Bitmap bitmap = new Bitmap(5, 5, 32);
         bitmap.fill(0xFFFFFFFF);

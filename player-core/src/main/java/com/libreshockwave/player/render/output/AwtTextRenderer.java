@@ -12,6 +12,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -36,7 +37,7 @@ public class AwtTextRenderer implements TextRenderer {
                 fontName, fontSize, fontStyle,
                 alignment, textColor, bgColor,
                 wordWrap, antialias, fixedLineSpace, topSpacing,
-                null);
+                null, null);
     }
 
     @Override
@@ -51,7 +52,23 @@ public class AwtTextRenderer implements TextRenderer {
                 fontName, fontSize, fontStyle,
                 alignment, textColor, bgColor,
                 wordWrap, antialias, fixedLineSpace, topSpacing,
-                colorRuns);
+                colorRuns, null);
+    }
+
+    @Override
+    public Bitmap renderText(String text, int width, int height,
+                             String fontName, int fontSize, String fontStyle,
+                             String alignment, int textColor, int bgColor,
+                             boolean wordWrap, boolean antialias,
+                             int fixedLineSpace, int topSpacing,
+                             boolean kerning, int kerningThreshold,
+                             List<TextRenderer.ColorRun> colorRuns,
+                             List<TextRenderer.StyleRun> styleRuns) {
+        return renderTextWithColorRuns(text, width, height,
+                fontName, fontSize, fontStyle,
+                alignment, textColor, bgColor,
+                wordWrap, antialias, fixedLineSpace, topSpacing,
+                colorRuns, styleRuns);
     }
 
     private Bitmap renderTextWithColorRuns(String text, int width, int height,
@@ -59,7 +76,8 @@ public class AwtTextRenderer implements TextRenderer {
                                            String alignment, int textColor, int bgColor,
                                            boolean wordWrap, boolean antialias,
                                            int fixedLineSpace, int topSpacing,
-                                           List<TextRenderer.ColorRun> colorRuns) {
+                                           List<TextRenderer.ColorRun> colorRuns,
+                                           List<TextRenderer.StyleRun> styleRuns) {
         if (text == null) text = "";
         if (width <= 0) width = 200;
         if (height <= 0) height = 20;
@@ -85,19 +103,7 @@ public class AwtTextRenderer implements TextRenderer {
         g2d.fillRect(0, 0, width, height);
 
         // Set font — try PFR-derived TTF first, then system fonts
-        int fontStyleAwt = Font.PLAIN;
-        String style = fontStyle.toLowerCase();
-        if (style.contains("bold")) fontStyleAwt |= Font.BOLD;
-        if (style.contains("italic")) fontStyleAwt |= Font.ITALIC;
-        Font font = resolvePfrAwtFont(fontName, fontStyleAwt, fontSize);
-        if (font == null) {
-            font = resolveDirectorFont(fontName, fontStyleAwt, fontSize);
-        }
-        if (style.contains("underline")) {
-            Map<TextAttribute, Object> attrs = new HashMap<>();
-            attrs.put(TextAttribute.UNDERLINE, TextAttribute.UNDERLINE_ON);
-            font = font.deriveFont(attrs);
-        }
+        Font font = resolveStyledFont(fontName, fontSize, fontStyle);
         g2d.setFont(font);
 
         // Set text color
@@ -157,12 +163,15 @@ public class AwtTextRenderer implements TextRenderer {
             String line = lines.get(lineIndex);
             if (y > height) break;
 
-            int x = renderAlignmentOffset(alignment, width, fm.stringWidth(line));
+            int x = renderAlignmentOffset(alignment, width,
+                    measureStyledWidth(g2d, line, lineStarts.get(lineIndex),
+                            fontName, fontSize, fontStyle, styleRuns));
 
-            if (colorRuns == null || colorRuns.isEmpty()) {
+            if ((colorRuns == null || colorRuns.isEmpty()) && (styleRuns == null || styleRuns.isEmpty())) {
                 g2d.drawString(line, x, y);
             } else {
-                drawStringWithColorRuns(g2d, fm, line, lineStarts.get(lineIndex), x, y, textColor, colorRuns);
+                drawStringWithRuns(g2d, line, lineStarts.get(lineIndex), x, y, textColor,
+                        colorRuns, styleRuns, fontName, fontSize, fontStyle);
             }
             y += lineAdvance;
         }
@@ -178,29 +187,108 @@ public class AwtTextRenderer implements TextRenderer {
         return bitmap;
     }
 
-    private static void drawStringWithColorRuns(Graphics2D g2d, FontMetrics fm,
-                                                String line, int lineStart,
-                                                int x, int y, int fallbackColor,
-                                                List<TextRenderer.ColorRun> colorRuns) {
+    private static void drawStringWithRuns(Graphics2D g2d,
+                                           String line, int lineStart,
+                                           int x, int y, int fallbackColor,
+                                           List<TextRenderer.ColorRun> colorRuns,
+                                           List<TextRenderer.StyleRun> styleRuns,
+                                           String fontName, int fontSize, String fontStyle) {
         int runStart = 0;
+        int penX = x;
         while (runStart < line.length()) {
-            int color = TextRenderer.colorForChar(colorRuns, lineStart + runStart, fallbackColor);
+            int absoluteStart = lineStart + runStart;
+            int color = TextRenderer.colorForChar(colorRuns, absoluteStart, fallbackColor);
+            String effectiveFont = TextRenderer.fontNameForChar(styleRuns, absoluteStart, fontName);
+            int effectiveSize = TextRenderer.fontSizeForChar(styleRuns, absoluteStart, fontSize);
+            String effectiveStyle = TextRenderer.fontStyleForChar(styleRuns, absoluteStart, fontStyle);
             int runEnd = runStart + 1;
-            while (runEnd < line.length()
-                    && TextRenderer.colorForChar(colorRuns, lineStart + runEnd, fallbackColor) == color) {
+            while (runEnd < line.length()) {
+                int absolute = lineStart + runEnd;
+                if (TextRenderer.colorForChar(colorRuns, absolute, fallbackColor) != color
+                        || !Objects.equals(TextRenderer.fontNameForChar(styleRuns, absolute, fontName), effectiveFont)
+                        || TextRenderer.fontSizeForChar(styleRuns, absolute, fontSize) != effectiveSize
+                        || !Objects.equals(TextRenderer.fontStyleForChar(styleRuns, absolute, fontStyle), effectiveStyle)) {
+                    break;
+                }
                 runEnd++;
             }
             String segment = line.substring(runStart, runEnd);
+            Font segmentFont = resolveStyledFont(effectiveFont, effectiveSize, effectiveStyle);
+            g2d.setFont(segmentFont);
             g2d.setColor(new Color(color, true));
-            g2d.drawString(segment, x + fm.stringWidth(line.substring(0, runStart)), y);
+            g2d.drawString(segment, penX, y);
+            penX += g2d.getFontMetrics(segmentFont).stringWidth(segment);
             runStart = runEnd;
         }
+    }
+
+    private static int measureStyledWidth(Graphics2D g2d,
+                                          String line, int lineStart,
+                                          String fontName, int fontSize, String fontStyle,
+                                          List<TextRenderer.StyleRun> styleRuns) {
+        if (line == null || line.isEmpty()) {
+            return 0;
+        }
+        if (styleRuns == null || styleRuns.isEmpty()) {
+            return g2d.getFontMetrics(resolveStyledFont(fontName, fontSize, fontStyle)).stringWidth(line);
+        }
+        int width = 0;
+        int runStart = 0;
+        while (runStart < line.length()) {
+            int absoluteStart = lineStart + runStart;
+            String effectiveFont = TextRenderer.fontNameForChar(styleRuns, absoluteStart, fontName);
+            int effectiveSize = TextRenderer.fontSizeForChar(styleRuns, absoluteStart, fontSize);
+            String effectiveStyle = TextRenderer.fontStyleForChar(styleRuns, absoluteStart, fontStyle);
+            int runEnd = runStart + 1;
+            while (runEnd < line.length()) {
+                int absolute = lineStart + runEnd;
+                if (!Objects.equals(TextRenderer.fontNameForChar(styleRuns, absolute, fontName), effectiveFont)
+                        || TextRenderer.fontSizeForChar(styleRuns, absolute, fontSize) != effectiveSize
+                        || !Objects.equals(TextRenderer.fontStyleForChar(styleRuns, absolute, fontStyle), effectiveStyle)) {
+                    break;
+                }
+                runEnd++;
+            }
+            Font segmentFont = resolveStyledFont(effectiveFont, effectiveSize, effectiveStyle);
+            width += g2d.getFontMetrics(segmentFont).stringWidth(line.substring(runStart, runEnd));
+            runStart = runEnd;
+        }
+        return width;
+    }
+
+    private static Font resolveStyledFont(String fontName, int fontSize, String fontStyle) {
+        int fontStyleAwt = Font.PLAIN;
+        String style = fontStyle != null ? fontStyle.toLowerCase() : "";
+        if (style.contains("bold")) fontStyleAwt |= Font.BOLD;
+        if (style.contains("italic")) fontStyleAwt |= Font.ITALIC;
+        Font font = resolvePfrAwtFont(fontName, fontStyleAwt, fontSize);
+        if (font == null) {
+            font = resolveDirectorFont(fontName, fontStyleAwt, fontSize);
+        }
+        if (style.contains("underline")) {
+            Map<TextAttribute, Object> attrs = new HashMap<>();
+            attrs.put(TextAttribute.UNDERLINE, TextAttribute.UNDERLINE_ON);
+            font = font.deriveFont(attrs);
+        }
+        return font;
     }
 
     @Override
     public int[] charPosToLoc(String text, int charIndex,
                               String fontName, int fontSize, String fontStyle,
                               int fixedLineSpace, String alignment, int fieldWidth) {
+        return charPosToLoc(text, charIndex,
+                fontName, fontSize, fontStyle,
+                fixedLineSpace, alignment, fieldWidth,
+                false, Integer.MAX_VALUE, List.of());
+    }
+
+    @Override
+    public int[] charPosToLoc(String text, int charIndex,
+                              String fontName, int fontSize, String fontStyle,
+                              int fixedLineSpace, String alignment, int fieldWidth,
+                              boolean kerning, int kerningThreshold,
+                              List<TextRenderer.StyleRun> styleRuns) {
         int fontStyleAwt = Font.PLAIN;
         String style = fontStyle != null ? fontStyle.toLowerCase() : "";
         if (style.contains("bold")) fontStyleAwt |= Font.BOLD;
@@ -218,7 +306,8 @@ public class AwtTextRenderer implements TextRenderer {
 
         if (text == null || text.isEmpty() || charIndex <= 0) {
             int alignX = alignmentOffset(alignment, fieldWidth, text == null || text.isEmpty() ? 0 :
-                    fm.stringWidth(TextRenderer.splitLines(text)[0]));
+                    measureStyledWidth(g2d, TextRenderer.splitLines(text)[0], 0,
+                            fontName, fontSize, fontStyle, styleRuns));
             g2d.dispose();
             return new int[]{alignX, 0};
         }
@@ -230,8 +319,12 @@ public class AwtTextRenderer implements TextRenderer {
         String[] lines = TextRenderer.splitLines(text);
         String fullLine = (lineNum < lines.length) ? lines[lineNum] : "";
         String lineSubstr = (lineNum < lines.length) ? fullLine.substring(0, charsOnLine) : "";
-        int x = fm.stringWidth(lineSubstr);
-        int alignX = alignmentOffset(alignment, fieldWidth, fm.stringWidth(fullLine));
+        int lineStart = TextRenderer.lineStartIndex(text, lineNum);
+        int x = measureStyledWidth(g2d, lineSubstr, lineStart,
+                fontName, fontSize, fontStyle, styleRuns);
+        int alignX = alignmentOffset(alignment, fieldWidth,
+                measureStyledWidth(g2d, fullLine, lineStart,
+                        fontName, fontSize, fontStyle, styleRuns));
         int y = lineNum * lineHeight;
 
         g2d.dispose();
@@ -260,6 +353,18 @@ public class AwtTextRenderer implements TextRenderer {
     public int locToCharPos(String text, int x, int y,
                             String fontName, int fontSize, String fontStyle,
                             int fixedLineSpace, String alignment, int fieldWidth) {
+        return locToCharPos(text, x, y,
+                fontName, fontSize, fontStyle,
+                fixedLineSpace, alignment, fieldWidth,
+                false, Integer.MAX_VALUE, List.of());
+    }
+
+    @Override
+    public int locToCharPos(String text, int x, int y,
+                            String fontName, int fontSize, String fontStyle,
+                            int fixedLineSpace, String alignment, int fieldWidth,
+                            boolean kerning, int kerningThreshold,
+                            List<TextRenderer.StyleRun> styleRuns) {
         if (text == null || text.isEmpty()) return 0;
 
         int fontStyleAwt = Font.PLAIN;
@@ -281,15 +386,21 @@ public class AwtTextRenderer implements TextRenderer {
         int charsBefore = TextRenderer.lineStartIndex(text, lineIndex);
 
         String line = lines[lineIndex];
-        int alignX = alignmentOffset(alignment, fieldWidth, fm.stringWidth(line));
+        int alignX = alignmentOffset(alignment, fieldWidth,
+                measureStyledWidth(g2d, line, charsBefore,
+                        fontName, fontSize, fontStyle, styleRuns));
         int localX = x - alignX;
         int charOnLine = line.length();
+        int previousWidth = 0;
         for (int i = 0; i < line.length(); i++) {
-            int cx = fm.stringWidth(line.substring(0, i + 1));
-            if (cx - fm.charWidth(line.charAt(i)) / 2 >= localX) {
+            int cx = measureStyledWidth(g2d, line.substring(0, i + 1), charsBefore,
+                    fontName, fontSize, fontStyle, styleRuns);
+            int advance = cx - previousWidth;
+            if (cx - advance / 2 >= localX) {
                 charOnLine = i;
                 break;
             }
+            previousWidth = cx;
         }
 
         g2d.dispose();

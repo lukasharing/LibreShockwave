@@ -331,6 +331,32 @@ class CastMemberLifecycleTest {
         assertEquals(createdRef.memberNum(), ((Datum.CastMemberRef) reused).memberNum());
     }
 
+    @Test
+    void removeMemberRetiresAuthoredSlotBindingsAndLookup() throws Exception {
+        CastLibManager manager = new CastLibManager(null, null);
+        CastLib castLib = new CastLib(2, null, null);
+        installCastLib(manager, 2, castLib);
+        installAuthoredChunk(castLib, 42, createBitmapChunk(42, "authored_wall"));
+
+        assertTrue(manager.memberExists(2, 42));
+        assertTrue(manager.isRegistryVisibleMember(2, 42));
+
+        AtomicInteger retiredSlot = new AtomicInteger(-1);
+        CastMember.setMemberSlotRetiredCallback((castLibNum, memberNum) ->
+                retiredSlot.set((castLibNum << 16) | memberNum));
+        try {
+            assertTrue(manager.removeMember(2, 42));
+        } finally {
+            CastMember.setMemberSlotRetiredCallback(null);
+        }
+
+        assertEquals((2 << 16) | 42, retiredSlot.get());
+        assertFalse(manager.memberExists(2, 42));
+        assertFalse(manager.isRegistryVisibleMember(2, 42));
+        assertNull(castLib.findMemberByNumber(42));
+        assertNull(castLib.getCachedMember(42));
+    }
+
     private static CastMemberChunk createTextXtraChunk(int memberNum, String name) {
         byte[] textXtraSpecificData = new byte[]{0, 0, 0, 0, 't', 'e', 'x', 't'};
         return new CastMemberChunk(

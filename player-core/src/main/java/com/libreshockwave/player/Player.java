@@ -211,6 +211,7 @@ public class Player implements UpdateProvider {
         this.castLibManager = new CastLibManager(file, (castLibNumber, fileName) ->
             loadCastFromNetCache(castLibNumber, fileName));
         this.castLibManager.setRegistryChangeCallback(this::onCastRegistryChanged);
+        this.castLibManager.setCastContentsRetiredCallback(this::onCastContentsRetired);
         this.stageRenderer.setCastLibManager(castLibManager);
         this.spriteProperties.setCastLibManager(castLibManager);
         this.timeoutManager = new TimeoutManager(this::getMovieTimeMs);
@@ -315,6 +316,7 @@ public class Player implements UpdateProvider {
             handleCastDataRequest(castLibNum, fileName, castDataRequestCallback);
         });
         this.castLibManager.setRegistryChangeCallback(this::onCastRegistryChanged);
+        this.castLibManager.setCastContentsRetiredCallback(this::onCastContentsRetired);
         this.stageRenderer.setCastLibManager(castLibManager);
         this.spriteProperties.setCastLibManager(castLibManager);
         this.timeoutManager = new TimeoutManager(this::getMovieTimeMs);
@@ -685,6 +687,19 @@ public class Player implements UpdateProvider {
         }
         reapplyPersistentMemberAliases(castLibNumber);
         applyInitialBuiltinVariableFieldOverrides();
+        stageRenderer.getSpriteRegistry().bumpRevision();
+    }
+
+    private void onCastContentsRetired(int castLibNumber) {
+        castLibManager.clearHandlerLookupCache();
+        vm.invalidateHandlerCache();
+        if (bitmapCache != null) {
+            bitmapCache.clear();
+        }
+        if (bitmapResolver != null) {
+            bitmapResolver.invalidateMoviePalette();
+        }
+        stageRenderer.getSpriteRegistry().clearDynamicMemberBindingsForCast(castLibNumber);
         stageRenderer.getSpriteRegistry().bumpRevision();
     }
 

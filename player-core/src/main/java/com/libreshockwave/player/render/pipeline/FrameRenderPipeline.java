@@ -40,12 +40,14 @@ public final class FrameRenderPipeline {
 
     public FrameSnapshot renderFrame(int frameNumber) {
         lastStage = "init";
+        var renderableStageImage = stageRenderer.getRenderableStageImage();
         FrameRenderPipelineContext context = new FrameRenderPipelineContext(
                 frameNumber,
                 stageRenderer.getStageWidth(),
                 stageRenderer.getStageHeight(),
                 stageRenderer.getBackgroundColor(),
-                stageRenderer.getRenderableStageImage(),
+                renderableStageImage,
+                stageRenderer.getRenderableStageImageRevision(),
                 "Frame " + frameNumber
         );
 
@@ -154,6 +156,7 @@ public final class FrameRenderPipeline {
                     spriteBaker.getRenderRevision(),
                     context.buildTrace()
             ));
+            stageRenderer.consumeRenderableStageImage(context.stageImage(), context.stageImageRevision());
         }
     }
 }

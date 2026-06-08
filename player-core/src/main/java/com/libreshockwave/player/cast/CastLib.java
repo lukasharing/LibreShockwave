@@ -588,6 +588,35 @@ public class CastLib {
     }
 
     /**
+     * Remove a member slot from the live cast namespace. Runtime-created
+     * members are erased and kept as reusable empty slots; file-backed members
+     * are detached from the runtime member table so broad member lookup cannot
+     * resurrect content after Director's removeMember().
+     */
+    public boolean removeMemberSlot(int memberNumber) {
+        if (!isLoaded()) {
+            load();
+        }
+        CastMember cached = members.get(memberNumber);
+        CastMemberChunk chunk = memberChunks.get(memberNumber);
+        if (cached == null && chunk == null) {
+            return false;
+        }
+
+        if (cached != null && cached.isRuntimeDynamic()) {
+            cached.erase();
+        } else {
+            if (cached != null) {
+                cached.erase();
+            }
+            members.remove(memberNumber);
+            memberChunks.remove(memberNumber);
+            invalidateMemberChunkNameIndex();
+        }
+        return true;
+    }
+
+    /**
      * Find a member chunk by name.
      */
     public CastMemberChunk findMemberByName(String name) {

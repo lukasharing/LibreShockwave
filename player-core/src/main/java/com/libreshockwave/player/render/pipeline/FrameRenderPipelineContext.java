@@ -17,6 +17,7 @@ public final class FrameRenderPipelineContext {
     private final int stageHeight;
     private final int backgroundColor;
     private final Bitmap stageImage;
+    private final int stageImageRevision;
     private final String debugInfo;
 
     private final List<RenderSprite> sprites = new ArrayList<>();
@@ -30,12 +31,14 @@ public final class FrameRenderPipelineContext {
                                       int stageHeight,
                                       int backgroundColor,
                                       Bitmap stageImage,
+                                      int stageImageRevision,
                                       String debugInfo) {
         this.frameNumber = frameNumber;
         this.stageWidth = stageWidth;
         this.stageHeight = stageHeight;
         this.backgroundColor = backgroundColor;
         this.stageImage = stageImage;
+        this.stageImageRevision = stageImageRevision;
         this.debugInfo = debugInfo;
     }
 
@@ -57,6 +60,10 @@ public final class FrameRenderPipelineContext {
 
     public Bitmap stageImage() {
         return stageImage;
+    }
+
+    public int stageImageRevision() {
+        return stageImageRevision;
     }
 
     public String debugInfo() {

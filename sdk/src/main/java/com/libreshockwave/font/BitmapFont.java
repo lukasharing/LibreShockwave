@@ -250,6 +250,20 @@ public class BitmapFont {
      * @param color    text color (0xAARRGGBB)
      */
     public void drawChar(char ch, int[] dst, int dstW, int dstH, int dstX, int dstY, int color) {
+        drawChar(ch, dst, dstW, dstH, dstX, dstY, color, false);
+    }
+
+    /**
+     * Draw a single character with a synthetic Director-style italic slant.
+     * Used when the movie requests #italic but the resolved bitmap face has no
+     * real italic strike available.
+     */
+    public void drawCharSlanted(char ch, int[] dst, int dstW, int dstH, int dstX, int dstY, int color) {
+        drawChar(ch, dst, dstW, dstH, dstX, dstY, color, true);
+    }
+
+    private void drawChar(char ch, int[] dst, int dstW, int dstH,
+                          int dstX, int dstY, int color, boolean slanted) {
         int charCode = resolveDirectorTextCode((int) ch);
         int drawX = dstX + getCharOffsetX(charCode);
 
@@ -267,8 +281,9 @@ public class BitmapFont {
             for (int cy = 0; cy < cellHeight; cy++) {
                 int py = dstY + cy;
                 if (py < 0 || py >= dstH) continue;
+                int rowOffset = slanted ? syntheticItalicOffset(cy) : 0;
                 for (int cx = 0; cx < cellWidth; cx++) {
-                    int px = drawX + cx;
+                    int px = drawX + cx + rowOffset;
                     if (px < 0 || px >= dstW) continue;
 
                     int srcIdx = (cellY + cy) * bitmapWidth + (cellX + cx);
@@ -285,8 +300,9 @@ public class BitmapFont {
             for (int cy = 0; cy < cellHeight; cy++) {
                 int py = dstY + cy;
                 if (py < 0 || py >= dstH) continue;
+                int rowOffset = slanted ? syntheticItalicOffset(cy) : 0;
                 for (int cx = 0; cx < cellWidth; cx++) {
-                    int px = drawX + cx;
+                    int px = drawX + cx + rowOffset;
                     if (px < 0 || px >= dstW) continue;
 
                     int srcIdx = cy * cellWidth + cx;
@@ -296,6 +312,10 @@ public class BitmapFont {
                 }
             }
         }
+    }
+
+    private int syntheticItalicOffset(int row) {
+        return Math.max(0, (cellHeight - 1 - row) / 4);
     }
 
     private int resolveDirectorTextCode(int charCode) {

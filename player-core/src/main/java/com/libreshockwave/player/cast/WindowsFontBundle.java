@@ -81,15 +81,9 @@ public class WindowsFontBundle {
         FontVariants variants = AVAILABLE_FONTS.get(key);
         if (variants == null) return null;
 
-        // Select variant: 0=regular, 1=bold, 2=italic, 3=bolditalic
-        int variantIdx = (bold ? 1 : 0) + (italic ? 2 : 0);
+        // Select variant: 0=regular, 1=bold, 2=italic, 3=bolditalic.
+        int variantIdx = selectVariantIndex(variants, bold, italic);
         ValueProvider<byte[]> supplier = variants.get(variantIdx);
-
-        // Fall back to regular if specific variant not available
-        if (supplier == null) {
-            supplier = variants.regular();
-            variantIdx = 0;
-        }
         if (supplier == null) return null;
 
         String cacheKey = key + ":" + fontSize + ":" + variantIdx;
@@ -121,5 +115,35 @@ public class WindowsFontBundle {
         if (fontName == null) return false;
         FontVariants variants = AVAILABLE_FONTS.get(fontName.toLowerCase());
         return variants != null && variants.bold() != null;
+    }
+
+    public static boolean selectedVariantHasBold(String fontName, boolean bold, boolean italic) {
+        if (fontName == null) return false;
+        FontVariants variants = AVAILABLE_FONTS.get(fontName.toLowerCase());
+        if (variants == null) return false;
+        int variantIdx = selectVariantIndex(variants, bold, italic);
+        return variantIdx == 1 || variantIdx == 3;
+    }
+
+    public static boolean selectedVariantHasItalic(String fontName, boolean bold, boolean italic) {
+        if (fontName == null) return false;
+        FontVariants variants = AVAILABLE_FONTS.get(fontName.toLowerCase());
+        if (variants == null) return false;
+        int variantIdx = selectVariantIndex(variants, bold, italic);
+        return variantIdx == 2 || variantIdx == 3;
+    }
+
+    private static int selectVariantIndex(FontVariants variants, boolean bold, boolean italic) {
+        int requested = (bold ? 1 : 0) + (italic ? 2 : 0);
+        if (variants.get(requested) != null) {
+            return requested;
+        }
+        if (bold && variants.bold() != null) {
+            return 1;
+        }
+        if (italic && variants.italic() != null) {
+            return 2;
+        }
+        return 0;
     }
 }

@@ -138,6 +138,19 @@ class DrawingMatteTest {
     }
 
     @Test
+    void createMatteKeepsBlackOutlinedRgbArtworkOpaque() {
+        Bitmap src = blackOutlinedFlagBitmap();
+
+        Bitmap matte = Drawing.createMatte(src);
+
+        assertEquals(0xFFFFFFFF, matte.getPixel(0, 0),
+                "black artwork outlines touching the edge are visible pixels, not inferred RGB matte");
+        assertEquals(0xFFFFFFFF, matte.getPixel(2, 2),
+                "white stripes enclosed by the black outline must not be flood-filled away");
+        assertEquals(0xFFFFFFFF, matte.getPixel(4, 4));
+    }
+
+    @Test
     void copiedRuntimeTextImagesKeepDominantRgbMatteRule() {
         Bitmap src = new Bitmap(3, 3, 32, new int[] {
                 0xFF000000, 0xFF000000, 0xFF000000,
@@ -264,6 +277,21 @@ class DrawingMatteTest {
         assertEquals(0xFF2A6883, dest.getPixel(1, 1));
         assertEquals(0xFF2A6883, dest.getPixel(2, 2));
         assertEquals(0xFF112233, dest.getPixel(3, 3));
+    }
+
+    @Test
+    void matteCopyPixelsKeepsBlackOutlineAroundRgbArtwork() {
+        Bitmap dest = new Bitmap(5, 5, 32);
+        dest.fill(0xFF778899);
+        Bitmap src = blackOutlinedFlagBitmap();
+
+        Drawing.copyPixels(dest, src, 0, 0, 0, 0, 5, 5, Palette.InkMode.MATTE, 255);
+
+        assertEquals(0xFF000000, dest.getPixel(0, 0),
+                "matte copy must preserve black outline pixels from ordinary RGB artwork");
+        assertEquals(0xFFFFFFFF, dest.getPixel(2, 2),
+                "interior white artwork enclosed by the outline must remain visible");
+        assertEquals(0xFFFF66AA, dest.getPixel(3, 1));
     }
 
     void matteCopyPixelsKeepsMixed32BitNoWhiteEdgeStripOpaque() {
@@ -465,6 +493,16 @@ class DrawingMatteTest {
         assertEquals(0xFF000000, dest.getPixel(0, 0));
         assertEquals(0xFFFFFFFF, dest.getPixel(1, 1));
         assertEquals(0xFF000000, dest.getPixel(2, 2));
+    }
+
+    private static Bitmap blackOutlinedFlagBitmap() {
+        return new Bitmap(5, 5, 32, new int[] {
+                0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000,
+                0xFF000000, 0xFFFF66AA, 0xFFFF66AA, 0xFFFF66AA, 0xFF000000,
+                0xFF000000, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFF000000,
+                0xFF000000, 0xFFFF66AA, 0xFFFF66AA, 0xFFFF66AA, 0xFF000000,
+                0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000
+        });
     }
 
     @Test

@@ -363,7 +363,6 @@ public final class ImageMethodDispatcher {
 
         int left, top, right, bottom;
         Datum propsArg;
-        boolean pointToPointLine = false;
 
         if (firstArg instanceof Datum.Rect rect) {
             // draw(rect, propList)
@@ -381,7 +380,6 @@ public final class ImageMethodDispatcher {
             right = end.x();
             bottom = end.y();
             propsArg = args.get(2);
-            pointToPointLine = true;
         } else if (args.size() >= 5) {
             // draw(left, top, right, bottom, propList)
             left = args.get(0).toInt();
@@ -395,7 +393,7 @@ public final class ImageMethodDispatcher {
 
         // Extract color from propList
         Datum colorDatum = new Datum.Color(0, 0, 0);
-        String shapeType = pointToPointLine ? "line" : "rect";
+        String shapeType = "line";
         int lineSize = 1;
 
         if (propsArg instanceof Datum.PropList pl) {

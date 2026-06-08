@@ -299,7 +299,11 @@ public class SpriteBaker {
             return authoredFramePalette;
         }
 
-        return current;
+        // Paletted bitmap members authored as "current palette" still need a
+        // concrete palette at decode time. Without one the decoder treats
+        // palette indices as final colors, producing transient rainbow/gray
+        // artifacts until a later frame resolves the real movie palette.
+        return current != null ? current : Palette.SYSTEM_MAC_PALETTE;
     }
 
     private Palette resolveFirstVisibleAuthoredPalette(List<RenderSprite> sprites) {
@@ -458,7 +462,12 @@ public class SpriteBaker {
             int width = sprite.getWidth() > 0 ? sprite.getWidth() : 200;
             int height = sprite.getHeight() > 0 ? sprite.getHeight() : 20;
             int bgColor = dynamicTextBgColor(sprite, member);
-            textImage = member.renderTextToImage(width, height, bgColor);
+            if (member.hasExplicitTextColor()) {
+                textImage = member.renderTextToImage(width, height, bgColor);
+            } else {
+                int textColor = resolvePaletteColor(sprite.getForeColor(), sprite.getForeColorSource());
+                textImage = member.renderTextToImage(width, height, bgColor, textColor);
+            }
         }
         // For untouched file-loaded text members, fall through to bakeTextFromFile()
         // which applies the sprite's foreColor/backColor from the score.

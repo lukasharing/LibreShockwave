@@ -600,7 +600,7 @@ class CastMemberTextImageTest {
     }
 
     @Test
-    void partialTextRangeBoldPromotesMemberStyleWhenRunsAreFlattened() {
+    void partialTextRangeBoldDoesNotPromoteMemberStyle() {
         CastMember member = new CastMember(1, 1, MemberType.TEXT);
         member.setProp("text", Datum.of("name: message"));
         member.setProp("fontstyle", Datum.of("plain"));
@@ -608,8 +608,40 @@ class CastMemberTextImageTest {
         assertTrue(member.setTextRangeProp("char", 1, 4, "fontstyle",
                 Datum.list(Datum.symbol("bold"))));
 
-        assertEquals("bold", member.getProp("fontstyle").toStr(),
-                "partial Director fontStyle ranges should preserve bold when rendered by the flat text path");
+        assertEquals("plain", member.getProp("fontstyle").toStr(),
+                "partial Director fontStyle ranges must not rewrite the whole member style");
+        assertEquals("bold", member.effectiveTextFontStyleAt(0));
+        assertEquals("plain", member.effectiveTextFontStyleAt(5));
+    }
+
+    @Test
+    void adjustedMemberImageWidthMeasuresPartialFontStyleRuns() {
+        CastMember.setTextRenderer(new SimpleTextRenderer());
+        FontRegistry.clear();
+        String text = "Speaker: hello";
+
+        CastMember plain = new CastMember(1, 1, MemberType.TEXT);
+        plain.setProp("font", Datum.of("__missing_bitmap_font__"));
+        plain.setProp("fontsize", Datum.of(9));
+        plain.setProp("fontstyle", Datum.of("plain"));
+        plain.setProp("rect", new Datum.Rect(0, 0, 480, 480));
+        plain.setProp("text", Datum.of(text));
+        Bitmap plainImage = ((Datum.ImageRef) plain.getProp("image")).bitmap();
+
+        CastMember styled = new CastMember(1, 1, MemberType.TEXT);
+        styled.setProp("font", Datum.of("__missing_bitmap_font__"));
+        styled.setProp("fontsize", Datum.of(9));
+        styled.setProp("fontstyle", Datum.of("plain"));
+        styled.setProp("rect", new Datum.Rect(0, 0, 480, 480));
+        styled.setProp("text", Datum.of(text));
+        assertTrue(styled.setTextRangeProp("char", 1, text.length(), "fontstyle",
+                Datum.symbol("bold")));
+        Bitmap styledImage = ((Datum.ImageRef) styled.getProp("image")).bitmap();
+
+        assertTrue(styledImage.getWidth() > plainImage.getWidth(),
+                "adjusted text members must size member.image from styled range metrics, not the plain member font");
+        assertTrue(countPixels(styledImage, 0xFF000000) > countPixels(plainImage, 0xFF000000),
+                "styled range should render visibly bolder inside the measured image");
     }
 
     @Test

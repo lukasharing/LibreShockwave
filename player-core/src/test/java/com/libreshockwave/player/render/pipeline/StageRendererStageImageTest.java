@@ -37,7 +37,7 @@ class StageRendererStageImageTest {
     }
 
     @Test
-    void scriptModifiedStageImageStillRenders() {
+    void scriptModifiedStageImageRendersForOnePublishedSnapshot() {
         StageRenderer renderer = new StageRenderer(null);
 
         Bitmap stageImage = renderer.getStageImage();
@@ -47,19 +47,53 @@ class StageRendererStageImageTest {
 
         assertSame(stageImage, renderer.getRenderableStageImage());
 
-        FrameSnapshot snapshot = new FrameSnapshot(
-                1,
-                1,
-                1,
-                renderer.getBackgroundColor(),
-                List.of(),
-                "",
-                renderer.getRenderableStageImage(),
-                0,
-                RenderPipelineTrace.EMPTY
-        );
+        FrameSnapshot snapshot = renderWithPipeline(renderer);
 
         assertEquals(0xFFFFFFFF, snapshot.renderFrame().getPixel(0, 0));
+        assertFalse(renderer.hasStageImage());
+
+        FrameSnapshot nextSnapshot = renderWithPipeline(renderer);
+
+        assertNull(nextSnapshot.stageImage());
+        assertEquals(0xFF000000, nextSnapshot.renderFrame().getPixel(0, 0));
+    }
+
+    @Test
+    void stageImageLifecycleInvalidatesVisualRevision() {
+        StageRenderer renderer = new StageRenderer(null);
+
+        int initialRevision = renderer.getSpriteRegistry().getRevision();
+        Bitmap stageImage = renderer.getStageImage();
+        int createdRevision = renderer.getSpriteRegistry().getRevision();
+
+        assertTrue(createdRevision > initialRevision);
+
+        stageImage.setPixel(0, 0, 0xFFFFFFFF);
+        stageImage.markScriptModified();
+        int mutatedRevision = renderer.getSpriteRegistry().getRevision();
+
+        assertTrue(mutatedRevision > createdRevision);
+
+        renderWithPipeline(renderer);
+
+        assertFalse(renderer.hasStageImage());
+        assertTrue(renderer.getSpriteRegistry().getRevision() > mutatedRevision);
+    }
+
+    @Test
+    void consumedStageImageReferenceDoesNotBecomeRenderableAgain() {
+        StageRenderer renderer = new StageRenderer(null);
+        Bitmap stageImage = renderer.getStageImage();
+        stageImage.setPixel(0, 0, 0xFFFFFFFF);
+        stageImage.markScriptModified();
+
+        renderWithPipeline(renderer);
+
+        stageImage.setPixel(0, 0, 0xFFFFFF00);
+        stageImage.markScriptModified();
+
+        assertNull(renderer.getRenderableStageImage());
+        assertFalse(renderer.hasStageImage());
     }
 
     @Test
@@ -101,5 +135,10 @@ class StageRendererStageImageTest {
         assertEquals(0x000000, renderer.getBackgroundColor());
         assertNull(renderer.getRenderableStageImage());
         assertEquals(0xFF000000, renderer.getStageImage().getPixel(0, 0));
+    }
+
+    private static FrameSnapshot renderWithPipeline(StageRenderer renderer) {
+        return new FrameRenderPipeline(renderer, new SpriteBaker(new BitmapCache(), null, null))
+                .renderFrame(1);
     }
 }

@@ -424,6 +424,72 @@ class SimpleTextRendererTest {
     }
 
     @Test
+    void directorBitmapTextStylesAffectRoomBalloonWriterImages() {
+        FontRegistry.clear();
+        SimpleTextRenderer renderer = new SimpleTextRenderer();
+
+        Bitmap plain = renderer.renderText("Speaker: hello", 220, 12,
+                "v", 9, "plain",
+                "left", 0xFF000000, 0x00FFFFFF,
+                false, false, 10, 0);
+        Bitmap boldAlias = renderer.renderText("Speaker: hello", 220, 12,
+                "vb", 9, "plain",
+                "left", 0xFF000000, 0x00FFFFFF,
+                false, false, 10, 0);
+        Bitmap italic = renderer.renderText("Speaker: hello", 220, 12,
+                "v", 9, "italic",
+                "left", 0xFF000000, 0x00FFFFFF,
+                false, false, 10, 0);
+
+        assertTrue(countPixels(boldAlias, 0xFF000000) > countPixels(plain, 0xFF000000),
+                "Director font alias vb should render as a heavier bitmap face than v");
+        assertFalse(java.util.Arrays.equals(plain.getPixels(), italic.getPixels()),
+                "Director fontStyle #italic should affect bitmap text even without a real italic face");
+    }
+
+    @Test
+    void syntheticBitmapStylesUseMatchingLogicalAdvances() throws Exception {
+        registerInterfacePfrFont("v");
+        SimpleTextRenderer renderer = new SimpleTextRenderer();
+
+        String text = "ABCD";
+        Bitmap plain = renderer.renderText(text, 160, 14,
+                "v", 9, "plain",
+                "left", 0xFF000000, 0xFFFFFFFF,
+                false, false, 10, 0);
+        Bitmap bold = renderer.renderText(text, 160, 14,
+                "v", 9, "bold",
+                "left", 0xFF000000, 0xFFFFFFFF,
+                false, false, 10, 0);
+        Bitmap italic = renderer.renderText(text, 160, 14,
+                "v", 9, "italic",
+                "left", 0xFF000000, 0xFFFFFFFF,
+                false, false, 10, 0);
+
+        int[] plainEnd = renderer.charPosToLoc(text, text.length() + 1,
+                "v", 9, "plain",
+                10, "left", 160);
+        int[] boldEnd = renderer.charPosToLoc(text, text.length() + 1,
+                "v", 9, "bold",
+                10, "left", 160);
+        int[] italicEnd = renderer.charPosToLoc(text, text.length() + 1,
+                "v", 9, "italic",
+                10, "left", 160);
+
+        int plainInkWidth = inkWidth(plain, 0xFFFFFFFF);
+        assertTrue(inkWidth(bold, 0xFFFFFFFF) >= plainInkWidth + 3,
+                "synthetic bold should advance between glyphs instead of only overdrawing the final column");
+        assertFalse(java.util.Arrays.equals(plain.getPixels(), italic.getPixels()),
+                "synthetic italic should slant glyph pixels even when it keeps the original advances");
+        assertTrue(inkWidth(italic, 0xFFFFFFFF) <= plainInkWidth + 2,
+                "synthetic italic should not add tracking between every glyph");
+        assertTrue(boldEnd[0] >= plainEnd[0] + 4,
+                "charPosToLoc should report the same synthetic bold tracking used for rendering");
+        assertEquals(plainEnd[0], italicEnd[0],
+                "synthetic italic should preserve the plain logical advance");
+    }
+
+    @Test
     void compactButtonLineSpaceDoesNotClipVolterGlyphTops() {
         FontRegistry.clear();
         SimpleTextRenderer renderer = new SimpleTextRenderer();
@@ -561,6 +627,24 @@ class SimpleTextRendererTest {
     }
 
     @Test
+    void exactPfrTextStyleBoldUsesSyntheticWeightWhenNoRealBoldFaceIsSelected() throws Exception {
+        registerInterfacePfrFont("v");
+        SimpleTextRenderer renderer = new SimpleTextRenderer();
+
+        Bitmap plain = renderer.renderText("Speaker:", 140, 12,
+                "v", 9, "plain",
+                "left", 0xFF000000, 0x00FFFFFF,
+                false, false, 10, 0);
+        Bitmap bold = renderer.renderText("Speaker:", 140, 12,
+                "v", 9, "bold",
+                "left", 0xFF000000, 0x00FFFFFF,
+                false, false, 10, 0);
+
+        assertTrue(countPixels(bold, 0xFF000000) > countPixels(plain, 0xFF000000),
+                "a styled range over a regular PFR resource should still receive Director synthetic bold");
+    }
+
+    @Test
     void embeddedPfrMissingGlyphStaysOnPrimaryFontInsteadOfSystemFallback() throws Exception {
         registerInterfacePfrFont("vb");
 
@@ -577,9 +661,11 @@ class SimpleTextRendererTest {
     private static BitmapFont resolveBitmapFont(String fontName, int fontSize,
                                                 boolean bold, boolean italic) throws Exception {
         Method method = SimpleTextRenderer.class.getDeclaredMethod(
-                "resolveBitmapFont", String.class, int.class, boolean.class, boolean.class, boolean[].class);
+                "resolveBitmapFont", String.class, int.class, boolean.class, boolean.class,
+                boolean[].class, boolean[].class);
         method.setAccessible(true);
-        return (BitmapFont) method.invoke(null, fontName, fontSize, bold, italic, new boolean[]{false});
+        return (BitmapFont) method.invoke(null, fontName, fontSize, bold, italic,
+                new boolean[]{false}, new boolean[]{false});
     }
 
     private static BitmapFont fontForChar(BitmapFont primary, char ch) throws Exception {
@@ -782,6 +868,25 @@ class SimpleTextRendererTest {
             }
         }
         return -1;
+    }
+
+    private static int findLastNonBackgroundColumn(Bitmap bitmap, int bgColor) {
+        for (int x = bitmap.getWidth() - 1; x >= 0; x--) {
+            for (int y = 0; y < bitmap.getHeight(); y++) {
+                if (bitmap.getPixel(x, y) != bgColor) {
+                    return x;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private static int inkWidth(Bitmap bitmap, int bgColor) {
+        int first = findFirstNonBackgroundColumn(bitmap, bgColor);
+        if (first < 0) {
+            return 0;
+        }
+        return findLastNonBackgroundColumn(bitmap, bgColor) - first + 1;
     }
 
     private static int countPixels(Bitmap bitmap, int color) {

@@ -85,7 +85,10 @@ public class SpriteRegistry {
 
     /**
      * Clear dynamic sprite bindings that still reference a retired member slot.
-     * This prevents recycled runtime bitmap-bin members from leaking into stale sprites.
+     * Director's removeMember invalidates the runtime visual content. A sprite
+     * that was showing that member must stay explicitly empty until authored
+     * Lingo assigns a new member; falling back to score data resurrects stale
+     * visualizer parts during room/window teardown.
      */
     public boolean clearDynamicMemberBindings(int castLib, int memberNum) {
         boolean changed = false;
@@ -105,6 +108,34 @@ public class SpriteRegistry {
     }
 
     /**
+     * Clear runtime sprite bindings that point into a cast whose visible contents
+     * are being unloaded or replaced. Unlike retiring one runtime member slot,
+     * replacing a cast invalidates every member identity in that cast namespace,
+     * so score-backed channels must stay explicitly empty until authored code
+     * assigns fresh content.
+     */
+    public boolean clearDynamicMemberBindingsForCast(int castLib) {
+        if (castLib <= 0) {
+            return false;
+        }
+
+        boolean changed = false;
+        for (SpriteState state : sprites.values()) {
+            if (!state.hasDynamicMember()) {
+                continue;
+            }
+            if (state.getEffectiveCastLib() == castLib && state.getEffectiveCastMember() > 0) {
+                resetUnloadedCastBinding(state);
+                changed = true;
+            }
+        }
+        if (changed) {
+            bumpRevision();
+        }
+        return changed;
+    }
+
+    /**
      * Check if a channel has a registered sprite.
      */
     public boolean contains(int channel) {
@@ -113,19 +144,31 @@ public class SpriteRegistry {
 
     /**
      * Get all dynamic/puppeted sprites that should be rendered.
-     * Includes sprites with dynamic members AND puppeted sprites (even without
-     * explicit members). In Director, puppeted sprites are always rendered -
-     * the window system uses them for both hit testing and visual display
-     * (e.g., color swatches with bgColor set).
+     * Includes sprites with dynamic members and puppeted sprites with visible
+     * content. Empty dynamic channel states are runtime bookkeeping, not
+     * renderable stage content.
      */
     public List<SpriteState> getDynamicSprites() {
         List<SpriteState> dynamicSprites = new ArrayList<>();
         for (SpriteState sprite : sprites.values()) {
-            if (sprite.hasDynamicMember() || sprite.isDynamic() || sprite.isPuppet()) {
+            if (isRenderableDynamicSprite(sprite)) {
                 dynamicSprites.add(sprite);
             }
         }
         return dynamicSprites;
+    }
+
+    private static boolean isRenderableDynamicSprite(SpriteState sprite) {
+        if (sprite == null || !sprite.isVisible()) {
+            return false;
+        }
+        if (sprite.hasDynamicMember()) {
+            return sprite.getEffectiveCastMember() > 0;
+        }
+        if (!sprite.isPuppet()) {
+            return false;
+        }
+        return sprite.getEffectiveCastMember() > 0 || sprite.hasBackColor();
     }
 
     /**
@@ -136,24 +179,26 @@ public class SpriteRegistry {
     }
 
     private static void resetRetiredDynamicBinding(SpriteState state) {
+        resetUnloadedCastBinding(state);
+    }
+
+    private static void resetUnloadedCastBinding(SpriteState state) {
         if (state == null) {
             return;
         }
+
+        state.setScriptInstanceList(List.of());
+        state.setVisible(false);
+        state.setCursor(0);
+        state.setBlend(100);
+        state.setStretch(0);
+        state.resetReleasedChannelGeometry();
+        state.resetReleasedSpriteTransforms();
         if (state.isDynamic()) {
             state.clearDynamicMember();
-            state.resetReleasedChannelGeometry();
-            state.resetReleasedSpriteTransforms();
-            return;
+        } else {
+            state.setDynamicMember(0, 0);
         }
-
-        ScoreChunk.ChannelData initialData = state.getInitialData();
-        if (initialData != null) {
-            state.rebindToScorePreservingScriptInstances(initialData);
-            return;
-        }
-
-        state.clearDynamicMember();
-        state.resetReleasedSpriteTransforms();
     }
 
     /**

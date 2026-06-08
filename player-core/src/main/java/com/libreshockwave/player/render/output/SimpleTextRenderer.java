@@ -7,7 +7,9 @@ import com.libreshockwave.player.cast.FontRegistry;
 import com.libreshockwave.player.cast.VolterFontBundle;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Simple text renderer that creates bitmap images without AWT dependencies.
@@ -51,6 +53,22 @@ public class SimpleTextRenderer implements TextRenderer {
                              int fixedLineSpace, int topSpacing,
                              boolean kerning, int kerningThreshold,
                              List<TextRenderer.ColorRun> colorRuns) {
+        return renderText(text, width, height,
+                fontName, fontSize, fontStyle,
+                alignment, textColor, bgColor,
+                wordWrap, antialias, fixedLineSpace, topSpacing,
+                kerning, kerningThreshold, colorRuns, List.of());
+    }
+
+    @Override
+    public Bitmap renderText(String text, int width, int height,
+                             String fontName, int fontSize, String fontStyle,
+                             String alignment, int textColor, int bgColor,
+                             boolean wordWrap, boolean antialias,
+                             int fixedLineSpace, int topSpacing,
+                             boolean kerning, int kerningThreshold,
+                             List<TextRenderer.ColorRun> colorRuns,
+                             List<TextRenderer.StyleRun> styleRuns) {
         if (text == null) text = "";
         boolean autoHeight = height <= 1;
         if (width <= 0) width = 200;
@@ -63,13 +81,17 @@ public class SimpleTextRenderer implements TextRenderer {
 
         // Check for PFR bitmap font (or Windows TTF, or Mac BDF)
         boolean[] usedRealBold = {false};
-        BitmapFont pfrFont = resolveBitmapFont(fontName, fontSize, wantsBold, wantsItalic, usedRealBold);
+        boolean[] usedRealItalic = {false};
+        BitmapFont pfrFont = resolveBitmapFont(fontName, fontSize, wantsBold, wantsItalic,
+                usedRealBold, usedRealItalic);
         if (pfrFont != null) {
             boolean syntheticBold = wantsBold && !usedRealBold[0];
+            boolean syntheticItalic = wantsItalic && !usedRealItalic[0];
             Bitmap result = renderWithBitmapFont(pfrFont, text, width, height,
                     alignment, textColor, bgColor, wordWrap,
-                    fixedLineSpace, topSpacing, syntheticBold, underline, autoHeight,
-                    kerning, kerningThreshold, colorRuns);
+                    fixedLineSpace, topSpacing, syntheticBold, syntheticItalic, underline, autoHeight,
+                    kerning, kerningThreshold, colorRuns, styleRuns,
+                    fontName, fontSize, fontStyle);
             if (antialias && result != null) {
                 result = applyTextAA(result, bgColor);
             }
@@ -79,7 +101,8 @@ public class SimpleTextRenderer implements TextRenderer {
         // Fallback: render with built-in pixel font
         Bitmap result = renderWithBuiltinFont(text, width, height, fontSize,
                 alignment, textColor, bgColor, wordWrap,
-                fixedLineSpace, topSpacing, underline, autoHeight, colorRuns);
+                fixedLineSpace, topSpacing, underline, autoHeight,
+                colorRuns, styleRuns, fontStyle);
         if (antialias && result != null) {
             result = applyTextAA(result, bgColor);
         }
@@ -117,13 +140,17 @@ public class SimpleTextRenderer implements TextRenderer {
 
         // XMED font resolution: Mac bitmap TTF → Windows outline TTF → PFR → builtin
         boolean[] usedRealBold = {false};
-        BitmapFont font = resolveXmedFont(fontName, fontSize, wantsBold, wantsItalic, usedRealBold);
+        boolean[] usedRealItalic = {false};
+        BitmapFont font = resolveXmedFont(fontName, fontSize, wantsBold, wantsItalic,
+                usedRealBold, usedRealItalic);
         if (font != null) {
             boolean syntheticBold = wantsBold && !usedRealBold[0];
+            boolean syntheticItalic = wantsItalic && !usedRealItalic[0];
             Bitmap result = renderWithBitmapFont(font, text, width, height,
                     alignment, textColor, bgColor, wordWrap,
-                    fixedLineSpace, 0, syntheticBold, underline, autoHeight,
-                    false, Integer.MAX_VALUE, List.of());
+                    fixedLineSpace, 0, syntheticBold, syntheticItalic, underline, autoHeight,
+                    false, Integer.MAX_VALUE, List.of(), List.of(),
+                    fontName, fontSize, styleStr);
             if (antialias && result != null) {
                 result = applyTextAA(result, bgColor);
             }
@@ -133,7 +160,8 @@ public class SimpleTextRenderer implements TextRenderer {
         // Fallback: render with built-in pixel font
         Bitmap result = renderWithBuiltinFont(text, width, height, fontSize,
                 alignment, textColor, bgColor, wordWrap,
-                fixedLineSpace, 0, underline, autoHeight, List.of());
+                fixedLineSpace, 0, underline, autoHeight,
+                List.of(), List.of(), styleStr);
         if (antialias && result != null) {
             result = applyTextAA(result, bgColor);
         }
@@ -147,10 +175,12 @@ public class SimpleTextRenderer implements TextRenderer {
      */
     private static BitmapFont resolveXmedFont(String fontName, int fontSize,
                                                boolean bold, boolean italic,
-                                               boolean[] usedRealBold) {
+                                               boolean[] usedRealBold,
+                                               boolean[] usedRealItalic) {
         if (fontName == null) return null;
 
-        BitmapFont aliasFont = resolveDirectorFontAlias(fontName, fontSize, bold, italic, usedRealBold, true);
+        BitmapFont aliasFont = resolveDirectorFontAlias(fontName, fontSize, bold, italic,
+                usedRealBold, usedRealItalic, true);
         if (aliasFont != null) {
             return aliasFont;
         }
@@ -159,7 +189,8 @@ public class SimpleTextRenderer implements TextRenderer {
         BitmapFont macFont = com.libreshockwave.player.cast.MacFontBundle.getFont(
                 fontName, fontSize, bold, italic);
         if (macFont != null) {
-            usedRealBold[0] = bold && com.libreshockwave.player.cast.MacFontBundle.hasBoldVariant(fontName);
+            usedRealBold[0] = com.libreshockwave.player.cast.MacFontBundle.selectedVariantHasBold(fontName, bold, italic);
+            usedRealItalic[0] = com.libreshockwave.player.cast.MacFontBundle.selectedVariantHasItalic(fontName, bold, italic);
             return macFont;
         }
 
@@ -167,7 +198,8 @@ public class SimpleTextRenderer implements TextRenderer {
         BitmapFont winFont = com.libreshockwave.player.cast.WindowsFontBundle.getFont(
                 fontName, fontSize, bold, italic);
         if (winFont != null) {
-            usedRealBold[0] = bold && com.libreshockwave.player.cast.WindowsFontBundle.hasBoldVariant(fontName);
+            usedRealBold[0] = com.libreshockwave.player.cast.WindowsFontBundle.selectedVariantHasBold(fontName, bold, italic);
+            usedRealItalic[0] = com.libreshockwave.player.cast.WindowsFontBundle.selectedVariantHasItalic(fontName, bold, italic);
             return winFont;
         }
 
@@ -206,30 +238,72 @@ public class SimpleTextRenderer implements TextRenderer {
                               String fontName, int fontSize, String fontStyle,
                               int fixedLineSpace, String alignment, int fieldWidth,
                               boolean kerning, int kerningThreshold) {
+        return charPosToLoc(text, charIndex,
+                fontName, fontSize, fontStyle,
+                fixedLineSpace, alignment, fieldWidth,
+                kerning, kerningThreshold, List.of());
+    }
+
+    @Override
+    public int[] charPosToLoc(String text, int charIndex,
+                              String fontName, int fontSize, String fontStyle,
+                              int fixedLineSpace, String alignment, int fieldWidth,
+                              boolean kerning, int kerningThreshold,
+                              List<TextRenderer.StyleRun> styleRuns) {
         // Check PFR bitmap font first
-        BitmapFont pfrFont = resolveBitmapFont(fontName, fontSize);
+        String style = fontStyle != null ? fontStyle.toLowerCase() : "";
+        boolean wantsBold = style.contains("bold");
+        boolean wantsItalic = style.contains("italic");
+        boolean[] usedRealBold = {false};
+        boolean[] usedRealItalic = {false};
+        BitmapFont pfrFont = resolveBitmapFont(fontName, fontSize, wantsBold, wantsItalic,
+                usedRealBold, usedRealItalic);
+        boolean syntheticBold = wantsBold && !usedRealBold[0];
+        boolean syntheticItalic = wantsItalic && !usedRealItalic[0];
+        boolean hasStyleRuns = styleRuns != null && !styleRuns.isEmpty();
+        Map<String, StyledBitmapFace> styledFaceCache = hasStyleRuns ? new HashMap<>() : null;
         if (pfrFont != null) {
             int lineHeight = fixedLineSpace > 0 ? fixedLineSpace : pfrFont.getLineHeight();
             if (text == null || text.isEmpty() || charIndex <= 0) {
                 String firstLine = text == null || text.isEmpty() ? "" : TextRenderer.splitLines(text)[0];
+                int firstLineWidth = hasStyleRuns
+                        ? getStyledStringWidthWithFallback(pfrFont, firstLine, 0,
+                        fontName, fontSize, fontStyle, styleRuns, styledFaceCache,
+                        syntheticBold, syntheticItalic, kerning, kerningThreshold)
+                        : getStringWidthWithFallback(pfrFont, firstLine, kerning, kerningThreshold,
+                        syntheticBold, syntheticItalic);
                 int alignX = alignmentOffset(alignment, fieldWidth,
-                        getStringWidthWithFallback(pfrFont, firstLine, kerning, kerningThreshold));
+                        firstLineWidth);
                 return new int[]{alignX, 0};
             }
             int[] lineInfo = TextRenderer.findCharLine(text, charIndex);
             String[] lines = TextRenderer.splitLines(text);
             String fullLine = (lineInfo[0] < lines.length) ? lines[lineInfo[0]] : "";
             String lineSubstr = (lineInfo[0] < lines.length) ? fullLine.substring(0, lineInfo[1]) : "";
-            int x = getStringWidthWithFallback(pfrFont, lineSubstr, kerning, kerningThreshold)
+            int lineStart = TextRenderer.lineStartIndex(text, lineInfo[0]);
+            int lineSubstrWidth = hasStyleRuns
+                    ? getStyledStringWidthWithFallback(pfrFont, lineSubstr, lineStart,
+                    fontName, fontSize, fontStyle, styleRuns, styledFaceCache,
+                    syntheticBold, syntheticItalic, kerning, kerningThreshold)
+                    : getStringWidthWithFallback(pfrFont, lineSubstr, kerning, kerningThreshold,
+                    syntheticBold, syntheticItalic);
+            int fullLineWidth = hasStyleRuns
+                    ? getStyledStringWidthWithFallback(pfrFont, fullLine, lineStart,
+                    fontName, fontSize, fontStyle, styleRuns, styledFaceCache,
+                    syntheticBold, syntheticItalic, kerning, kerningThreshold)
+                    : getStringWidthWithFallback(pfrFont, fullLine, kerning, kerningThreshold,
+                    syntheticBold, syntheticItalic);
+            int x = lineSubstrWidth
                     + (lineInfo[1] > 0 ? 1 : 0);
             int alignX = alignmentOffset(alignment, fieldWidth,
-                    getStringWidthWithFallback(pfrFont, fullLine, kerning, kerningThreshold));
+                    fullLineWidth);
             int y = lineInfo[0] * lineHeight;
             return new int[]{x + alignX, y};
         }
 
         // Fallback: approximate using built-in font metrics
         int charWidth = builtinCharWidth(fontSize);
+        boolean syntheticBuiltin = wantsBold;
         int lineHeight = fixedLineSpace > 0 ? fixedLineSpace : builtinLineHeight(fontSize);
 
         if (text == null || text.isEmpty() || charIndex <= 0) {
@@ -240,8 +314,16 @@ public class SimpleTextRenderer implements TextRenderer {
         int[] lineInfo = TextRenderer.findCharLine(text, charIndex);
         String[] lines = TextRenderer.splitLines(text);
         String fullLine = (lineInfo[0] < lines.length) ? lines[lineInfo[0]] : "";
-        int x = lineInfo[1] * charWidth + (lineInfo[1] > 0 ? 1 : 0);
-        int alignX = alignmentOffset(alignment, fieldWidth, fullLine.length() * charWidth);
+        String lineSubstr = (lineInfo[0] < lines.length) ? fullLine.substring(0, lineInfo[1]) : "";
+        int lineStart = TextRenderer.lineStartIndex(text, lineInfo[0]);
+        int x = hasStyleRuns
+                ? builtinLineWidth(lineSubstr, lineStart, charWidth, styleRuns, fontStyle)
+                : builtinLineWidth(lineSubstr, charWidth, syntheticBuiltin);
+        x += lineInfo[1] > 0 ? 1 : 0;
+        int alignX = alignmentOffset(alignment, fieldWidth,
+                hasStyleRuns
+                        ? builtinLineWidth(fullLine, lineStart, charWidth, styleRuns, fontStyle)
+                        : builtinLineWidth(fullLine, charWidth, syntheticBuiltin));
         int y = lineInfo[0] * lineHeight;
         return new int[]{x + alignX, y};
     }
@@ -301,9 +383,31 @@ public class SimpleTextRenderer implements TextRenderer {
                             String fontName, int fontSize, String fontStyle,
                             int fixedLineSpace, String alignment, int fieldWidth,
                             boolean kerning, int kerningThreshold) {
+        return locToCharPos(text, x, y,
+                fontName, fontSize, fontStyle,
+                fixedLineSpace, alignment, fieldWidth,
+                kerning, kerningThreshold, List.of());
+    }
+
+    @Override
+    public int locToCharPos(String text, int x, int y,
+                            String fontName, int fontSize, String fontStyle,
+                            int fixedLineSpace, String alignment, int fieldWidth,
+                            boolean kerning, int kerningThreshold,
+                            List<TextRenderer.StyleRun> styleRuns) {
         if (text == null || text.isEmpty()) return 0;
 
-        BitmapFont pfrFont = resolveBitmapFont(fontName, fontSize);
+        String style = fontStyle != null ? fontStyle.toLowerCase() : "";
+        boolean wantsBold = style.contains("bold");
+        boolean wantsItalic = style.contains("italic");
+        boolean[] usedRealBold = {false};
+        boolean[] usedRealItalic = {false};
+        BitmapFont pfrFont = resolveBitmapFont(fontName, fontSize, wantsBold, wantsItalic,
+                usedRealBold, usedRealItalic);
+        boolean syntheticBold = wantsBold && !usedRealBold[0];
+        boolean syntheticItalic = wantsItalic && !usedRealItalic[0];
+        boolean hasStyleRuns = styleRuns != null && !styleRuns.isEmpty();
+        Map<String, StyledBitmapFace> styledFaceCache = hasStyleRuns ? new HashMap<>() : null;
         String[] lines = TextRenderer.splitLines(text);
 
         if (pfrFont != null) {
@@ -312,20 +416,28 @@ public class SimpleTextRenderer implements TextRenderer {
             int charsBefore = TextRenderer.lineStartIndex(text, lineIndex);
             String line = lines[lineIndex];
             // Subtract alignment offset to convert field-relative x to text-relative x
+            int lineWidth = hasStyleRuns
+                    ? getStyledStringWidthWithFallback(pfrFont, line, charsBefore,
+                    fontName, fontSize, fontStyle, styleRuns, styledFaceCache,
+                    syntheticBold, syntheticItalic, kerning, kerningThreshold)
+                    : getStringWidthWithFallback(pfrFont, line, kerning, kerningThreshold,
+                    syntheticBold, syntheticItalic);
             int alignX = alignmentOffset(alignment, fieldWidth,
-                    getStringWidthWithFallback(pfrFont, line, kerning, kerningThreshold));
+                    lineWidth);
             int localX = x - alignX;
             int cxFixed = 0;
             int previous = -1;
             BitmapFont previousFont = null;
-            boolean applyKerning = kerning && pfrFont.getFontSize() >= kerningThreshold;
             for (int i = 0; i < line.length(); i++) {
                 char ch = line.charAt(i);
-                BitmapFont drawFont = fontForChar(pfrFont, ch);
+                StyledBitmapFace face = styledBitmapFaceForChar(pfrFont, fontName, fontSize, fontStyle,
+                        styleRuns, charsBefore + i, styledFaceCache, syntheticBold, syntheticItalic);
+                BitmapFont drawFont = fontForChar(face.font, ch);
+                boolean applyKerning = kerning && drawFont.getFontSize() >= kerningThreshold;
                 if (applyKerning && previousFont == drawFont && previous >= 0) {
                     cxFixed += drawFont.getKerningFixed(previous, ch);
                 }
-                int advanceFixed = drawFont.getCharAdvanceFixed(ch);
+                int advanceFixed = styledAdvanceFixed(drawFont, ch, face.syntheticBold, face.syntheticItalic);
                 if (BitmapFont.roundFixedToPixel(cxFixed + advanceFixed / 2) >= localX) {
                     return charsBefore + i;
                 }
@@ -342,9 +454,26 @@ public class SimpleTextRenderer implements TextRenderer {
         int lineIndex = Math.max(0, Math.min(y / Math.max(1, lineHeight), lines.length - 1));
         int charsBefore = TextRenderer.lineStartIndex(text, lineIndex);
         String line = lines[lineIndex];
-        int alignX = alignmentOffset(alignment, fieldWidth, line.length() * charWidth);
+        boolean syntheticBuiltin = wantsBold;
+        int alignX = alignmentOffset(alignment, fieldWidth,
+                hasStyleRuns
+                        ? builtinLineWidth(line, charsBefore, charWidth, styleRuns, fontStyle)
+                        : builtinLineWidth(line, charWidth, syntheticBuiltin));
         int localX = x - alignX;
-        int charOnLine = Math.min(line.length(), (localX + charWidth / 2) / Math.max(1, charWidth));
+        int cx = 0;
+        int charOnLine = line.length();
+        for (int i = 0; i < line.length(); i++) {
+            String effectiveStyle = TextRenderer.fontStyleForChar(styleRuns, charsBefore + i, fontStyle);
+            int advance = builtinCharAdvance(charWidth, line.charAt(i),
+                    hasStyleRuns
+                            ? styleHas(effectiveStyle, "bold")
+                            : syntheticBuiltin);
+            if (cx + advance / 2 >= localX) {
+                charOnLine = i;
+                break;
+            }
+            cx += advance;
+        }
         return charsBefore + Math.max(0, charOnLine);
     }
 
@@ -434,10 +563,12 @@ public class SimpleTextRenderer implements TextRenderer {
      */
     private static BitmapFont resolveBitmapFont(String fontName, int fontSize,
                                                     boolean bold, boolean italic,
-                                                    boolean[] usedRealBold) {
+                                                    boolean[] usedRealBold,
+                                                    boolean[] usedRealItalic) {
         if (fontName == null) return null;
 
-        BitmapFont aliasFont = resolveDirectorFontAlias(fontName, fontSize, bold, italic, usedRealBold, false);
+        BitmapFont aliasFont = resolveDirectorFontAlias(fontName, fontSize, bold, italic,
+                usedRealBold, usedRealItalic, false);
         if (aliasFont != null) {
             return aliasFont;
         }
@@ -446,7 +577,8 @@ public class SimpleTextRenderer implements TextRenderer {
         BitmapFont winFont = com.libreshockwave.player.cast.WindowsFontBundle.getFont(
                 fontName, fontSize, bold, italic);
         if (winFont != null) {
-            usedRealBold[0] = bold && com.libreshockwave.player.cast.WindowsFontBundle.hasBoldVariant(fontName);
+            usedRealBold[0] = com.libreshockwave.player.cast.WindowsFontBundle.selectedVariantHasBold(fontName, bold, italic);
+            usedRealItalic[0] = com.libreshockwave.player.cast.WindowsFontBundle.selectedVariantHasItalic(fontName, bold, italic);
             return winFont;
         }
 
@@ -454,7 +586,8 @@ public class SimpleTextRenderer implements TextRenderer {
         BitmapFont macFont = com.libreshockwave.player.cast.MacFontBundle.getFont(
                 fontName, fontSize, bold, italic);
         if (macFont != null) {
-            usedRealBold[0] = bold && com.libreshockwave.player.cast.MacFontBundle.hasBoldVariant(fontName);
+            usedRealBold[0] = com.libreshockwave.player.cast.MacFontBundle.selectedVariantHasBold(fontName, bold, italic);
+            usedRealItalic[0] = com.libreshockwave.player.cast.MacFontBundle.selectedVariantHasItalic(fontName, bold, italic);
             return macFont;
         }
 
@@ -483,6 +616,7 @@ public class SimpleTextRenderer implements TextRenderer {
     private static BitmapFont resolveDirectorFontAlias(String fontName, int fontSize,
                                                        boolean bold, boolean italic,
                                                        boolean[] usedRealBold,
+                                                       boolean[] usedRealItalic,
                                                        boolean preferMacFonts) {
         FontRegistry.FontAlias alias = FontRegistry.getFontAlias(fontName);
         String resolvedName = alias != null ? alias.fontName() : fontName;
@@ -491,7 +625,8 @@ public class SimpleTextRenderer implements TextRenderer {
         if (FontRegistry.hasPfrFont(fontName)) {
             BitmapFont exact = FontRegistry.getBitmapFont(fontName, fontSize);
             if (exact != null) {
-                usedRealBold[0] = resolvedBold;
+                usedRealBold[0] = alias != null && alias.bold();
+                usedRealItalic[0] = false;
                 return exact;
             }
         }
@@ -499,6 +634,7 @@ public class SimpleTextRenderer implements TextRenderer {
         BitmapFont volter = VolterFontBundle.getFont(resolvedName, fontSize, resolvedBold);
         if (volter != null) {
             usedRealBold[0] = resolvedBold;
+            usedRealItalic[0] = false;
             return volter;
         }
 
@@ -510,9 +646,12 @@ public class SimpleTextRenderer implements TextRenderer {
                 ? com.libreshockwave.player.cast.MacFontBundle.getFont(resolvedName, fontSize, resolvedBold, italic)
                 : com.libreshockwave.player.cast.WindowsFontBundle.getFont(resolvedName, fontSize, resolvedBold, italic);
         if (first != null) {
-            usedRealBold[0] = resolvedBold && (preferMacFonts
-                    ? com.libreshockwave.player.cast.MacFontBundle.hasBoldVariant(resolvedName)
-                    : com.libreshockwave.player.cast.WindowsFontBundle.hasBoldVariant(resolvedName));
+            usedRealBold[0] = preferMacFonts
+                    ? com.libreshockwave.player.cast.MacFontBundle.selectedVariantHasBold(resolvedName, resolvedBold, italic)
+                    : com.libreshockwave.player.cast.WindowsFontBundle.selectedVariantHasBold(resolvedName, resolvedBold, italic);
+            usedRealItalic[0] = preferMacFonts
+                    ? com.libreshockwave.player.cast.MacFontBundle.selectedVariantHasItalic(resolvedName, resolvedBold, italic)
+                    : com.libreshockwave.player.cast.WindowsFontBundle.selectedVariantHasItalic(resolvedName, resolvedBold, italic);
             return first;
         }
 
@@ -520,9 +659,12 @@ public class SimpleTextRenderer implements TextRenderer {
                 ? com.libreshockwave.player.cast.WindowsFontBundle.getFont(resolvedName, fontSize, resolvedBold, italic)
                 : com.libreshockwave.player.cast.MacFontBundle.getFont(resolvedName, fontSize, resolvedBold, italic);
         if (second != null) {
-            usedRealBold[0] = resolvedBold && (preferMacFonts
-                    ? com.libreshockwave.player.cast.WindowsFontBundle.hasBoldVariant(resolvedName)
-                    : com.libreshockwave.player.cast.MacFontBundle.hasBoldVariant(resolvedName));
+            usedRealBold[0] = preferMacFonts
+                    ? com.libreshockwave.player.cast.WindowsFontBundle.selectedVariantHasBold(resolvedName, resolvedBold, italic)
+                    : com.libreshockwave.player.cast.MacFontBundle.selectedVariantHasBold(resolvedName, resolvedBold, italic);
+            usedRealItalic[0] = preferMacFonts
+                    ? com.libreshockwave.player.cast.WindowsFontBundle.selectedVariantHasItalic(resolvedName, resolvedBold, italic)
+                    : com.libreshockwave.player.cast.MacFontBundle.selectedVariantHasItalic(resolvedName, resolvedBold, italic);
             return second;
         }
 
@@ -537,20 +679,25 @@ public class SimpleTextRenderer implements TextRenderer {
 
     /** Backward-compatible overload without bold/italic. */
     private static BitmapFont resolveBitmapFont(String fontName, int fontSize) {
-        return resolveBitmapFont(fontName, fontSize, false, false, new boolean[]{false});
+        return resolveBitmapFont(fontName, fontSize, false, false,
+                new boolean[]{false}, new boolean[]{false});
     }
 
     private Bitmap renderWithBitmapFont(BitmapFont font, String text, int width, int height,
                                          String alignment, int textColor, int bgColor,
                                          boolean wordWrap, int fixedLineSpace, int topSpacing,
-                                         boolean syntheticBold, boolean underline,
+                                         boolean syntheticBold, boolean syntheticItalic, boolean underline,
                                          boolean autoHeight,
                                          boolean kerning, int kerningThreshold,
-                                         List<TextRenderer.ColorRun> colorRuns) {
+                                         List<TextRenderer.ColorRun> colorRuns,
+                                         List<TextRenderer.StyleRun> styleRuns,
+                                         String fontName, int fontSize, String fontStyle) {
         int lineHeight = fixedLineSpace > 0 ? fixedLineSpace : font.getLineHeight();
 
         String[] rawLines = TextRenderer.splitLines(text);
         boolean applyKerning = kerning && font.getFontSize() >= kerningThreshold;
+        boolean hasStyleRuns = styleRuns != null && !styleRuns.isEmpty();
+        Map<String, StyledBitmapFace> styledFaceCache = hasStyleRuns ? new HashMap<>() : null;
 
         List<String> lines = new ArrayList<>();
         List<Integer> lineStarts = new ArrayList<>();
@@ -560,7 +707,8 @@ public class SimpleTextRenderer implements TextRenderer {
                 int rawStart = TextRenderer.lineStartIndex(text, rawIndex);
                 int before = lines.size();
                 TextRenderer.wrapLine(rawLine,
-                        s -> getStringWidthWithFallback(font, s, kerning, kerningThreshold),
+                        s -> getStringWidthWithFallback(font, s, kerning, kerningThreshold,
+                                syntheticBold, syntheticItalic),
                         width, lines);
                 int cursor = 0;
                 for (int lineIndex = before; lineIndex < lines.size(); lineIndex++) {
@@ -602,17 +750,26 @@ public class SimpleTextRenderer implements TextRenderer {
             String line = lines.get(lineIndex);
             int lineTextStart = lineIndex < lineStarts.size() ? lineStarts.get(lineIndex) : 0;
             if (y >= height) break;
-            int lineWidth = getStringWidthWithFallback(font, line, kerning, kerningThreshold);
+            int lineWidth = hasStyleRuns
+                    ? getStyledStringWidthWithFallback(font, line, lineTextStart,
+                    fontName, fontSize, fontStyle, styleRuns, styledFaceCache,
+                    syntheticBold, syntheticItalic, kerning, kerningThreshold)
+                    : getStringWidthWithFallback(font, line, kerning, kerningThreshold,
+                    syntheticBold, syntheticItalic);
             int x = renderAlignmentOffset(alignment, width, lineWidth);
             x += leftEdgeGuardForBitmapLine(font, line, alignment, width, lineWidth, x);
-            int lineStartX = x;
             int glyphY = Math.max(0, y + leading - verticalOverflow);
             int penFixed = x << 6;
             int previous = -1;
             BitmapFont previousFont = null;
             for (int i = 0; i < line.length(); i++) {
                 char ch = line.charAt(i);
-                BitmapFont drawFont = fontForChar(font, ch);
+                int absoluteCharIndex = lineTextStart + i;
+                StyledBitmapFace face = styledBitmapFaceForChar(font,
+                        fontName, fontSize, fontStyle,
+                        styleRuns, absoluteCharIndex,
+                        styledFaceCache, syntheticBold, syntheticItalic);
+                BitmapFont drawFont = fontForChar(face.font, ch);
                 if (applyKerning && previousFont == drawFont && previous >= 0) {
                     penFixed += drawFont.getKerningFixed(previous, ch);
                 }
@@ -622,20 +779,25 @@ public class SimpleTextRenderer implements TextRenderer {
                     int baseline = glyphY + font.getAscent();
                     drawY = baseline - drawFont.getAscent();
                 }
-                int glyphColor = TextRenderer.colorForChar(colorRuns, lineTextStart + i, textColor);
-                drawFont.drawChar(ch, pixels, width, height, drawX, drawY, glyphColor);
-                if (syntheticBold) {
-                    drawFont.drawChar(ch, pixels, width, height, drawX + 1, drawY, glyphColor);
+                int glyphColor = TextRenderer.colorForChar(colorRuns, absoluteCharIndex, textColor);
+                drawBitmapChar(drawFont, ch, pixels, width, height, drawX, drawY,
+                        glyphColor, face.syntheticItalic);
+                if (face.syntheticBold) {
+                    drawBitmapChar(drawFont, ch, pixels, width, height, drawX + 1, drawY,
+                            glyphColor, face.syntheticItalic);
                 }
-                penFixed += drawFont.getCharAdvanceFixed(ch);
+                int nextPenFixed = penFixed + styledAdvanceFixed(drawFont, ch,
+                        face.syntheticBold, face.syntheticItalic);
+                if (styleHas(TextRenderer.fontStyleForChar(styleRuns, absoluteCharIndex, fontStyle), "underline")
+                        || (!hasStyleRuns && underline)) {
+                    int baseline = drawY + drawFont.getAscent();
+                    int underlineY = baseline + bitmapUnderlineOffset(drawFont);
+                    drawUnderline(pixels, width, height, underlineY, drawX,
+                            BitmapFont.roundFixedToPixel(nextPenFixed), glyphColor);
+                }
+                penFixed = nextPenFixed;
                 previous = ch;
                 previousFont = drawFont;
-            }
-            int lineEndX = BitmapFont.roundFixedToPixel(penFixed);
-            if (underline && line.length() > 0) {
-                int baseline = glyphY + font.getAscent();
-                int underlineY = baseline + bitmapUnderlineOffset(font);
-                drawUnderline(pixels, width, height, underlineY, lineStartX, lineEndX, textColor);
             }
             y += lineAdvance;
         }
@@ -683,6 +845,12 @@ public class SimpleTextRenderer implements TextRenderer {
 
     private static int getStringWidthWithFallback(BitmapFont font, String text,
                                                   boolean kerning, int kerningThreshold) {
+        return getStringWidthWithFallback(font, text, kerning, kerningThreshold, false, false);
+    }
+
+    private static int getStringWidthWithFallback(BitmapFont font, String text,
+                                                  boolean kerning, int kerningThreshold,
+                                                  boolean syntheticBold, boolean syntheticItalic) {
         if (text == null || text.isEmpty()) {
             return 0;
         }
@@ -696,11 +864,125 @@ public class SimpleTextRenderer implements TextRenderer {
             if (applyKerning && previousFont == drawFont && previous >= 0) {
                 widthFixed += drawFont.getKerningFixed(previous, ch);
             }
-            widthFixed += drawFont.getCharAdvanceFixed(ch);
+            widthFixed += styledAdvanceFixed(drawFont, ch, syntheticBold, syntheticItalic);
             previous = ch;
             previousFont = drawFont;
         }
         return BitmapFont.roundFixedToPixel(widthFixed);
+    }
+
+    private static int getStyledStringWidthWithFallback(BitmapFont baseFont, String text, int textStart,
+                                                        String fontName, int fontSize, String fontStyle,
+                                                        List<TextRenderer.StyleRun> styleRuns,
+                                                        Map<String, StyledBitmapFace> cache,
+                                                        boolean fallbackSyntheticBold,
+                                                        boolean fallbackSyntheticItalic,
+                                                        boolean kerning, int kerningThreshold) {
+        if (text == null || text.isEmpty()) {
+            return 0;
+        }
+        int widthFixed = 0;
+        int previous = -1;
+        BitmapFont previousFont = null;
+        for (int i = 0; i < text.length(); i++) {
+            StyledBitmapFace face = styledBitmapFaceForChar(baseFont, fontName, fontSize, fontStyle,
+                    styleRuns, textStart + i, cache, fallbackSyntheticBold, fallbackSyntheticItalic);
+            char ch = text.charAt(i);
+            BitmapFont drawFont = fontForChar(face.font, ch);
+            boolean applyKerning = kerning && drawFont.getFontSize() >= kerningThreshold;
+            if (applyKerning && previousFont == drawFont && previous >= 0) {
+                widthFixed += drawFont.getKerningFixed(previous, ch);
+            }
+            widthFixed += styledAdvanceFixed(drawFont, ch, face.syntheticBold, face.syntheticItalic);
+            previous = ch;
+            previousFont = drawFont;
+        }
+        return BitmapFont.roundFixedToPixel(widthFixed);
+    }
+
+    private static StyledBitmapFace styledBitmapFaceForChar(BitmapFont baseFont,
+                                                            String fontName,
+                                                            int fontSize,
+                                                            String fontStyle,
+                                                            List<TextRenderer.StyleRun> styleRuns,
+                                                            int charIndex,
+                                                            Map<String, StyledBitmapFace> cache,
+                                                            boolean fallbackSyntheticBold,
+                                                            boolean fallbackSyntheticItalic) {
+        if (styleRuns == null || styleRuns.isEmpty()) {
+            return new StyledBitmapFace(baseFont, fallbackSyntheticBold, fallbackSyntheticItalic);
+        }
+
+        String effectiveFont = TextRenderer.fontNameForChar(styleRuns, charIndex, fontName);
+        int effectiveSize = TextRenderer.fontSizeForChar(styleRuns, charIndex, fontSize);
+        String effectiveStyle = TextRenderer.fontStyleForChar(styleRuns, charIndex, fontStyle);
+        boolean bold = styleHas(effectiveStyle, "bold");
+        boolean italic = styleHas(effectiveStyle, "italic");
+        String key = effectiveFont + "\u0000" + effectiveSize + "\u0000" + bold + "\u0000" + italic;
+        if (cache != null) {
+            StyledBitmapFace cached = cache.get(key);
+            if (cached != null) {
+                return cached;
+            }
+        }
+
+        boolean[] usedRealBold = {false};
+        boolean[] usedRealItalic = {false};
+        BitmapFont resolved = resolveBitmapFont(effectiveFont, effectiveSize, bold, italic,
+                usedRealBold, usedRealItalic);
+        if (resolved == null) {
+            resolved = baseFont;
+        }
+        StyledBitmapFace face = new StyledBitmapFace(resolved,
+                bold && !usedRealBold[0],
+                italic && !usedRealItalic[0]);
+        if (cache != null) {
+            cache.put(key, face);
+        }
+        return face;
+    }
+
+    private static boolean styleHas(String fontStyle, String flag) {
+        return fontStyle != null && fontStyle.toLowerCase().contains(flag);
+    }
+
+    private static int styledAdvanceFixed(BitmapFont font, char ch,
+                                          boolean syntheticBold, boolean syntheticItalic) {
+        int advance = font.getCharAdvanceFixed(ch);
+        if (advance <= 0 || !syntheticStyleNeedsTracking(ch)) {
+            return advance;
+        }
+        int extra = 0;
+        if (syntheticBold) {
+            extra += 64;
+        }
+        return advance + extra;
+    }
+
+    private static boolean syntheticStyleNeedsTracking(char ch) {
+        return !Character.isWhitespace(ch) && !Character.isISOControl(ch);
+    }
+
+    private static void drawBitmapChar(BitmapFont font, char ch, int[] pixels,
+                                       int width, int height, int x, int y,
+                                       int color, boolean syntheticItalic) {
+        if (syntheticItalic) {
+            font.drawCharSlanted(ch, pixels, width, height, x, y, color);
+        } else {
+            font.drawChar(ch, pixels, width, height, x, y, color);
+        }
+    }
+
+    private static final class StyledBitmapFace {
+        final BitmapFont font;
+        final boolean syntheticBold;
+        final boolean syntheticItalic;
+
+        StyledBitmapFace(BitmapFont font, boolean syntheticBold, boolean syntheticItalic) {
+            this.font = font;
+            this.syntheticBold = syntheticBold;
+            this.syntheticItalic = syntheticItalic;
+        }
     }
 
     private static BitmapFont fontForChar(BitmapFont primary, char ch) {
@@ -741,6 +1023,39 @@ public class SimpleTextRenderer implements TextRenderer {
         return topSpacing == 1 && font != null && lineHeight == font.getFontSize();
     }
 
+    private static int builtinLineWidth(String text, int charWidth, boolean syntheticStyle) {
+        if (text == null || text.isEmpty()) {
+            return 0;
+        }
+        int width = 0;
+        for (int i = 0; i < text.length(); i++) {
+            width += builtinCharAdvance(charWidth, text.charAt(i), syntheticStyle);
+        }
+        return width;
+    }
+
+    private static int builtinLineWidth(String text, int textStart, int charWidth,
+                                        List<TextRenderer.StyleRun> styleRuns,
+                                        String fontStyle) {
+        if (text == null || text.isEmpty()) {
+            return 0;
+        }
+        int width = 0;
+        for (int i = 0; i < text.length(); i++) {
+            String effectiveStyle = TextRenderer.fontStyleForChar(styleRuns, textStart + i, fontStyle);
+            width += builtinCharAdvance(charWidth, text.charAt(i),
+                    styleHas(effectiveStyle, "bold"));
+        }
+        return width;
+    }
+
+    private static int builtinCharAdvance(int charWidth, char ch, boolean syntheticStyle) {
+        if (!syntheticStyle || !syntheticStyleNeedsTracking(ch)) {
+            return charWidth;
+        }
+        return charWidth + 1;
+    }
+
     /**
      * Render text using the built-in 5x7 pixel font.
      * Used as fallback when PFR/TTF fonts are not yet loaded.
@@ -749,7 +1064,9 @@ public class SimpleTextRenderer implements TextRenderer {
                                           String alignment, int textColor, int bgColor,
                                           boolean wordWrap, int fixedLineSpace, int topSpacing,
                                           boolean underline, boolean autoHeight,
-                                          List<TextRenderer.ColorRun> colorRuns) {
+                                          List<TextRenderer.ColorRun> colorRuns,
+                                          List<TextRenderer.StyleRun> styleRuns,
+                                          String fontStyle) {
         int charW = builtinCharWidth(fontSize);
         int lineHeight = fixedLineSpace > 0 ? fixedLineSpace : builtinLineHeight(fontSize);
         int ascent = builtinAscent(fontSize);
@@ -765,7 +1082,9 @@ public class SimpleTextRenderer implements TextRenderer {
                 String rawLine = rawLines[rawIndex];
                 int rawStart = TextRenderer.lineStartIndex(text, rawIndex);
                 int before = lines.size();
-                TextRenderer.wrapLine(rawLine, s -> s.length() * charW, wrapWidth, lines);
+                TextRenderer.wrapLine(rawLine,
+                        s -> builtinLineWidth(s, charW, styleHas(fontStyle, "bold")),
+                        wrapWidth, lines);
                 int cursor = 0;
                 for (int lineIndex = before; lineIndex < lines.size(); lineIndex++) {
                     String wrappedLine = lines.get(lineIndex);
@@ -793,16 +1112,26 @@ public class SimpleTextRenderer implements TextRenderer {
             String line = lines.get(lineIndex);
             int lineTextStart = lineIndex < lineStarts.size() ? lineStarts.get(lineIndex) : 0;
             if (y >= height) break;
-            int x = renderAlignmentOffset(alignment, width, line.length() * charW);
-            int lineStartX = x;
+            int x = renderAlignmentOffset(alignment, width,
+                    builtinLineWidth(line, lineTextStart, charW, styleRuns, fontStyle));
             for (int i = 0; i < line.length(); i++) {
-                int glyphColor = TextRenderer.colorForChar(colorRuns, lineTextStart + i, textColor);
-                drawBuiltinChar(line.charAt(i), pixels, width, height, x, y + ascent, scale, glyphColor);
-                x += charW;
-            }
-            if (underline && line.length() > 0) {
-                int underlineY = y + ascent + builtinUnderlineOffset(fontSize);
-                drawUnderline(pixels, width, height, underlineY, lineStartX, x, textColor);
+                int absoluteCharIndex = lineTextStart + i;
+                int glyphColor = TextRenderer.colorForChar(colorRuns, absoluteCharIndex, textColor);
+                String effectiveStyle = TextRenderer.fontStyleForChar(styleRuns, absoluteCharIndex, fontStyle);
+                boolean syntheticItalic = styleHas(effectiveStyle, "italic");
+                int advance = builtinCharAdvance(charW, line.charAt(i),
+                        styleHas(effectiveStyle, "bold"));
+                drawBuiltinChar(line.charAt(i), pixels, width, height,
+                        x, y + ascent, scale, glyphColor, syntheticItalic);
+                if (styleHas(effectiveStyle, "bold")) {
+                    drawBuiltinChar(line.charAt(i), pixels, width, height,
+                            x + 1, y + ascent, scale, glyphColor, syntheticItalic);
+                }
+                if (styleHas(effectiveStyle, "underline") || (styleRuns == null || styleRuns.isEmpty()) && underline) {
+                    int underlineY = y + ascent + builtinUnderlineOffset(fontSize);
+                    drawUnderline(pixels, width, height, underlineY, x, x + advance, glyphColor);
+                }
+                x += advance;
             }
             y += lineAdvance;
         }
@@ -954,6 +1283,12 @@ public class SimpleTextRenderer implements TextRenderer {
      */
     private static void drawBuiltinChar(char ch, int[] pixels, int imgW, int imgH,
                                          int x, int baselineY, int scale, int color) {
+        drawBuiltinChar(ch, pixels, imgW, imgH, x, baselineY, scale, color, false);
+    }
+
+    private static void drawBuiltinChar(char ch, int[] pixels, int imgW, int imgH,
+                                         int x, int baselineY, int scale, int color,
+                                         boolean syntheticItalic) {
         int idx = ch - 32;
         if (idx < 0 || idx >= FONT_5X7.length) idx = 0; // space for unknown
 
@@ -964,10 +1299,11 @@ public class SimpleTextRenderer implements TextRenderer {
             int bits = glyph[col] & 0xFF;
             for (int row = 0; row < 7; row++) {
                 if ((bits & (1 << row)) != 0) {
+                    int rowOffset = syntheticItalic ? ((6 - row) * scale) / 3 : 0;
                     // Draw scaled pixel
                     for (int sy = 0; sy < scale; sy++) {
                         for (int sx = 0; sx < scale; sx++) {
-                            int px = x + col * scale + sx;
+                            int px = x + col * scale + sx + rowOffset;
                             int py = topY + row * scale + sy;
                             if (px >= 0 && px < imgW && py >= 0 && py < imgH) {
                                 pixels[py * imgW + px] = color;

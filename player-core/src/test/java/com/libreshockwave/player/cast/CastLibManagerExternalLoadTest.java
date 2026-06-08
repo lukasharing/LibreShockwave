@@ -12,6 +12,7 @@ import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -110,6 +111,34 @@ class CastLibManagerExternalLoadTest {
         assertEquals(List.of(2), slots);
         assertTrue(requested.isFetched());
         assertFalse(unrequested.isFetched());
+    }
+
+    @Test
+    void changingCastLibFileNameNotifiesRetiredContentsForThatSlot() throws Exception {
+        AtomicInteger retiredCast = new AtomicInteger(-1);
+        CastLibManager manager = new CastLibManager(null, (castLibNumber, fileName) -> {});
+        CastLib castLib = new CastLib(2, null, null);
+        castLib.setFileName("old-widget.cct");
+        installCastLib(manager, castLib);
+        manager.setCastContentsRetiredCallback(retiredCast::set);
+
+        assertTrue(manager.setCastLibProp(2, "fileName", Datum.of(EXTERNAL_CAST_URL)));
+
+        assertEquals(2, retiredCast.get());
+    }
+
+    @Test
+    void settingSameCastLibFileNameDoesNotNotifyRetiredContents() throws Exception {
+        AtomicInteger retiredCast = new AtomicInteger(-1);
+        CastLibManager manager = new CastLibManager(null, (castLibNumber, fileName) -> {});
+        CastLib castLib = new CastLib(2, null, null);
+        castLib.setFileName(EXTERNAL_CAST_URL);
+        installCastLib(manager, castLib);
+        manager.setCastContentsRetiredCallback(retiredCast::set);
+
+        assertTrue(manager.setCastLibProp(2, "fileName", Datum.of(EXTERNAL_CAST_URL)));
+
+        assertEquals(-1, retiredCast.get());
     }
 
     @Test

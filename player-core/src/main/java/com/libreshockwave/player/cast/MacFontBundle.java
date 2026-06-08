@@ -234,6 +234,14 @@ public class MacFontBundle {
         return family != null && family.boldFilePrefix != null;
     }
 
+    public static boolean selectedVariantHasBold(String fontName, boolean bold, boolean italic) {
+        return bold && hasBoldVariant(fontName);
+    }
+
+    public static boolean selectedVariantHasItalic(String fontName, boolean bold, boolean italic) {
+        return false;
+    }
+
     private static BitmapFont loadTtf(String filePrefix, int size, String fontKey) {
         String dataKey = filePrefix + "-" + size;
         ValueProvider<byte[]> supplier = TTF_DATA.get(dataKey);

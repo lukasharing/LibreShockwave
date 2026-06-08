@@ -61,4 +61,27 @@ class WasmJpegDecoderTest {
         assertEquals(0, WasmJpegDecoder.pendingCount());
         assertFalse(DirectorFile.consumeJpegDecodePending());
     }
+
+    @Test
+    void pendingIdsStayStableForDuplicateRequestsAndOutOfRangeIndexes() {
+        WasmJpegDecoder.resetForTest();
+
+        byte[] first = new byte[] {(byte) 0xFF, (byte) 0xD8, 20, 21, 22};
+        byte[] second = new byte[] {(byte) 0xFF, (byte) 0xD8, 23, 24, 25};
+
+        WasmJpegDecoder.decode(first);
+        int firstId = WasmJpegDecoder.pendingId(0);
+        WasmJpegDecoder.decode(first);
+        WasmJpegDecoder.decode(second);
+
+        assertEquals(2, WasmJpegDecoder.pendingCount());
+        assertEquals(firstId, WasmJpegDecoder.pendingId(0));
+        assertEquals(0, WasmJpegDecoder.pendingId(-1));
+        assertEquals(0, WasmJpegDecoder.pendingId(2));
+
+        WasmJpegDecoder.deliverDecoded(firstId, 1, 1, new byte[] {1, 2, 3, (byte) 255});
+
+        assertEquals(1, WasmJpegDecoder.pendingCount());
+        assertEquals(0, WasmJpegDecoder.pendingId(1));
+    }
 }

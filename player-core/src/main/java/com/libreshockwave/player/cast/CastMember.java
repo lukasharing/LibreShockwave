@@ -120,7 +120,9 @@ public class CastMember {
     private String textFontStyle = "plain";
     private String textAlignment = "left";
     private int textColor = 0xFF000000; // ARGB black
+    private boolean textColorExplicit;
     private final List<TextRenderer.ColorRun> textColorRuns = new ArrayList<>();
+    private final List<TextRenderer.StyleRun> textStyleRuns = new ArrayList<>();
     private int textBgColor = 0xFFFFFFFF; // ARGB white
     private boolean textBgColorExplicit;
     private boolean textPresentationOverride;
@@ -142,6 +144,7 @@ public class CastMember {
     private int textRenderedWidth = -1;
     private int textRenderedHeight = -1;
     private int textRenderedBgColor = Integer.MIN_VALUE;
+    private int textRenderedBaseColor = Integer.MIN_VALUE;
     private boolean editable = false; // Whether this field/text member accepts keyboard input
 
     public CastMember(int castLibNumber, int memberNumber, CastMemberChunk chunk, DirectorFile sourceFile) {
@@ -545,8 +548,12 @@ public class CastMember {
     }
 
     private void notifyMemberSlotRetired() {
+        notifyMemberSlotRetired(castLibId.value(), memberId.value());
+    }
+
+    public static void notifyMemberSlotRetired(int castLibNumber, int memberNumber) {
         if (memberSlotRetiredCallback != null) {
-            memberSlotRetiredCallback.accept(castLibId.value(), memberId.value());
+            memberSlotRetiredCallback.accept(castLibNumber, memberNumber);
         }
     }
 
@@ -591,6 +598,7 @@ public class CastMember {
         textRenderedWidth = -1;
         textRenderedHeight = -1;
         textRenderedBgColor = Integer.MIN_VALUE;
+        textRenderedBaseColor = Integer.MIN_VALUE;
         textRenderedImageScriptMutated = false;
     }
 
@@ -613,7 +621,7 @@ public class CastMember {
         return textRenderer.locToCharPos(text, localX, localY,
                 textFont, textFontSize, textFontStyle, effectiveTextLineAdvance(),
                 getTextAlignmentForWidth(fieldWidth), fieldWidth,
-                textKerning, textKerningThreshold);
+                textKerning, textKerningThreshold, textStyleRuns);
     }
 
     public String getTextAlignment() { return textAlignment; }
@@ -631,6 +639,8 @@ public class CastMember {
     public int getTextBgColor() { return textBgColor; }
 
     public boolean hasExplicitTextBgColor() { return textBgColorExplicit; }
+
+    public boolean hasExplicitTextColor() { return textColorExplicit; }
 
     public boolean hasTextPresentationOverride() { return textPresentationOverride; }
 
@@ -1093,11 +1103,15 @@ public class CastMember {
         if (textRenderer == null) {
             return Math.max(1, textRectRight - textRectLeft);
         }
+        String measuredText = text == null ? "" : text;
+        String[] lines = TextRenderer.splitLines(measuredText);
         int maxWidth = 1;
-        for (String line : TextRenderer.splitLines(text == null ? "" : text)) {
+        for (int lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+            String line = lines[lineIndex];
+            int lineStart = TextRenderer.lineStartIndex(measuredText, lineIndex);
             int[] loc = textRenderer.charPosToLoc(
-                    line,
-                    line.length() + 1,
+                    measuredText,
+                    lineStart + line.length() + 1,
                     textFont,
                     textFontSize,
                     textFontStyle,
@@ -1105,7 +1119,8 @@ public class CastMember {
                     "left",
                     0,
                     textKerning,
-                    textKerningThreshold);
+                    textKerningThreshold,
+                    textStyleRuns);
             maxWidth = Math.max(maxWidth, loc[0] + 2);
         }
         return maxWidth;
@@ -1117,11 +1132,16 @@ public class CastMember {
      * determine the size and background instead of the member's own rect.
      */
     public Bitmap renderTextToImage(int width, int height, int bgColor) {
+        return renderTextToImage(width, height, bgColor, textColor);
+    }
+
+    public Bitmap renderTextToImage(int width, int height, int bgColor, int baseTextColor) {
         // Return cached image if still valid and dimensions match
         if (textRenderedImage != null && !textImageDirty
                 && textRenderedWidth == width
                 && textRenderedHeight == height
-                && textRenderedBgColor == bgColor) {
+                && textRenderedBgColor == bgColor
+                && textRenderedBaseColor == baseTextColor) {
             return textRenderedImage;
         }
 
@@ -1133,10 +1153,10 @@ public class CastMember {
         String alignment = getTextAlignmentForWidth(width);
         textRenderedImage = textRenderer.renderText(text, width, height,
                 textFont, textFontSize, textFontStyle,
-                alignment, textColor, bgColor,
+                alignment, baseTextColor, bgColor,
                 textWordWrap, effectiveTextAntialias(),
                 textFixedLineSpace, textTopSpacing,
-                textKerning, textKerningThreshold, textColorRuns);
+                textKerning, textKerningThreshold, textColorRuns, textStyleRuns);
         textRenderedImageScriptMutated = false;
         attachTextImageMutationCallback(textRenderedImage);
         if (textRenderedImage != null && ((((bgColor >>> 24) & 0xFF) < 0xFF)
@@ -1146,6 +1166,7 @@ public class CastMember {
         textRenderedWidth = width;
         textRenderedHeight = height;
         textRenderedBgColor = bgColor;
+        textRenderedBaseColor = baseTextColor;
         textImageDirty = false;
 
         return textRenderedImage;
@@ -1284,6 +1305,7 @@ public class CastMember {
                 && (value instanceof Datum.Str || value instanceof Datum.Symbol)) {
             this.dynamicText = value.toStr();
             clearTextColorRuns();
+            clearTextStyleRuns();
             invalidateTextRendering();
             invalidateParsedTextCache();
             this.state = State.LOADED;
@@ -1306,8 +1328,11 @@ public class CastMember {
             this.textFontStyle = source.textFontStyle;
             this.textAlignment = source.textAlignment;
             this.textColor = source.textColor;
+            this.textColorExplicit = source.textColorExplicit;
             this.textColorRuns.clear();
             this.textColorRuns.addAll(source.textColorRuns);
+            this.textStyleRuns.clear();
+            this.textStyleRuns.addAll(source.textStyleRuns);
             this.textBgColor = source.textBgColor;
             this.textBgColorExplicit = source.textBgColorExplicit;
             this.textPresentationOverride = source.textPresentationOverride;
@@ -1398,6 +1423,7 @@ public class CastMember {
                 String textValue = value.toStr();
                 this.dynamicText = textValue;
                 clearTextColorRuns();
+                clearTextStyleRuns();
                 invalidateTextRendering();
                 invalidateParsedTextCache();
                 notifyMemberVisualChanged();
@@ -1409,6 +1435,7 @@ public class CastMember {
                 String textValue = html.replaceAll("<[^>]*>", "");
                 this.dynamicText = textValue;
                 clearTextColorRuns();
+                clearTextStyleRuns();
                 invalidateTextRendering();
                 invalidateParsedTextCache();
                 notifyMemberVisualChanged();
@@ -1416,6 +1443,7 @@ public class CastMember {
             }
             case "font" -> {
                 this.textFont = value.toStr();
+                clearTextStyleRunsForProperty("font");
                 textPresentationOverride = true;
                 invalidateTextRendering();
                 notifyMemberVisualChanged();
@@ -1423,6 +1451,7 @@ public class CastMember {
             }
             case "fontsize" -> {
                 this.textFontSize = value.toInt();
+                clearTextStyleRunsForProperty("fontsize");
                 textPresentationOverride = true;
                 invalidateTextRendering();
                 notifyMemberVisualChanged();
@@ -1430,6 +1459,7 @@ public class CastMember {
             }
             case "fontstyle" -> {
                 this.textFontStyle = normalizeFontStyle(value);
+                clearTextStyleRunsForProperty("fontstyle");
                 textPresentationOverride = true;
                 invalidateTextRendering();
                 notifyMemberVisualChanged();
@@ -1450,6 +1480,7 @@ public class CastMember {
                 // Director ignores VOID — keeps the current color
                 if (!value.isVoid()) {
                     this.textColor = Datum.datumToArgb(value);
+                    this.textColorExplicit = true;
                     clearTextColorRuns();
                     textPresentationOverride = true;
                     invalidateTextRendering();
@@ -1575,8 +1606,10 @@ public class CastMember {
                     this.textRenderedWidth = this.bitmap.getWidth();
                     this.textRenderedHeight = this.bitmap.getHeight();
                     this.textRenderedBgColor = Integer.MIN_VALUE;
+                    this.textRenderedBaseColor = Integer.MIN_VALUE;
                     this.textRenderedImageScriptMutated = true;
                     clearTextColorRuns();
+                    clearTextStyleRuns();
                     attachTextImageMutationCallback(this.textRenderedImage);
                     this.textImageDirty = false;
                     notifyMemberVisualChanged();
@@ -1654,10 +1687,7 @@ public class CastMember {
         String text = getTextContent();
         int length = text != null ? text.length() : 0;
         if (!coversWholeTextRange(chunkType, start, end, length)) {
-            if ("fontstyle".equals(prop)) {
-                return applyPartialTextFontStyle(value);
-            }
-            return true;
+            return applyTextRangeStyle(chunkType, start, end, prop, value);
         }
 
         return setTextProp(prop, value);
@@ -1696,8 +1726,50 @@ public class CastMember {
                 MoviePropertyProvider.ItemDelimiterCache._char);
     }
 
+    private boolean applyTextRangeStyle(String chunkType, int start, int end, String prop, Datum value) {
+        if (value == null || value.isVoid()) {
+            return true;
+        }
+        int[] bounds = resolveTextRangeBounds(chunkType, start, end);
+        if (bounds == null || bounds[1] <= bounds[0]) {
+            return true;
+        }
+
+        String fontName = null;
+        Integer fontSize = null;
+        String fontStyle = null;
+        switch (prop) {
+            case "font" -> fontName = value.toStr();
+            case "fontsize" -> fontSize = value.toInt();
+            case "fontstyle" -> fontStyle = normalizeFontStyle(value);
+            default -> {
+                return true;
+            }
+        }
+
+        textStyleRuns.add(new TextRenderer.StyleRun(bounds[0], bounds[1], fontName, fontSize, fontStyle));
+        textPresentationOverride = true;
+        invalidateTextRendering();
+        notifyMemberVisualChanged();
+        return true;
+    }
+
     private void clearTextColorRuns() {
         textColorRuns.clear();
+    }
+
+    private void clearTextStyleRuns() {
+        textStyleRuns.clear();
+    }
+
+    private void clearTextStyleRunsForProperty(String prop) {
+        switch (prop) {
+            case "font" -> textStyleRuns.removeIf(run -> run.fontName() != null);
+            case "fontsize" -> textStyleRuns.removeIf(run -> run.fontSize() != null);
+            case "fontstyle" -> textStyleRuns.removeIf(run -> run.fontStyle() != null);
+            default -> {
+            }
+        }
     }
 
     private int effectiveTextColorAt(int charIndex) {
@@ -1707,26 +1779,16 @@ public class CastMember {
         return TextRenderer.colorForChar(textColorRuns, Math.max(0, charIndex), textColor);
     }
 
-    private boolean applyPartialTextFontStyle(Datum value) {
-        boolean[] requested = new boolean[3];
-        collectFontStyle(value, requested);
-        if (!requested[0] && !requested[1]) {
-            return true;
-        }
+    String effectiveTextFontAt(int charIndex) {
+        return TextRenderer.fontNameForChar(textStyleRuns, Math.max(0, charIndex), textFont);
+    }
 
-        boolean[] current = new boolean[3];
-        collectFontStyle(Datum.of(textFontStyle), current);
-        current[0] |= requested[0];
-        current[1] |= requested[1];
-        StringBuilder out = new StringBuilder();
-        appendFontStyle(out, current[0], "bold");
-        appendFontStyle(out, current[1], "italic");
-        appendFontStyle(out, current[2], "underline");
-        textFontStyle = out.length() > 0 ? out.toString() : "plain";
-        textPresentationOverride = true;
-        invalidateTextRendering();
-        notifyMemberVisualChanged();
-        return true;
+    int effectiveTextFontSizeAt(int charIndex) {
+        return TextRenderer.fontSizeForChar(textStyleRuns, Math.max(0, charIndex), textFontSize);
+    }
+
+    String effectiveTextFontStyleAt(int charIndex) {
+        return TextRenderer.fontStyleForChar(textStyleRuns, Math.max(0, charIndex), textFontStyle);
     }
 
     public Datum getTextRangeProp(String chunkType, int start, int end, String propName) {
@@ -1894,7 +1956,9 @@ public class CastMember {
         textFontStyle = "plain";
         textAlignment = "left";
         textColor = 0xFF000000;
+        textColorExplicit = false;
         clearTextColorRuns();
+        clearTextStyleRuns();
         textBgColor = 0xFFFFFFFF;
         textBgColorExplicit = false;
         textWordWrap = false;
@@ -1994,7 +2058,7 @@ public class CastMember {
                 int[] pos = textRenderer.charPosToLoc(text, charIndex,
                         textFont, textFontSize, textFontStyle, effectiveTextLineAdvance(),
                         getTextAlignmentForWidth(fieldWidth), fieldWidth,
-                        textKerning, textKerningThreshold);
+                        textKerning, textKerningThreshold, textStyleRuns);
                 yield new Datum.Point(pos[0], pos[1]);
             }
             case "count" -> {

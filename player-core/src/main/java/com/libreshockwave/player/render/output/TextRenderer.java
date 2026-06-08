@@ -38,6 +38,47 @@ public interface TextRenderer {
         }
     }
 
+    final class StyleRun {
+        private final int startInclusive;
+        private final int endExclusive;
+        private final String fontName;
+        private final Integer fontSize;
+        private final String fontStyle;
+
+        public StyleRun(int startInclusive, int endExclusive,
+                        String fontName, Integer fontSize, String fontStyle) {
+            this.startInclusive = startInclusive;
+            this.endExclusive = endExclusive;
+            this.fontName = fontName;
+            this.fontSize = fontSize;
+            this.fontStyle = fontStyle;
+        }
+
+        public int startInclusive() {
+            return startInclusive;
+        }
+
+        public int endExclusive() {
+            return endExclusive;
+        }
+
+        public String fontName() {
+            return fontName;
+        }
+
+        public Integer fontSize() {
+            return fontSize;
+        }
+
+        public String fontStyle() {
+            return fontStyle;
+        }
+
+        private boolean appliesTo(int charIndex) {
+            return charIndex >= startInclusive && charIndex < endExclusive;
+        }
+    }
+
 
     /**
      * Render text content to a bitmap image.
@@ -76,6 +117,21 @@ public interface TextRenderer {
                 kerning, kerningThreshold);
     }
 
+    default Bitmap renderText(String text, int width, int height,
+                              String fontName, int fontSize, String fontStyle,
+                              String alignment, int textColor, int bgColor,
+                              boolean wordWrap, boolean antialias,
+                              int fixedLineSpace, int topSpacing,
+                              boolean kerning, int kerningThreshold,
+                              List<ColorRun> colorRuns,
+                              List<StyleRun> styleRuns) {
+        return renderText(text, width, height,
+                fontName, fontSize, fontStyle,
+                alignment, textColor, bgColor,
+                wordWrap, antialias, fixedLineSpace, topSpacing,
+                kerning, kerningThreshold, colorRuns);
+    }
+
     static int colorForChar(List<ColorRun> colorRuns, int charIndex, int fallbackColor) {
         if (colorRuns == null || colorRuns.isEmpty()) {
             return fallbackColor;
@@ -87,6 +143,45 @@ public interface TextRenderer {
             }
         }
         return fallbackColor;
+    }
+
+    static String fontNameForChar(List<StyleRun> styleRuns, int charIndex, String fallbackFontName) {
+        if (styleRuns == null || styleRuns.isEmpty()) {
+            return fallbackFontName;
+        }
+        for (int i = styleRuns.size() - 1; i >= 0; i--) {
+            StyleRun run = styleRuns.get(i);
+            if (run.appliesTo(charIndex) && run.fontName() != null) {
+                return run.fontName();
+            }
+        }
+        return fallbackFontName;
+    }
+
+    static int fontSizeForChar(List<StyleRun> styleRuns, int charIndex, int fallbackFontSize) {
+        if (styleRuns == null || styleRuns.isEmpty()) {
+            return fallbackFontSize;
+        }
+        for (int i = styleRuns.size() - 1; i >= 0; i--) {
+            StyleRun run = styleRuns.get(i);
+            if (run.appliesTo(charIndex) && run.fontSize() != null) {
+                return run.fontSize();
+            }
+        }
+        return fallbackFontSize;
+    }
+
+    static String fontStyleForChar(List<StyleRun> styleRuns, int charIndex, String fallbackFontStyle) {
+        if (styleRuns == null || styleRuns.isEmpty()) {
+            return fallbackFontStyle;
+        }
+        for (int i = styleRuns.size() - 1; i >= 0; i--) {
+            StyleRun run = styleRuns.get(i);
+            if (run.appliesTo(charIndex) && run.fontStyle() != null) {
+                return run.fontStyle();
+            }
+        }
+        return fallbackFontStyle;
     }
 
     /**
@@ -108,6 +203,17 @@ public interface TextRenderer {
                 fixedLineSpace, alignment, fieldWidth);
     }
 
+    default int[] charPosToLoc(String text, int charIndex,
+                               String fontName, int fontSize, String fontStyle,
+                               int fixedLineSpace, String alignment, int fieldWidth,
+                               boolean kerning, int kerningThreshold,
+                               List<StyleRun> styleRuns) {
+        return charPosToLoc(text, charIndex,
+                fontName, fontSize, fontStyle,
+                fixedLineSpace, alignment, fieldWidth,
+                kerning, kerningThreshold);
+    }
+
     /**
      * Compute the character index at a given pixel position in text.
      * Inverse of charPosToLoc(). Used for mouse click → caret placement.
@@ -125,6 +231,17 @@ public interface TextRenderer {
         return locToCharPos(text, x, y,
                 fontName, fontSize, fontStyle,
                 fixedLineSpace, alignment, fieldWidth);
+    }
+
+    default int locToCharPos(String text, int x, int y,
+                             String fontName, int fontSize, String fontStyle,
+                             int fixedLineSpace, String alignment, int fieldWidth,
+                             boolean kerning, int kerningThreshold,
+                             List<StyleRun> styleRuns) {
+        return locToCharPos(text, x, y,
+                fontName, fontSize, fontStyle,
+                fixedLineSpace, alignment, fieldWidth,
+                kerning, kerningThreshold);
     }
 
     /**

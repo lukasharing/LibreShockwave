@@ -235,7 +235,7 @@ public class Drawing {
         }
 
         byte[] paletteIndices = src.getPaletteIndicesUnsafe();
-        FloodFillMatte matteSpec = resolveFloodFillMatte(pixels, paletteIndices, w, h);
+        FloodFillMatte matteSpec = resolveFloodFillMatte(pixels, paletteIndices, w, h, true);
         if (matteSpec == null) {
             return false;
         }
@@ -892,7 +892,7 @@ public class Drawing {
             }
         }
         byte[] paletteIndices = src.getPaletteIndicesUnsafe();
-        return resolveFloodFillMatte(pixels, paletteIndices, w, h);
+        return resolveFloodFillMatte(pixels, paletteIndices, w, h, allowsDarkEdgeMatte(src));
     }
 
     /**
@@ -924,7 +924,7 @@ public class Drawing {
         }
 
         byte[] paletteIndices = src.getPaletteIndicesUnsafe();
-        FloodFillMatte matteSpec = resolveFloodFillMatte(pixels, paletteIndices, w, h);
+        FloodFillMatte matteSpec = resolveFloodFillMatte(pixels, paletteIndices, w, h, allowsDarkEdgeMatte(src));
         boolean[] transparent = matteSpec != null
                 ? computeFloodFillTransparency(pixels, paletteIndices, w, h, matteSpec)
                 : new boolean[w * h];
@@ -968,7 +968,7 @@ public class Drawing {
         byte[] paletteIndices = region.getPaletteIndicesUnsafe();
         FloodFillMatte matteSpec = explicitMatteSpec != null
                 ? explicitMatteSpec
-                : resolveFloodFillMatte(pixels, paletteIndices, w, h);
+                : resolveFloodFillMatte(pixels, paletteIndices, w, h, allowsDarkEdgeMatte(src));
         if (matteSpec == null) {
             return region;
         }
@@ -983,11 +983,16 @@ public class Drawing {
         return region;
     }
 
-    private static FloodFillMatte resolveFloodFillMatte(int[] pixels, byte[] paletteIndices, int w, int h) {
+    private static FloodFillMatte resolveFloodFillMatte(int[] pixels, byte[] paletteIndices, int w, int h,
+                                                        boolean allowDarkEdgeMatte) {
         if (hasPaletteIndices(paletteIndices, w, h)) {
             return resolveIndexedFloodFillMatte(pixels, paletteIndices, w, h);
         }
-        return resolveRgbFloodFillMatte(pixels, w, h);
+        return resolveRgbFloodFillMatte(pixels, w, h, allowDarkEdgeMatte);
+    }
+
+    private static boolean allowsDarkEdgeMatte(Bitmap src) {
+        return src != null && (src.isScriptModified() || src.isTextRenderedImage());
     }
 
     private static FloodFillMatte resolveIndexedFloodFillMatte(int[] pixels, byte[] paletteIndices, int w, int h) {
@@ -1125,12 +1130,20 @@ public class Drawing {
         return 0xFFFFFF;
     }
 
-    private static FloodFillMatte resolveRgbFloodFillMatte(int[] pixels, int w, int h) {
+    private static FloodFillMatte resolveRgbFloodFillMatte(int[] pixels, int w, int h,
+                                                           boolean allowDarkEdgeMatte) {
         Integer matteRgb = inferDominantEdgeRgb(pixels, w, h);
         if (matteRgb != null) {
+            if (isDarkRgb(matteRgb) && !allowDarkEdgeMatte) {
+                return new FloodFillMatte(DEFAULT_RGB_MATTE, 0);
+            }
             return new FloodFillMatte(matteRgb, 0);
         }
         return new FloodFillMatte(DEFAULT_RGB_MATTE, 0);
+    }
+
+    private static boolean isDarkRgb(int rgb) {
+        return maskAlphaFromPixel(0xFF000000 | (rgb & 0xFFFFFF)) <= 16;
     }
 
     private static Integer inferDominantEdgeRgb(int[] pixels, int w, int h) {

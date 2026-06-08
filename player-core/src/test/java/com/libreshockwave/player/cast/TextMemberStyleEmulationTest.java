@@ -74,6 +74,59 @@ class TextMemberStyleEmulationTest {
     }
 
     @Test
+    void partialCharRangeFontStyleRendersWithoutChangingMemberStyle() {
+        CastMember.setTextRenderer(new SimpleTextRenderer());
+        CastMember member = textMember("AB", 54, 18);
+        member.setProp("font", Datum.of("Definitely Missing Director Font"));
+        member.setProp("fontsize", Datum.of(12));
+        member.setProp("fontstyle", Datum.of("plain"));
+        member.setProp("color", new Datum.Color(0, 0, 0));
+
+        Bitmap plain = ((Datum.ImageRef) member.getProp("image")).bitmap();
+        int plainInk = countPixels(plain, 0xFF000000);
+
+        assertTrue(member.setTextRangeProp("char", 1, 1, "fontstyle",
+                Datum.list(Datum.symbol("bold"))));
+
+        Bitmap styled = ((Datum.ImageRef) member.getProp("image")).bitmap();
+        assertEquals("plain", member.getProp("fontstyle").toStr());
+        assertEquals("bold", member.effectiveTextFontStyleAt(0));
+        assertEquals("plain", member.effectiveTextFontStyleAt(1));
+        assertTrue(countPixels(styled, 0xFF000000) > plainInk);
+    }
+
+    @Test
+    void partialCharRangeFontAndSizeResolveByCharacter() {
+        CastMember.setTextRenderer(new SimpleTextRenderer());
+        CastMember member = textMember("AB", 54, 18);
+        member.setProp("font", Datum.of("V"));
+        member.setProp("fontsize", Datum.of(9));
+
+        assertTrue(member.setTextRangeProp("char", 2, 2, "font", Datum.of("Arial")));
+        assertTrue(member.setTextRangeProp("char", 2, 2, "fontsize", Datum.of(12)));
+
+        assertEquals("V", member.effectiveTextFontAt(0));
+        assertEquals(9, member.effectiveTextFontSizeAt(0));
+        assertEquals("Arial", member.effectiveTextFontAt(1));
+        assertEquals(12, member.effectiveTextFontSizeAt(1));
+    }
+
+    @Test
+    void globalFontChangeDoesNotClearPartialFontStyleRange() {
+        CastMember.setTextRenderer(new SimpleTextRenderer());
+        CastMember member = textMember("AB", 54, 18);
+        member.setProp("fontstyle", Datum.of("plain"));
+        assertTrue(member.setTextRangeProp("char", 1, 1, "fontstyle",
+                Datum.list(Datum.symbol("bold"))));
+
+        member.setProp("font", Datum.of("Arial"));
+
+        assertEquals("Arial", member.effectiveTextFontAt(0));
+        assertEquals("bold", member.effectiveTextFontStyleAt(0));
+        assertEquals("plain", member.effectiveTextFontStyleAt(1));
+    }
+
+    @Test
     void voidBgColorClearsExplicitTextBackground() {
         CastMember.setTextRenderer(new SimpleTextRenderer());
         CastMember member = textMember("Label", 80, 11);

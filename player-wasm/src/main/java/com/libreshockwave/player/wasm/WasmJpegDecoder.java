@@ -11,6 +11,8 @@ import java.util.zip.CRC32;
 final class WasmJpegDecoder {
     private static final Map<Integer, byte[]> pending = new LinkedHashMap<>();
     private static final Map<Integer, Bitmap> decoded = new LinkedHashMap<>();
+    private static int[] pendingIds = new int[16];
+    private static int pendingIdCount;
     private static byte[] currentData;
 
     private WasmJpegDecoder() {
@@ -22,23 +24,20 @@ final class WasmJpegDecoder {
         if (bitmap != null) {
             return bitmap;
         }
-        pending.putIfAbsent(id, Arrays.copyOf(jpegData, jpegData.length));
+        if (!pending.containsKey(id)) {
+            pending.put(id, Arrays.copyOf(jpegData, jpegData.length));
+            appendPendingId(id);
+        }
         DirectorFile.markJpegDecodePending();
         return null;
     }
 
     static int pendingCount() {
-        return pending.size();
+        return pendingIdCount;
     }
 
     static int pendingId(int index) {
-        int i = 0;
-        for (Integer id : pending.keySet()) {
-            if (i++ == index) {
-                return id;
-            }
-        }
-        return 0;
+        return index >= 0 && index < pendingIdCount ? pendingIds[index] : 0;
     }
 
     static int prepareData(int id) {
@@ -53,6 +52,7 @@ final class WasmJpegDecoder {
     static void reset() {
         pending.clear();
         decoded.clear();
+        pendingIdCount = 0;
         currentData = null;
     }
 
@@ -67,6 +67,7 @@ final class WasmJpegDecoder {
     static void deliverDecoded(int id, int width, int height, byte[] rgba) {
         if (width <= 0 || height <= 0 || rgba == null || rgba.length < width * height * 4) {
             pending.remove(id);
+            removePendingId(id);
             return;
         }
         Bitmap bitmap = new Bitmap(width, height, 32);
@@ -83,7 +84,31 @@ final class WasmJpegDecoder {
         bitmap.setNativeAlpha(true);
         decoded.put(id, bitmap);
         pending.remove(id);
+        removePendingId(id);
         currentData = null;
+    }
+
+    private static void appendPendingId(int id) {
+        if (pendingIdCount >= pendingIds.length) {
+            int[] next = new int[pendingIds.length * 2];
+            System.arraycopy(pendingIds, 0, next, 0, pendingIds.length);
+            pendingIds = next;
+        }
+        pendingIds[pendingIdCount++] = id;
+    }
+
+    private static void removePendingId(int id) {
+        for (int i = 0; i < pendingIdCount; i++) {
+            if (pendingIds[i] != id) {
+                continue;
+            }
+            int move = pendingIdCount - i - 1;
+            if (move > 0) {
+                System.arraycopy(pendingIds, i + 1, pendingIds, i, move);
+            }
+            pendingIds[--pendingIdCount] = 0;
+            return;
+        }
     }
 
     private static int idFor(byte[] data) {
