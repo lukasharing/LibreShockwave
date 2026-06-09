@@ -803,8 +803,8 @@ public class Drawing {
     /**
      * Director's image.createMatte() uses authored/native alpha when present.
      * Otherwise it falls back to flood-fill matte extraction:
-     * indexed art prefers a dominant edge palette index, and RGB art prefers a
-     * dominant edge color before falling back to the classic white-border matte.
+     * indexed art prefers an authored matte palette index, and RGB art prefers
+     * a dominant edge color before falling back to the classic white-border matte.
      */
     public static Bitmap createMatte(Bitmap src) {
         return createMatte(src, 0);
@@ -986,7 +986,7 @@ public class Drawing {
     private static FloodFillMatte resolveFloodFillMatte(int[] pixels, byte[] paletteIndices, int w, int h,
                                                         boolean allowDarkEdgeMatte) {
         if (hasPaletteIndices(paletteIndices, w, h)) {
-            return resolveIndexedFloodFillMatte(pixels, paletteIndices, w, h);
+            return resolveIndexedFloodFillMatte(pixels, paletteIndices, w, h, allowDarkEdgeMatte);
         }
         return resolveRgbFloodFillMatte(pixels, w, h, allowDarkEdgeMatte);
     }
@@ -995,19 +995,24 @@ public class Drawing {
         return src != null && (src.isScriptModified() || src.isTextRenderedImage());
     }
 
-    private static FloodFillMatte resolveIndexedFloodFillMatte(int[] pixels, byte[] paletteIndices, int w, int h) {
-        Integer matteIndex = inferDominantEdgePaletteIndex(pixels, paletteIndices, w, h);
-        if (matteIndex != null) {
-            int matteRgb = resolvePaletteIndexRgb(pixels, paletteIndices, matteIndex);
-            return new FloodFillMatte(matteIndex, matteRgb, 0);
-        }
-
+    private static FloodFillMatte resolveIndexedFloodFillMatte(int[] pixels, byte[] paletteIndices, int w, int h,
+                                                               boolean allowDarkEdgeMatte) {
         if (edgeContainsPaletteIndex(paletteIndices, w, h, 0)) {
             int indexZeroRgb = resolvePaletteIndexRgb(pixels, paletteIndices, 0);
             if (indexZeroRgb == 0x000000 || indexZeroRgb == DEFAULT_RGB_MATTE) {
                 return new FloodFillMatte(0, indexZeroRgb, 0);
             }
         }
+
+        Integer matteIndex = inferDominantEdgePaletteIndex(pixels, paletteIndices, w, h);
+        if (matteIndex != null) {
+            int matteRgb = resolvePaletteIndexRgb(pixels, paletteIndices, matteIndex);
+            if (matteIndex != 0 && isDarkRgb(matteRgb) && !allowDarkEdgeMatte) {
+                return null;
+            }
+            return new FloodFillMatte(matteIndex, matteRgb, 0);
+        }
+
         return null;
     }
 

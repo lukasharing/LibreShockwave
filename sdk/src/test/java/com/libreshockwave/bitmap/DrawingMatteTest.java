@@ -102,6 +102,7 @@ class DrawingMatteTest {
         assertEquals(0x00FFFFFF, matte.getPixel(2, 2));
     }
 
+    @Test
     void createMatteUsesPaletteZeroForIndexedFloodFill() {
         Bitmap src = new Bitmap(3, 3, 8, new int[] {
             0xFF000000, 0xFF000000, 0xFF000000,
@@ -119,6 +120,33 @@ class DrawingMatteTest {
         assertEquals(0x00FFFFFF, matte.getPixel(0, 0));
         assertEquals(0xFFFFFFFF, matte.getPixel(1, 1));
         assertEquals(0x00FFFFFF, matte.getPixel(2, 2));
+    }
+
+    @Test
+    void createMattePrefersPaletteZeroOverDominantIndexedArtworkEdge() {
+        Bitmap src = new Bitmap(5, 5, 8, new int[] {
+                0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000,
+                0xFF000000, 0xFFD6B44A, 0xFFD6B44A, 0xFFD6B44A, 0xFF000000,
+                0xFFFFFFFF, 0xFFD6B44A, 0xFFD6B44A, 0xFFD6B44A, 0xFF000000,
+                0xFF000000, 0xFFD6B44A, 0xFFD6B44A, 0xFFD6B44A, 0xFF000000,
+                0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000
+        });
+        src.setPaletteIndices(new byte[] {
+                5, 5, 5, 5, 5,
+                5, 8, 8, 8, 5,
+                0, 8, 8, 8, 5,
+                5, 8, 8, 8, 5,
+                5, 5, 5, 5, 5
+        });
+
+        Bitmap matte = Drawing.createMatte(src);
+
+        assertEquals(0xFFFFFFFF, matte.getPixel(0, 0),
+                "dominant indexed artwork borders must not become the matte when palette slot 0 is present");
+        assertEquals(0x00FFFFFF, matte.getPixel(0, 2),
+                "edge-connected palette slot 0 remains the authored indexed matte");
+        assertEquals(0xFFFFFFFF, matte.getPixel(1, 1));
+        assertEquals(0xFFFFFFFF, matte.getPixel(4, 4));
     }
 
     @Test

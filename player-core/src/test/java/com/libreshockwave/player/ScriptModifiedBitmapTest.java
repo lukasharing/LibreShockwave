@@ -1463,6 +1463,18 @@ public class ScriptModifiedBitmapTest {
     }
 
     @Test
+    void imagePaletteRefExposesDecodedBuiltInSystemPalette() {
+        Bitmap src = new Bitmap(1, 1, 8);
+        src.setImagePalette(Palette.SYSTEM_MAC_PALETTE);
+
+        Datum paletteRef = ImageMethodDispatcher.getProperty(new Datum.ImageRef(src), "paletteRef");
+
+        assertInstanceOf(Datum.Symbol.class, paletteRef);
+        assertEquals("systemMac", ((Datum.Symbol) paletteRef).name(),
+                "the paletteRef of a decoded system-palette image must compare equal to #systemMac");
+    }
+
+    @Test
     void remapImagePaletteRecolorsExisting8BitPixels() {
         Palette oldPalette = new Palette(new int[]{0xFFFFFF, 0x111111, 0x224466}, "old");
         Palette newPalette = new Palette(new int[]{0xFFFFFF, 0xAA5500, 0x66CC22}, "new");

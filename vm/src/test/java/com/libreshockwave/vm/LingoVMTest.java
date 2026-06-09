@@ -1,7 +1,10 @@
 package com.libreshockwave.vm;
 
 import com.libreshockwave.bitmap.Bitmap;
+import com.libreshockwave.DirectorFile;
 import com.libreshockwave.chunks.ScriptChunk;
+import com.libreshockwave.chunks.ScriptNamesChunk;
+import com.libreshockwave.format.ChunkType;
 import com.libreshockwave.id.ChunkId;
 import com.libreshockwave.lingo.Opcode;
 import com.libreshockwave.vm.builtin.cast.CastLibProvider;
@@ -16,6 +19,10 @@ import com.libreshockwave.vm.support.NoOpCastLibProvider;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.nio.ByteOrder;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.List;
@@ -717,6 +724,46 @@ class LingoVMTest {
                 () -> vm.executeHandler(script, handler, List.of(), Datum.VOID)
         );
         assertTrue(exception.getMessage().contains("Step limit exceeded"));
+    }
+
+    @Test
+    void deconstructReentrancyGuardAllowsAncestorDestructorOnSameReceiver() throws Exception {
+        DirectorFile file = directorFileWithNames("deconstruct");
+        ScriptChunk.Handler childHandler = returningHandler(0, 3);
+        ScriptChunk.Handler parentHandler = returningHandler(0, 7);
+        ScriptChunk childScript = script(file, 101, childHandler);
+        ScriptChunk parentScript = script(file, 102, parentHandler);
+        Datum.ScriptInstance receiver = new Datum.ScriptInstance(44, Map.of());
+        LingoVM vm = new LingoVM(file);
+        Deque<Scope> callStack = mutableCallStack(vm);
+        callStack.push(new Scope(childScript, childHandler, List.of(), receiver));
+        try {
+            Datum result = vm.executeHandler(parentScript, parentHandler, List.of(), receiver);
+
+            assertEquals(7, result.toInt(),
+                    "callAncestor(#deconstruct, [me]) must execute the parent destructor");
+        } finally {
+            callStack.clear();
+        }
+    }
+
+    @Test
+    void deconstructReentrancyGuardStillSkipsExactHandlerReentry() throws Exception {
+        DirectorFile file = directorFileWithNames("deconstruct");
+        ScriptChunk.Handler handler = returningHandler(0, 7);
+        ScriptChunk script = script(file, 101, handler);
+        Datum.ScriptInstance receiver = new Datum.ScriptInstance(44, Map.of());
+        LingoVM vm = new LingoVM(file);
+        Deque<Scope> callStack = mutableCallStack(vm);
+        callStack.push(new Scope(script, handler, List.of(), receiver));
+        try {
+            Datum result = vm.executeHandler(script, handler, List.of(), receiver);
+
+            assertTrue(result.isVoid(),
+                    "the same deconstruct handler must still be guarded against recursive re-entry");
+        } finally {
+            callStack.clear();
+        }
     }
 
     @Test
@@ -1518,5 +1565,54 @@ class LingoVMTest {
 
         assertEquals(0, vm.getCallStackDepth());
         assertNull(vm.getCurrentScope());
+    }
+
+    private static ScriptChunk.Handler returningHandler(int nameId, int value) {
+        return new ScriptChunk.Handler(
+                nameId,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                List.of(),
+                List.of(),
+                List.of(
+                        new ScriptChunk.Handler.Instruction(0, Opcode.PUSH_INT8, 0x41, value),
+                        new ScriptChunk.Handler.Instruction(1, Opcode.RET, 0x01, 0)),
+                Map.of(0, 0, 1, 1));
+    }
+
+    private static ScriptChunk script(DirectorFile file, int id, ScriptChunk.Handler handler) {
+        return new ScriptChunk(
+                file,
+                new ChunkId(id),
+                ScriptChunk.ScriptType.PARENT,
+                0,
+                List.of(handler),
+                List.of(),
+                List.of(),
+                List.of(),
+                new byte[0]);
+    }
+
+    private static DirectorFile directorFileWithNames(String... names) throws Exception {
+        Constructor<DirectorFile> constructor = DirectorFile.class.getDeclaredConstructor(
+                ByteOrder.class, boolean.class, int.class, ChunkType.class);
+        constructor.setAccessible(true);
+        DirectorFile file = constructor.newInstance(ByteOrder.BIG_ENDIAN, false, 1000, ChunkType.MV93);
+        Field scriptNames = DirectorFile.class.getDeclaredField("scriptNames");
+        scriptNames.setAccessible(true);
+        scriptNames.set(file, new ScriptNamesChunk(file, new ChunkId(1), List.of(names)));
+        return file;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Deque<Scope> mutableCallStack(LingoVM vm) throws Exception {
+        Field field = LingoVM.class.getDeclaredField("callStack");
+        field.setAccessible(true);
+        return (Deque<Scope>) field.get(vm);
     }
 }

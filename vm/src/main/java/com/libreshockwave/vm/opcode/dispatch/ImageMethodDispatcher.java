@@ -287,10 +287,24 @@ public final class ImageMethodDispatcher {
                 if (bmp.getPaletteRefSystemName() != null) {
                     yield Datum.symbol(bmp.getPaletteRefSystemName());
                 }
+                String builtInSystemPalette = builtInSystemPaletteName(bmp.getImagePalette());
+                if (builtInSystemPalette != null) {
+                    yield Datum.symbol(builtInSystemPalette);
+                }
                 yield Datum.VOID;
             }
             default -> Datum.VOID;
         };
+    }
+
+    private static String builtInSystemPaletteName(Palette palette) {
+        if (palette == Palette.SYSTEM_MAC_PALETTE) {
+            return "systemMac";
+        }
+        if (palette == Palette.SYSTEM_WIN_PALETTE) {
+            return "systemWin";
+        }
+        return null;
     }
 
     /**

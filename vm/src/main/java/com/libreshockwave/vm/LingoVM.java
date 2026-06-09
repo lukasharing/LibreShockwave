@@ -706,17 +706,21 @@ public class LingoVM {
         }
         String hn = normalizeLookupName(handlerName);
 
-        // Reentrancy guard: if deconstruct is already on the call stack for the
-        // same receiver, skip re-entry. This prevents infinite recursion when
-        // deconstruct -> hideAll -> removeWindow -> Remove -> deconstruct cycles.
+        // Reentrancy guard: skip only exact deconstruct re-entry for the same
+        // receiver. Director parent scripts commonly implement destructors as
+        // child.deconstruct -> callAncestor(#deconstruct, [me]); blocking every
+        // deconstruct on the same receiver prevents the ancestor from releasing
+        // its runtime sprite resources.
         if ("deconstruct".equals(hn)) {
             // Resolve the effective receiver: explicit receiver, or args[0] if it's a ScriptInstance
             Datum effectiveReceiver = (receiver != null && !receiver.isVoid()) ? receiver
                     : (!args.isEmpty() && args.get(0) instanceof Datum.ScriptInstance ? args.get(0) : null);
             if (effectiveReceiver != null) {
                 for (Scope existing : callStack) {
-                    if ("deconstruct".equals(existing.getScript().getHandlerName(existing.getHandler()).toLowerCase())
-                            && effectiveReceiver == existing.getReceiver()) {
+                    if (effectiveReceiver == existing.getReceiver()
+                            && sameHandlerFrame(script, handler, existing)
+                            && "deconstruct".equals(normalizeLookupName(
+                                    getHandlerName(existing.getScript(), existing.getHandler())))) {
                         return Datum.VOID;
                     }
                 }
@@ -1028,6 +1032,26 @@ public class LingoVM {
         String resolved = script.getHandlerName(handler);
         handlerNameCache.put(handler, resolved);
         return resolved;
+    }
+
+    private static boolean sameHandlerFrame(ScriptChunk script, ScriptChunk.Handler handler, Scope existing) {
+        if (script == null || handler == null || existing == null) {
+            return false;
+        }
+        return sameScriptChunk(script, existing.getScript()) && handler == existing.getHandler();
+    }
+
+    private static boolean sameScriptChunk(ScriptChunk a, ScriptChunk b) {
+        if (a == b) {
+            return true;
+        }
+        if (a == null || b == null) {
+            return false;
+        }
+        if (a.file() != null || b.file() != null) {
+            return a.file() == b.file() && Objects.equals(a.id(), b.id());
+        }
+        return Objects.equals(a.id(), b.id());
     }
 
     public static String normalizeLookupName(String name) {
