@@ -404,6 +404,9 @@ public class StageRenderer {
         if (castLibManager != null) {
             dynamicMember = castLibManager.getDynamicMember(castLib, castMember);
         }
+        if (isEmptyRuntimeMember(dynamicMember) || (member == null && dynamicMember == null)) {
+            return null;
+        }
         if (dynamicMember != null && dynamicMember.getMemberType() == MemberType.BITMAP) {
             Bitmap liveRuntimeBitmap = dynamicMember.getBitmap();
             if (definesRuntimeSpriteSize(dynamicMember, liveRuntimeBitmap)) {
@@ -475,6 +478,10 @@ public class StageRenderer {
             null,
             state.hasScriptBehaviors()
         );
+    }
+
+    private static boolean isEmptyRuntimeMember(CastMember member) {
+        return member != null && member.getMemberType() == MemberType.NULL;
     }
 
     private static boolean definesRuntimeSpriteSize(CastMember member, Bitmap bitmap) {

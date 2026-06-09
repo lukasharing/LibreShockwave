@@ -808,6 +808,9 @@ public final class ImageMethodDispatcher {
         boolean backgroundTransparentColorizableMask = ink == Palette.InkMode.BACKGROUND_TRANSPARENT
                 && (useIndexedMaskRampForColorRemap
                 || isBackgroundTransparentColorizableMask(src, srcRect, bgColorRemap));
+        boolean defaultWhiteBackedColorizableMask = ink == Palette.InkMode.BACKGROUND_TRANSPARENT
+                && bgColorRemap >= 0
+                && isBackgroundTransparentColorizableMask(src, srcRect, -1);
         boolean skipColorizationForExactBackground = explicitBgColorIsSourceBackground
                 && !backgroundTransparentColorizableMask;
         boolean darkenBgTintCandidate = ink == Palette.InkMode.DARKEN
@@ -817,6 +820,11 @@ public final class ImageMethodDispatcher {
                 && colorRemap >= 0
                 && colorizeBgColorRemap < 0
                 && hasAlphaMaskSemantics(src, srcRect);
+        boolean keyOriginalBackgroundBeforeColorization = ink == Palette.InkMode.BACKGROUND_TRANSPARENT
+                && !src.hasNativeMatteAlpha();
+        int originalBackgroundTransparentRgbKey = keyOriginalBackgroundBeforeColorization && !useIndexedBackgroundKey
+                ? resolveBackgroundTransparentKey(src, srcRect, bgColorRemap)
+                : -1;
         if ((colorRemap >= 0 || colorizeBgColorRemap >= 0)
                 && !skipColorizationForExactBackground
                 && (!src.hasNativeMatteAlpha() || darkenBgTintCandidate || nativeAlphaColorMaskCandidate)) {
@@ -825,7 +833,8 @@ public final class ImageMethodDispatcher {
 
             if ((isGrayscale
                     && (ink != Palette.InkMode.BACKGROUND_TRANSPARENT
-                    || backgroundTransparentColorizableMask))
+                    || backgroundTransparentColorizableMask
+                    || defaultWhiteBackedColorizableMask))
                     || useIndexedMaskRampForColorRemap) {
                 int fgR = colorRemap >= 0 ? (colorRemap >> 16) & 0xFF : 0;
                 int fgG = colorRemap >= 0 ? (colorRemap >> 8) & 0xFF : 0;
@@ -833,7 +842,6 @@ public final class ImageMethodDispatcher {
                 int bgR = colorizeBgColorRemap >= 0 ? (colorizeBgColorRemap >> 16) & 0xFF : 255;
                 int bgG = colorizeBgColorRemap >= 0 ? (colorizeBgColorRemap >> 8) & 0xFF : 255;
                 int bgB = colorizeBgColorRemap >= 0 ? colorizeBgColorRemap & 0xFF : 255;
-                boolean transparentBackground = colorRemap >= 0 && colorizeBgColorRemap < 0;
                 boolean darkenBgTint = darkenBgTintCandidate;
                 effectiveSrc = new Bitmap(srcW, srcH, src.getBitDepth());
                 byte[] sourcePaletteIndices = src.getPaletteIndicesUnsafe();
@@ -857,6 +865,13 @@ public final class ImageMethodDispatcher {
                         int g = (pixel >> 8) & 0xFF;
                         int b = pixel & 0xFF;
                         int gray = r;
+                        if (keyOriginalBackgroundBeforeColorization
+                                && sourcePixelMatchesBackgroundTransparentKey(src, sourceX, sourceY, pixel,
+                                useIndexedBackgroundKey, bgColorPaletteIndexKey,
+                                originalBackgroundTransparentRgbKey)) {
+                            effectiveSrc.setPixel(x, y, 0x00000000);
+                            continue;
+                        }
                         if (indexedMaskRampIndices != null
                                 && sourceX >= 0 && sourceX < indexedMaskRampSource.getWidth()
                                 && sourceY >= 0 && sourceY < indexedMaskRampSource.getHeight()
@@ -871,13 +886,7 @@ public final class ImageMethodDispatcher {
                             effectivePaletteIndices[y * srcW + x] =
                                     sourcePaletteIndices[sourceY * src.getWidth() + sourceX];
                         }
-                        if (transparentBackground) {
-                            int maskAlpha = (255 - gray) * alpha / 255;
-                            int outR = colorRemap >= 0 ? fgR : 0;
-                            int outG = colorRemap >= 0 ? fgG : 0;
-                            int outB = colorRemap >= 0 ? fgB : 0;
-                            effectiveSrc.setPixel(x, y, (maskAlpha << 24) | (outR << 16) | (outG << 8) | outB);
-                        } else if (darkenBgTint) {
+                        if (darkenBgTint) {
                             int nr = multiplyDarkenChannel(gray, bgR, true);
                             int ng = multiplyDarkenChannel(gray, bgG, true);
                             int nb = multiplyDarkenChannel(gray, bgB, true);
@@ -896,7 +905,7 @@ public final class ImageMethodDispatcher {
                 }
                 effectiveSrcX = 0;
                 effectiveSrcY = 0;
-                remapToAlphaMask = transparentBackground;
+                remapToAlphaMask = keyOriginalBackgroundBeforeColorization;
                 grayscaleColorized = true;
             }
         }
@@ -1457,6 +1466,19 @@ public final class ImageMethodDispatcher {
         }
         int offset = sy * src.getWidth() + sx;
         return offset >= 0 && offset < indices.length && (indices[offset] & 0xFF) == (paletteIndex & 0xFF);
+    }
+
+    private static boolean sourcePixelMatchesBackgroundTransparentKey(Bitmap src, int sx, int sy, int pixel,
+                                                                      boolean useIndexedBackgroundKey,
+                                                                      Integer backgroundPaletteIndex,
+                                                                      int backgroundRgbKey) {
+        if (((pixel >>> 24) & 0xFF) == 0) {
+            return true;
+        }
+        if (useIndexedBackgroundKey && backgroundPaletteIndex != null) {
+            return matchesBackgroundPaletteIndex(src, sx, sy, backgroundPaletteIndex);
+        }
+        return (pixel & 0xFFFFFF) == (backgroundRgbKey & 0xFFFFFF);
     }
 
     private static boolean canPreservePaletteIndices(Bitmap dest, Bitmap src,

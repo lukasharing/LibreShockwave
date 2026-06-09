@@ -82,8 +82,8 @@ public class SpriteProperties implements SpritePropertyProvider {
             case "ink" -> Datum.of(sprite.getInk());
             case "blend" -> Datum.of(sprite.getBlend());
             case "stretch" -> Datum.of(sprite.getStretch());
-            case "forecolor", "color" -> Datum.of(sprite.getForeColor());
-            case "backcolor", "bgcolor" -> Datum.of(sprite.getBackColor());
+            case "forecolor", "color" -> spriteColorDatum(sprite.getForeColor(), sprite.getForeColorSource());
+            case "backcolor", "bgcolor" -> spriteColorDatum(sprite.getBackColor(), sprite.getBackColorSource());
             case "left" -> {
                 bounds = resolveSpriteBounds(sprite);
                 yield Datum.of(bounds.left());
@@ -627,6 +627,13 @@ public class SpriteProperties implements SpritePropertyProvider {
     }
 
     private record SpriteColor(int value, SpriteColorSource source) {}
+
+    private static Datum spriteColorDatum(int value, SpriteColorSource source) {
+        if (source == SpriteColorSource.RGB) {
+            return new Datum.Color((value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF);
+        }
+        return Datum.of(value);
+    }
 
     private static SpriteColor coerceSpriteColor(Datum value) {
         if (value instanceof Datum.Color c) {

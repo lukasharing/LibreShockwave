@@ -49,7 +49,7 @@ class SpriteRegistryTest {
     }
 
     @Test
-    void castRetirementHidesDynamicSpriteBindingsFromThatCast() {
+    void castRetirementPreservesDynamicSpriteBindingsFromThatCast() {
         SpriteRegistry registry = new SpriteRegistry();
         SpriteState stale = registry.getOrCreateDynamic(12);
         stale.setBackColor(0xFF00FF);
@@ -61,15 +61,16 @@ class SpriteRegistryTest {
 
         assertTrue(registry.clearDynamicMemberBindingsForCast(7));
 
-        assertFalse(stale.isVisible());
-        assertFalse(stale.hasDynamicMember());
+        assertTrue(stale.isVisible());
+        assertTrue(stale.hasDynamicMember());
+        assertEquals(7, stale.getEffectiveCastLib());
+        assertEquals(10001, stale.getEffectiveCastMember());
         assertTrue(stale.getScriptInstanceList().isEmpty());
-        assertEquals(1, registry.getDynamicSprites().size());
-        assertEquals(13, registry.getDynamicSprites().get(0).getChannel());
+        assertEquals(2, registry.getDynamicSprites().size());
     }
 
     @Test
-    void castRetirementKeepsScoreBackedRuntimeBindingExplicitlyEmpty() {
+    void castRetirementKeepsScoreBackedRuntimeBindingIdentity() {
         SpriteRegistry registry = new SpriteRegistry();
         SpriteState sprite = registry.getOrCreate(9, new ScoreChunk.ChannelData(
                 1, 0, 0, 0, 0, 0,
@@ -82,16 +83,16 @@ class SpriteRegistryTest {
 
         assertTrue(registry.clearDynamicMemberBindingsForCast(7));
 
-        assertFalse(sprite.isVisible());
+        assertTrue(sprite.isVisible());
         assertTrue(sprite.hasDynamicMember());
-        assertEquals(0, sprite.getEffectiveCastLib());
-        assertEquals(0, sprite.getEffectiveCastMember());
+        assertEquals(7, sprite.getEffectiveCastLib());
+        assertEquals(10001, sprite.getEffectiveCastMember());
         assertTrue(sprite.getScriptInstanceList().isEmpty());
-        assertTrue(registry.getDynamicSprites().isEmpty());
+        assertEquals(1, registry.getDynamicSprites().size());
     }
 
     @Test
-    void runtimeMemberRetirementKeepsScoreBackedBindingExplicitlyEmpty() {
+    void runtimeMemberRetirementKeepsScoreBackedBindingIdentity() {
         SpriteRegistry registry = new SpriteRegistry();
         SpriteState sprite = registry.getOrCreate(9, new ScoreChunk.ChannelData(
                 1, 0, 0, 0, 0, 0,
@@ -104,16 +105,16 @@ class SpriteRegistryTest {
 
         assertTrue(registry.clearDynamicMemberBindings(7, 10001));
 
-        assertFalse(sprite.isVisible());
+        assertTrue(sprite.isVisible());
         assertTrue(sprite.hasDynamicMember());
-        assertEquals(0, sprite.getEffectiveCastLib());
-        assertEquals(0, sprite.getEffectiveCastMember());
+        assertEquals(7, sprite.getEffectiveCastLib());
+        assertEquals(10001, sprite.getEffectiveCastMember());
         assertTrue(sprite.getScriptInstanceList().isEmpty());
-        assertTrue(registry.getDynamicSprites().isEmpty());
+        assertEquals(1, registry.getDynamicSprites().size());
     }
 
     @Test
-    void runtimeMemberRetirementHidesDynamicBinding() {
+    void runtimeMemberRetirementPreservesDynamicBindingIdentity() {
         SpriteRegistry registry = new SpriteRegistry();
         SpriteState sprite = registry.getOrCreateDynamic(12);
         sprite.setBackColor(0xFF00FF);
@@ -122,9 +123,34 @@ class SpriteRegistryTest {
 
         assertTrue(registry.clearDynamicMemberBindings(7, 10001));
 
-        assertFalse(sprite.isVisible());
-        assertFalse(sprite.hasDynamicMember());
+        assertTrue(sprite.isVisible());
+        assertTrue(sprite.hasDynamicMember());
+        assertEquals(7, sprite.getEffectiveCastLib());
+        assertEquals(10001, sprite.getEffectiveCastMember());
         assertTrue(sprite.getScriptInstanceList().isEmpty());
-        assertTrue(registry.getDynamicSprites().isEmpty());
+        assertEquals(1, registry.getDynamicSprites().size());
+    }
+
+    @Test
+    void retiredDynamicBindingKeepsEmptyOverrideAcrossLateScoreReuse() {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteState sprite = registry.getOrCreateDynamic(12);
+        sprite.setDynamicMember(7, 10001);
+
+        assertTrue(registry.clearDynamicMemberBindings(7, 10001));
+
+        registry.getOrCreate(12, new ScoreChunk.ChannelData(
+                1, 0, 0, 0, 0, 0,
+                3, 40,
+                0, 0, 10, 20, 30, 40,
+                0, 0, 0, 0, 0, 0, 0
+        ));
+
+        assertTrue(sprite.hasDynamicMember(),
+                "retired runtime channels keep their cast/member identity until authored Lingo assigns a new member");
+        assertEquals(7, sprite.getEffectiveCastLib());
+        assertEquals(10001, sprite.getEffectiveCastMember());
+        assertTrue(sprite.isVisible());
+        assertEquals(1, registry.getDynamicSprites().size());
     }
 }

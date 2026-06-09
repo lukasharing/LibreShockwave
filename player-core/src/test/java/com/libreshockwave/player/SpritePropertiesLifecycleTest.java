@@ -1,16 +1,19 @@
 package com.libreshockwave.player;
 
 import com.libreshockwave.bitmap.Bitmap;
+import com.libreshockwave.bitmap.Palette;
 import com.libreshockwave.cast.MemberType;
 import com.libreshockwave.chunks.ScoreChunk;
 import com.libreshockwave.player.cast.CastLib;
 import com.libreshockwave.player.cast.CastLibManager;
 import com.libreshockwave.player.cast.CastMember;
 import com.libreshockwave.player.render.SpriteRegistry;
+import com.libreshockwave.player.render.pipeline.StageRenderer;
 import com.libreshockwave.player.sprite.SpriteColorSource;
 import com.libreshockwave.player.sprite.SpriteState;
 import com.libreshockwave.vm.DebugConfig;
 import com.libreshockwave.vm.datum.Datum;
+import com.libreshockwave.vm.opcode.dispatch.ImageMethodDispatcher;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
@@ -494,7 +497,7 @@ class SpritePropertiesLifecycleTest {
     }
 
     @Test
-    void clearDynamicMemberBindingsDetachesOnlyMatchingSprites() {
+    void clearDynamicMemberBindingsPreservesMatchingSpriteIdentity() {
         SpriteRegistry registry = new SpriteRegistry();
 
         SpriteState floor = registry.getOrCreateDynamic(11);
@@ -510,10 +513,13 @@ class SpritePropertiesLifecycleTest {
         other.setSkew(180.0);
 
         assertTrue(registry.clearDynamicMemberBindings(7, 10001));
-        assertFalse(floor.hasDynamicMember());
-        assertFalse(floor.isFlipH());
-        assertEquals(0.0, floor.getRotation());
-        assertEquals(0.0, floor.getSkew());
+        assertTrue(floor.hasDynamicMember());
+        assertEquals(7, floor.getEffectiveCastLib());
+        assertEquals(10001, floor.getEffectiveCastMember());
+        assertTrue(floor.isVisible());
+        assertTrue(floor.isFlipH());
+        assertEquals(180.0, floor.getRotation());
+        assertEquals(180.0, floor.getSkew());
         assertTrue(other.hasDynamicMember());
         assertEquals(7, other.getEffectiveCastLib());
         assertEquals(10002, other.getEffectiveCastMember());
@@ -525,12 +531,14 @@ class SpritePropertiesLifecycleTest {
 
     @Test
     void retiredScoreBackedRuntimeMemberLeavesChannelEmptyUntilReuse() throws Exception {
-        SpriteRegistry registry = new SpriteRegistry();
+        StageRenderer renderer = new StageRenderer(null);
+        SpriteRegistry registry = renderer.getSpriteRegistry();
         SpriteProperties props = new SpriteProperties(registry);
         CastLibManager castLibManager = new CastLibManager(null, (castLib, fileName) -> {});
         CastLib castLib = new CastLib(7, null, null);
         injectCastLib(castLibManager, castLib);
         props.setCastLibManager(castLibManager);
+        renderer.setCastLibManager(castLibManager);
 
         SpriteState state = registry.getOrCreate(9, new ScoreChunk.ChannelData(
                 1, 0, 0, 0, 0, 0,
@@ -558,6 +566,7 @@ class SpritePropertiesLifecycleTest {
         state.setWidth(160);
         state.setHeight(120);
         assertTrue(state.hasSizeChanged());
+        assertEquals(1, renderer.getSpritesForFrame(1).size());
 
         CastMember.setMemberSlotRetiredCallback(registry::clearDynamicMemberBindings);
         try {
@@ -567,25 +576,28 @@ class SpritePropertiesLifecycleTest {
         }
 
         assertTrue(state.hasDynamicMember());
-        assertEquals(0, state.getEffectiveCastLib());
-        assertEquals(0, state.getEffectiveCastMember());
-        assertFalse(state.isVisible());
-        assertEquals(1, state.getWidth());
-        assertEquals(1, state.getHeight());
-        assertFalse(state.hasSizeChanged());
+        assertEquals(7, state.getEffectiveCastLib());
+        assertEquals(first.getMemberNumber(), state.getEffectiveCastMember());
+        assertTrue(state.isVisible());
+        assertEquals(160, state.getWidth());
+        assertEquals(120, state.getHeight());
+        assertTrue(state.hasSizeChanged());
         assertTrue(state.getScriptInstanceList().isEmpty());
+        assertTrue(renderer.getSpritesForFrame(1).isEmpty());
 
         CastMember reused = castLib.createDynamicMember("bitmap");
         assertSame(first, reused);
         assertEquals(first.getMemberNumber(), reused.getMemberNumber());
         reused.setBitmapDirectly(secondBitmap);
 
+        assertEquals(1, renderer.getSpritesForFrame(1).size());
+
         assertTrue(props.setSpriteProp(9, "member",
                 Datum.CastMemberRef.of(7, reused.getMemberNumber())));
 
-        assertEquals(36, state.getWidth());
-        assertEquals(22, state.getHeight());
-        assertFalse(state.hasSizeChanged());
+        assertEquals(160, state.getWidth());
+        assertEquals(120, state.getHeight());
+        assertTrue(state.hasSizeChanged());
     }
 
     @Test
@@ -651,6 +663,36 @@ class SpritePropertiesLifecycleTest {
         assertTrue(props.setSpriteProp(7, "bgColor", new Datum.Color(0, 0, 0)));
         assertEquals(0, state.getBackColor());
         assertEquals(SpriteColorSource.RGB, state.getBackColorSource());
+    }
+
+    @Test
+    void rgbSpriteColorReadbackDoesNotBecomePaletteIndexWhenFilledIntoIndexedImage() {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteProperties props = new SpriteProperties(registry);
+
+        assertTrue(props.setSpriteProp(7, "bgColor", new Datum.Color(0, 0, 0)));
+        Datum rgbBackground = props.getSpriteProp(7, "bgColor");
+        assertTrue(rgbBackground instanceof Datum.Color,
+                "scripted RGB sprite colors must keep their color type when read back");
+        assertEquals(0, rgbBackground.toInt());
+
+        Bitmap wrapper = new Bitmap(2, 1, 8);
+        wrapper.setImagePalette(Palette.SYSTEM_MAC_PALETTE);
+        ImageMethodDispatcher.dispatch(new Datum.ImageRef(wrapper), "fill",
+                List.of(new Datum.Rect(0, 0, 2, 1), rgbBackground));
+
+        assertEquals(0xFF000000, wrapper.getPixel(0, 0),
+                "an RGB black bgColor must fill as RGB black, not palette index 0");
+
+        assertTrue(props.setSpriteProp(8, "bgColor", Datum.of(0)));
+        Datum indexedBackground = props.getSpriteProp(8, "bgColor");
+        assertTrue(indexedBackground instanceof Datum.Int,
+                "plain numeric sprite colors remain palette-index compatible");
+        ImageMethodDispatcher.dispatch(new Datum.ImageRef(wrapper), "fill",
+                List.of(new Datum.Rect(0, 0, 2, 1), indexedBackground));
+
+        assertEquals(0xFFFFFFFF, wrapper.getPixel(0, 0),
+                "numeric bgColor 0 on a paletted image keeps Director's palette-index behavior");
     }
 
     @Test

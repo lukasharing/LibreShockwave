@@ -84,11 +84,11 @@ public class SpriteRegistry {
     }
 
     /**
-     * Clear dynamic sprite bindings that still reference a retired member slot.
-     * Director's removeMember invalidates the runtime visual content. A sprite
-     * that was showing that member must stay explicitly empty until authored
-     * Lingo assigns a new member; falling back to score data resurrects stale
-     * visualizer parts during room/window teardown.
+     * Mark dynamic sprite bindings that still reference a retired member slot.
+     * Director's removeMember/erase empties the cast slot; it does not rewrite
+     * sprite.member, depuppet the channel, or restore authored score content.
+     * The renderer resolves the now-empty slot to no pixels while the sprite
+     * keeps its castLib/member identity.
      */
     public boolean clearDynamicMemberBindings(int castLib, int memberNum) {
         boolean changed = false;
@@ -97,7 +97,7 @@ public class SpriteRegistry {
                 continue;
             }
             if (state.getEffectiveCastLib() == castLib && state.getEffectiveCastMember() == memberNum) {
-                resetRetiredDynamicBinding(state);
+                state.setScriptInstanceList(List.of());
                 changed = true;
             }
         }
@@ -108,11 +108,10 @@ public class SpriteRegistry {
     }
 
     /**
-     * Clear runtime sprite bindings that point into a cast whose visible contents
-     * are being unloaded or replaced. Unlike retiring one runtime member slot,
-     * replacing a cast invalidates every member identity in that cast namespace,
-     * so score-backed channels must stay explicitly empty until authored code
-     * assigns fresh content.
+     * Mark runtime sprite bindings that point into a cast whose backing contents
+     * are being unloaded or replaced. Director keeps references as castLib/slot
+     * identities; unloading changes what those identities resolve to, not the
+     * sprite property values themselves.
      */
     public boolean clearDynamicMemberBindingsForCast(int castLib) {
         if (castLib <= 0) {
@@ -125,7 +124,7 @@ public class SpriteRegistry {
                 continue;
             }
             if (state.getEffectiveCastLib() == castLib && state.getEffectiveCastMember() > 0) {
-                resetUnloadedCastBinding(state);
+                state.setScriptInstanceList(List.of());
                 changed = true;
             }
         }
@@ -176,29 +175,6 @@ public class SpriteRegistry {
      */
     public Map<Integer, SpriteState> getAll() {
         return sprites;
-    }
-
-    private static void resetRetiredDynamicBinding(SpriteState state) {
-        resetUnloadedCastBinding(state);
-    }
-
-    private static void resetUnloadedCastBinding(SpriteState state) {
-        if (state == null) {
-            return;
-        }
-
-        state.setScriptInstanceList(List.of());
-        state.setVisible(false);
-        state.setCursor(0);
-        state.setBlend(100);
-        state.setStretch(0);
-        state.resetReleasedChannelGeometry();
-        state.resetReleasedSpriteTransforms();
-        if (state.isDynamic()) {
-            state.clearDynamicMember();
-        } else {
-            state.setDynamicMember(0, 0);
-        }
     }
 
     /**

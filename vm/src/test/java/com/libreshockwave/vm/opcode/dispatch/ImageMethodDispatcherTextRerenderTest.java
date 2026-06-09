@@ -62,7 +62,7 @@ class ImageMethodDispatcherTextRerenderTest {
     }
 
     @Test
-    void colorRemapTreatsWhiteBackedTextAsTransparentMask() {
+    void colorRemapWithCopyInkKeepsWhiteBackedTextOpaque() {
         Bitmap text = new Bitmap(5, 3, 32);
         text.fill(0xFFFFFFFF);
         text.setPixel(2, 1, 0xFF000000);
@@ -73,8 +73,45 @@ class ImageMethodDispatcherTextRerenderTest {
         dest.fill(0xFF777777);
         copyFull(dest, text, colorRemap);
 
+        assertEquals(0xFFFFFFFF, dest.getPixel(0, 0),
+                "copyPixels #color with default #copy ink recolors foreground but still copies the white backing");
+        assertEquals(0xFFFEFEFE, dest.getPixel(2, 1));
+    }
+
+    @Test
+    void backgroundTransparentColorRemapKeysDefaultWhiteBeforeColorizing() {
+        Bitmap text = new Bitmap(5, 3, 32);
+        text.fill(0xFFFFFFFF);
+        text.setPixel(2, 1, 0xFF000000);
+        Datum.PropList props = new Datum.PropList();
+        props.add("ink", Datum.of(36), true);
+        props.add("color", new Datum.Color(254, 254, 254), true);
+
+        Bitmap dest = new Bitmap(5, 3, 32);
+        dest.fill(0xFF777777);
+        copyFull(dest, text, props);
+
         assertEquals(0xFF777777, dest.getPixel(0, 0),
-                "copyPixels #color uses a white text backing as transparent mask background");
+                "background transparent keys the original white backing before #color remaps it");
+        assertEquals(0xFFFEFEFE, dest.getPixel(2, 1));
+    }
+
+    @Test
+    void backgroundTransparentColorRemapDoesNotKeyNewlyRecoloredBackground() {
+        Bitmap text = new Bitmap(5, 3, 32);
+        text.fill(0xFFFFFFFF);
+        text.setPixel(2, 1, 0xFF000000);
+        Datum.PropList props = new Datum.PropList();
+        props.add("ink", Datum.of(36), true);
+        props.add("color", new Datum.Color(254, 254, 254), true);
+        props.add("bgColor", new Datum.Color(0, 0, 255), true);
+
+        Bitmap dest = new Bitmap(5, 3, 32);
+        dest.fill(0xFF777777);
+        copyFull(dest, text, props);
+
+        assertEquals(0xFF0000FF, dest.getPixel(0, 0),
+                "the #bgColor transparent key is evaluated against the original source, not after recoloring");
         assertEquals(0xFFFEFEFE, dest.getPixel(2, 1));
     }
 
