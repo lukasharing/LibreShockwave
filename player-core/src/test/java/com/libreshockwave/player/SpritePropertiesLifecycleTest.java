@@ -340,6 +340,43 @@ class SpritePropertiesLifecycleTest {
     }
 
     @Test
+    void releasedSpriteChannelDoesNotLeakVisualOverridesIntoNextReservation() {
+        SpriteRegistry registry = new SpriteRegistry();
+        SpriteProperties props = new SpriteProperties(registry);
+
+        SpriteState state = registry.getOrCreateDynamic(23);
+        assertTrue(props.setSpriteProp(23, "member", Datum.CastMemberRef.of(5, 77)));
+        assertTrue(props.setSpriteProp(23, "ink", Datum.of(36)));
+        assertTrue(props.setSpriteProp(23, "color", new Datum.Color(0x12, 0x34, 0x56)));
+        assertTrue(props.setSpriteProp(23, "bgColor", new Datum.Color(0x65, 0x43, 0x21)));
+        assertTrue(props.setSpriteProp(23, "blend", Datum.of(40)));
+        assertTrue(props.setSpriteProp(23, "trails", Datum.of(1)));
+        assertTrue(props.setSpriteProp(23, "stretch", Datum.of(1)));
+
+        assertTrue(props.setSpriteProp(23, "member", Datum.ZERO));
+        assertTrue(props.setSpriteProp(23, "visible", Datum.ZERO));
+        assertTrue(props.setSpriteProp(23, "puppet", Datum.ZERO));
+
+        assertEquals(0, state.getInk());
+        assertEquals(100, state.getBlend());
+        assertEquals(0, state.getTrails());
+        assertEquals(0, state.getStretch());
+        assertFalse(state.hasForeColor());
+        assertFalse(state.hasBackColor());
+
+        assertTrue(props.setSpriteProp(23, "puppet", Datum.TRUE));
+        assertTrue(props.setSpriteProp(23, "visible", Datum.TRUE));
+        assertTrue(props.setSpriteProp(23, "castNum", Datum.of((6 << 16) | 88)));
+
+        assertEquals(6, state.getEffectiveCastLib());
+        assertEquals(88, state.getEffectiveCastMember());
+        assertEquals(0, state.getInk(),
+                "a recycled channel should start with Director's default copy ink");
+        assertFalse(state.hasForeColor());
+        assertFalse(state.hasBackColor());
+    }
+
+    @Test
     void disablingPuppetOnDynamicMemberSpriteClearsStaleRoomMember() {
         SpriteRegistry registry = new SpriteRegistry();
         SpriteProperties props = new SpriteProperties(registry);

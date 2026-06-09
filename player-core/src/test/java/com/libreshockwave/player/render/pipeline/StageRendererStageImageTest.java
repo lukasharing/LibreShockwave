@@ -108,6 +108,18 @@ class StageRendererStageImageTest {
     }
 
     @Test
+    void resetClearingSpritesInvalidatesVisualRevision() {
+        StageRenderer renderer = new StageRenderer(null);
+        renderer.getSpriteRegistry().getOrCreateDynamic(12);
+        int before = renderer.getSpriteRegistry().getRevision();
+
+        renderer.reset();
+
+        assertTrue(renderer.getSpriteRegistry().getRevision() > before);
+        assertTrue(renderer.getSpriteRegistry().getAll().isEmpty());
+    }
+
+    @Test
     void discardStageImageDropsScriptModifiedBuffer() {
         StageRenderer renderer = new StageRenderer(null);
         Bitmap stageImage = renderer.getStageImage();

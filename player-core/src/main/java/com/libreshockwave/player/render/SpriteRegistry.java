@@ -73,14 +73,19 @@ public class SpriteRegistry {
      * Remove a sprite when it leaves the stage.
      */
     public void remove(int channel) {
-        sprites.remove(channel);
+        if (sprites.remove(channel) != null) {
+            bumpRevision();
+        }
     }
 
     /**
      * Clear all sprites (on movie stop/reset).
      */
     public void clear() {
-        sprites.clear();
+        if (!sprites.isEmpty()) {
+            sprites.clear();
+            bumpRevision();
+        }
     }
 
     /**

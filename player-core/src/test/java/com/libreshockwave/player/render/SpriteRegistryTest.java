@@ -5,6 +5,8 @@ import com.libreshockwave.player.sprite.SpriteState;
 import com.libreshockwave.vm.datum.Datum;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.atomic.AtomicInteger;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -152,5 +154,60 @@ class SpriteRegistryTest {
         assertEquals(10001, sprite.getEffectiveCastMember());
         assertTrue(sprite.isVisible());
         assertEquals(1, registry.getDynamicSprites().size());
+    }
+
+    @Test
+    void removingRegisteredSpriteInvalidatesRenderRevision() {
+        SpriteRegistry registry = new SpriteRegistry();
+        AtomicInteger notifications = new AtomicInteger();
+        registry.setRevisionListener(notifications::incrementAndGet);
+        registry.getOrCreateDynamic(12);
+
+        int before = registry.getRevision();
+        registry.remove(12);
+
+        assertTrue(registry.getRevision() > before);
+        assertEquals(1, notifications.get());
+        assertFalse(registry.contains(12));
+    }
+
+    @Test
+    void removingMissingSpriteDoesNotInvalidateRenderRevision() {
+        SpriteRegistry registry = new SpriteRegistry();
+        AtomicInteger notifications = new AtomicInteger();
+        registry.setRevisionListener(notifications::incrementAndGet);
+
+        registry.remove(12);
+
+        assertEquals(0, registry.getRevision());
+        assertEquals(0, notifications.get());
+    }
+
+    @Test
+    void clearingRegisteredSpritesInvalidatesRenderRevision() {
+        SpriteRegistry registry = new SpriteRegistry();
+        AtomicInteger notifications = new AtomicInteger();
+        registry.setRevisionListener(notifications::incrementAndGet);
+        registry.getOrCreateDynamic(12);
+        registry.getOrCreateDynamic(13);
+
+        int before = registry.getRevision();
+        registry.clear();
+
+        assertTrue(registry.getRevision() > before);
+        assertEquals(1, notifications.get());
+        assertTrue(registry.getAll().isEmpty());
+    }
+
+    @Test
+    void clearingEmptyRegistryDoesNotInvalidateRenderRevision() {
+        SpriteRegistry registry = new SpriteRegistry();
+        AtomicInteger notifications = new AtomicInteger();
+        registry.setRevisionListener(notifications::incrementAndGet);
+
+        registry.clear();
+
+        assertEquals(0, registry.getRevision());
+        assertEquals(0, notifications.get());
     }
 }

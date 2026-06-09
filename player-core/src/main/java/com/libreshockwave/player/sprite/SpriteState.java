@@ -211,6 +211,30 @@ public class SpriteState {
     }
 
     /**
+     * Reset visual overrides that belong to the sprite channel rather than to
+     * the next member assigned to that channel. Director's releaseSprite pattern
+     * makes the channel reusable as a fresh puppeted sprite; runtime color/ink
+     * flags from the previous owner must not leak into the next reservation.
+     */
+    public void resetReleasedRuntimeVisualState() {
+        this.inkMode = InkMode.COPY;
+        this.blend = 100;
+        this.trails = 0;
+        this.stretch = 0;
+        this.foreColor = 0;
+        this.backColor = 0xFFFFFF;
+        this.foreColorSource = SpriteColorSource.PALETTE_INDEX;
+        this.backColorSource = SpriteColorSource.RGB;
+        this.hasForeColor = false;
+        this.hasBackColor = false;
+        this.inkExplicitlySet = false;
+        this.blendExplicitlySet = false;
+        this.trailsExplicitlySet = false;
+        this.stretchExplicitlySet = false;
+        this.scoreDefaultsApplied = false;
+    }
+
+    /**
      * Get the effective cast library number (dynamic or from Score).
      */
     public int getEffectiveCastLib() {

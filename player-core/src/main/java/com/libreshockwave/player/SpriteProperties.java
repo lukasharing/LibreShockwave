@@ -662,10 +662,9 @@ public class SpriteProperties implements SpritePropertyProvider {
         sprite.setScriptInstanceList(java.util.List.of());
         sprite.setVisible(false);
         sprite.setCursor(0);
-        sprite.setBlend(100);
-        sprite.setStretch(0);
         sprite.resetReleasedChannelGeometry();
         sprite.resetReleasedSpriteTransforms();
+        sprite.resetReleasedRuntimeVisualState();
         sprite.clearDynamicMember();
         LifecycleDiagnostics.logReleasedEmptyChannel("spriteReleasedEmptyChannel", sprite);
     }
@@ -674,10 +673,9 @@ public class SpriteProperties implements SpritePropertyProvider {
         sprite.setScriptInstanceList(java.util.List.of());
         sprite.setVisible(false);
         sprite.setCursor(0);
-        sprite.setBlend(100);
-        sprite.setStretch(0);
         sprite.resetReleasedChannelGeometry();
         sprite.resetReleasedSpriteTransforms();
+        sprite.resetReleasedRuntimeVisualState();
         sprite.setDynamicMember(0, 0);
         LifecycleDiagnostics.logReleasedEmptyChannel("spriteReleasedEmptyChannel", sprite);
     }
@@ -686,10 +684,9 @@ public class SpriteProperties implements SpritePropertyProvider {
         sprite.setScriptInstanceList(java.util.List.of());
         sprite.setVisible(false);
         sprite.setCursor(0);
-        sprite.setBlend(100);
-        sprite.setStretch(0);
         sprite.resetReleasedChannelGeometry();
         sprite.resetReleasedSpriteTransforms();
+        sprite.resetReleasedRuntimeVisualState();
         sprite.setDynamicMember(0, 0);
         LifecycleDiagnostics.logReleasedEmptyChannel("spriteReleasedEmptyChannel", sprite);
     }
@@ -711,6 +708,7 @@ public class SpriteProperties implements SpritePropertyProvider {
             }
             sprite.clearDynamicMember();
             sprite.resetReleasedSpriteTransforms();
+            sprite.resetReleasedRuntimeVisualState();
         }
         if (sprite.isDynamic()) {
             resetReleasedEmptyChannel(sprite);

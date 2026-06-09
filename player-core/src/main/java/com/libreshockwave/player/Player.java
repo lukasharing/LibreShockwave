@@ -699,8 +699,11 @@ public class Player implements UpdateProvider {
         if (bitmapResolver != null) {
             bitmapResolver.invalidateMoviePalette();
         }
-        stageRenderer.getSpriteRegistry().clearDynamicMemberBindingsForCast(castLibNumber);
-        stageRenderer.getSpriteRegistry().bumpRevision();
+        boolean bindingsChanged = stageRenderer.getSpriteRegistry()
+                .clearDynamicMemberBindingsForCast(castLibNumber);
+        if (!bindingsChanged) {
+            stageRenderer.getSpriteRegistry().bumpRevision();
+        }
     }
 
     private void reapplyPersistentMemberAliases(int castLibNumber) {
